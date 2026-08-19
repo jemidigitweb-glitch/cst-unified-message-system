@@ -20,8 +20,39 @@ let sourcePool: Pool | undefined;
 let appPool: Pool | undefined;
 let knowledgePool: Pool | undefined;
 
+/**
+ * TLS policy.
+ *
+ * The servers reject unencrypted connections — `pg_hba.conf` matched no entry
+ * for a plaintext client and returned "no encryption". `psql` succeeds because
+ * it defaults to `sslmode=prefer` and negotiates TLS; node-postgres defaults to
+ * no TLS at all, so without this every pool fails to connect.
+ *
+ * The default mirrors `sslmode=require`: the transport is encrypted, but the
+ * server certificate is not verified — the same trust level psql is operating at
+ * today. Set `DB_SSL_MODE=verify` once a CA certificate is available for these
+ * hosts; that is a production hardening step, not something to assume works now.
+ * `DB_SSL_MODE=disable` is available for a local plaintext server.
+ */
+function sslConfig(): PoolConfig["ssl"] {
+  switch (process.env.DB_SSL_MODE ?? "require") {
+    case "disable":
+      return undefined;
+    case "verify":
+      return { rejectUnauthorized: true };
+    default:
+      return { rejectUnauthorized: false };
+  }
+}
+
 function base(config: PoolConfig): PoolConfig {
-  return { ...config, max: 5, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 10_000 };
+  return {
+    ...config,
+    ssl: sslConfig(),
+    max: 5,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  };
 }
 
 /**

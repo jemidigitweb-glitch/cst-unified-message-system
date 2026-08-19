@@ -38,8 +38,8 @@ describe("eBay system notices", () => {
   });
 
   it("does not treat a real message as a notice", () => {
-    expect(isSystemNotice({ messageType: "AskSellerQuestion", extMessageId: 12 })).toBe(false);
-    expect(isSystemNotice({ messageType: null, extMessageId: 12 })).toBe(false);
+    expect(isSystemNotice({ messageType: "AskSellerQuestion", extMessageId: "12" })).toBe(false);
+    expect(isSystemNotice({ messageType: null, extMessageId: "12" })).toBe(false);
     expect(isSystemNotice({ messageType: "ContactEbayMember", extMessageId: null })).toBe(false);
   });
 });
