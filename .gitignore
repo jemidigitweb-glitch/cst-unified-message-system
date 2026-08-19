@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# Environment / secrets — never commit.
+# Real credentials for the read-only source DB and the application DB live in
+# .env only. .env.example is the placeholder-only template and IS committed.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.env
+
+# Database / API credentials
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
