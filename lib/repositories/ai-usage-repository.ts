@@ -64,6 +64,52 @@ export type UsageByModel = {
   estimated_cost_usd: string;
 };
 
+/**
+ * The usage recorded for one draft revision.
+ *
+ * Keyed on the revision rather than the conversation: a conversation may have
+ * been regenerated several times, and the panel is describing the draft on
+ * screen, not the conversation's lifetime spend.
+ *
+ * Returns null when no row exists — a draft written before usage logging
+ * existed, or one whose accounting row failed to write. The panel says nothing
+ * rather than showing zeros, because zero tokens is a claim and "not recorded"
+ * is the truth.
+ */
+const USAGE_FOR_REVISION = `
+SELECT provider,
+       model,
+       input_tokens,
+       output_tokens,
+       total_tokens,
+       estimated_cost_usd::text AS estimated_cost_usd,
+       created_at::text         AS created_at
+FROM cst_app.ai_usage_log
+WHERE draft_revision_id = $1::bigint
+ORDER BY created_at DESC
+LIMIT 1`;
+
+export type RevisionUsage = {
+  provider: string;
+  model: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  estimated_cost_usd: string | null;
+  created_at: string;
+};
+
+export async function readUsageForRevision(
+  client: Queryable,
+  draftRevisionId: string,
+): Promise<RevisionUsage | null> {
+  const { rows } = await client.query({
+    text: USAGE_FOR_REVISION,
+    values: [draftRevisionId],
+  });
+  return (rows as RevisionUsage[])[0] ?? null;
+}
+
 export async function readAiUsage(
   client: Queryable,
 ): Promise<{ summary: UsageSummary | null; byModel: UsageByModel[] }> {

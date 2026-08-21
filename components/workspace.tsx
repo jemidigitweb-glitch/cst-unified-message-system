@@ -8,6 +8,7 @@ import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import type { UnresolvedFeed } from "@/lib/domain/unresolved-messages";
 
 import { ContextPanel } from "./context-panel";
+import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { InboxList } from "./inbox-list";
 import { MarketplaceTabs } from "./marketplace-tabs";
@@ -270,7 +271,18 @@ export function Workspace() {
           */}
         <aside className="hidden min-h-0 overflow-y-auto border-l border-black/10 xl:block dark:border-white/15">
           {selectedKind !== "message" && (
-            <ContextPanel conversation={detail?.conversation ?? null} capability={capability} />
+            <>
+              <ContextPanel conversation={detail?.conversation ?? null} capability={capability} />
+              {/* After the context, because both answer "can I trust this
+                  draft?" -- one from the conversation's side, one from the
+                  model's. Renders nothing when there is no draft. */}
+              {detail !== null && (
+                <DraftEvidencePanel
+                  key={detail.conversation.id}
+                  conversationId={detail.conversation.id}
+                />
+              )}
+            </>
           )}
         </aside>
       </div>

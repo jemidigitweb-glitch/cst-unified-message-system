@@ -15,6 +15,8 @@ export type Queryable = {
 };
 
 export type DraftRevisionView = {
+  /** The revision row's primary key. Used to look up its recorded AI usage. */
+  readonly revisionId: string;
   readonly revision: number;
   readonly origin: DraftOrigin;
   readonly bodyText: string;
@@ -36,7 +38,8 @@ export type DraftView = {
  * history a reviewer can page back through.
  */
 const GET_DRAFT = `
-SELECT r.revision,
+SELECT r.id::text AS revision_id,
+       r.revision,
        r.origin,
        r.body_text,
        r.requires_review,
@@ -59,6 +62,7 @@ GROUP BY r.id, d.current_revision
 ORDER BY r.revision DESC`;
 
 type RevisionRow = {
+  revision_id: string;
   revision: number;
   origin: string;
   body_text: string;
@@ -100,6 +104,7 @@ export async function getDraft(
     conversationId,
     currentRevision: Number(revisions[0]!.current_revision),
     revisions: revisions.map((row) => ({
+      revisionId: row.revision_id,
       revision: Number(row.revision),
       origin: row.origin as DraftOrigin,
       bodyText: row.body_text,

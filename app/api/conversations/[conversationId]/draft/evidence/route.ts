@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getAppPool } from "@/lib/db/pools";
 import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
 import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
+import { readUsageForRevision } from "@/lib/repositories/ai-usage-repository";
 import { getDraft, isDraftStoreMissing } from "@/lib/repositories/draft-repository";
 import { getConversation, parseConversationId } from "@/lib/repositories/conversation-repository";
 
@@ -61,12 +62,24 @@ export async function GET(
 
     const evidence = resolveEvidence(rules, citedRefs);
 
+    // Read back from ai_usage_log rather than counted again here: the record
+    // written at generation time is the one source of truth for what a draft
+    // cost, and a second count would be a second answer.
+    const usage = await readUsageForRevision(pool, current.revisionId).catch(() => null);
+
     return NextResponse.json({
       conversationId: id,
+      // Carried so an export identifies its subject without a second request.
+      marketplace: detail?.conversation.marketplace ?? null,
+      counterpartyRef: detail?.conversation.counterpartyRef ?? null,
+      lastCustomerMessageAt:
+        [...(detail?.messages ?? [])].reverse().find((m) => m.direction === "inbound")
+          ?.sourceTimestamp ?? null,
       revision: current.revision,
       origin: current.origin,
       model: current.model ?? null,
       rulesAvailable: knowledge.state === "available",
+      usage,
       evidence,
     });
   } catch (cause) {
