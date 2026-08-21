@@ -164,6 +164,9 @@ function toConversation(
     // order reference for it in the source.
     needsContext: key.strategy === "no_item",
     inboxPlacement: belongsInReplyInbox({ inboundCount }) ? "reply_inbox" : "outbound_only",
+    // eBay's source is a dedicated message feed, not a shared mailbox: there is
+    // no courier or supplier traffic in it to filter out.
+    inboxFilterReason: null,
     messages: run,
   };
 }

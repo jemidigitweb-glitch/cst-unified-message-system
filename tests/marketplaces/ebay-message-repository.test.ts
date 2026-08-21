@@ -3,6 +3,7 @@ import { extname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { MARKETPLACES } from "@/lib/domain/marketplace";
 import type { EbaySourceRow } from "@/lib/marketplaces/ebay/adapter";
 import {
   DEFAULT_FETCH_LIMIT,
@@ -337,11 +338,13 @@ describe("source safety: no write SQL in the marketplace layer", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("implements no unsupported marketplace", () => {
+  it("implements an adapter for every marketplace and nothing else", () => {
     const root = join(__dirname, "..", "..", "lib", "marketplaces");
     const implemented = readdirSync(root).filter((entry) =>
       statSync(join(root, entry)).isDirectory(),
     );
-    expect(implemented).toEqual(["ebay"]);
+    // Every marketplace is active, so every one has an adapter. A directory
+    // that is not a declared marketplace would be an unreviewed source.
+    expect(implemented.sort()).toEqual([...MARKETPLACES].sort());
   });
 });

@@ -81,6 +81,63 @@ export function compareSourceOrder(a: SourceMessage, b: SourceMessage): number {
   return a.sourcePk < b.sourcePk ? -1 : 1;
 }
 
+/**
+ * Marketplace-NEUTRAL normalized source message whose DIRECTION IS UNKNOWN.
+ *
+ * A separate type rather than `SourceMessage` with a nullable direction, on
+ * purpose. Making direction optional on the main contract would let an unproven
+ * message flow into any code path that reads it, and every such path would then
+ * need to remember to check. Here the field does not exist, so a conversation
+ * view cannot consume one of these by accident — it will not type-check.
+ *
+ * Also absent: `counterpartyRef`, because a source that does not establish which
+ * way a message travelled cannot establish which party is the customer.
+ */
+export const unresolvedSourceMessageSchema = z.object({
+  marketplace: marketplaceSchema,
+
+  /** Source coordinates — together these are the idempotency key for sync. */
+  sourceDatabase: z.string().min(1),
+  sourceSchema: z.string().min(1),
+  sourceTable: z.string().min(1),
+  sourcePk: z.string().min(1),
+
+  externalMessageId: z.string().nullable(),
+  subSourceId: z.number().int().nullable(),
+
+  /** The source timestamp EXACTLY as stored. Same preservation rule as above. */
+  sourceTimestamp: z.string().min(1),
+
+  bodyText: z.string().nullable(),
+  bodyDecodeStatus: z.enum(bodyDecodeStatuses),
+
+  /**
+   * An opaque reference the source recorded alongside the message. Stored for
+   * later review only: in a source of unproven provenance its meaning is not
+   * established either, so nothing may derive business facts from it.
+   */
+  sourceReference: z.string().nullable(),
+});
+
+export type UnresolvedSourceMessage = z.infer<typeof unresolvedSourceMessageSchema>;
+
+/** Ordering for unresolved messages: the same intent, on the same two fields. */
+export function compareUnresolvedSourceOrder(
+  a: UnresolvedSourceMessage,
+  b: UnresolvedSourceMessage,
+): number {
+  if (a.sourceTimestamp !== b.sourceTimestamp) {
+    return a.sourceTimestamp < b.sourceTimestamp ? -1 : 1;
+  }
+  const left = Number(a.sourcePk);
+  const right = Number(b.sourcePk);
+  if (Number.isSafeInteger(left) && Number.isSafeInteger(right) && left !== right) {
+    return left - right;
+  }
+  if (a.sourcePk === b.sourcePk) return 0;
+  return a.sourcePk < b.sourcePk ? -1 : 1;
+}
+
 /** Watermark for incremental reads: everything strictly after this pair. */
 export type SourceWatermark = {
   readonly sourceTimestamp: string;

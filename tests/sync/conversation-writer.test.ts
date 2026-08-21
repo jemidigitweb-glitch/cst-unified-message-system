@@ -45,6 +45,7 @@ function conversation(overrides: Partial<DerivedConversation> = {}): DerivedConv
     outboundCount: messages.filter((m) => m.direction === "outbound").length,
     needsContext: false,
     inboxPlacement: "reply_inbox",
+    inboxFilterReason: null,
     ...overrides,
     messages,
   };

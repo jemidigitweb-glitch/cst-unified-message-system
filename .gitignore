@@ -55,3 +55,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# CST rule source documents. The business owns these; the repo holds their
+# extracted rules in cst_app, not the documents themselves. "B2B customers.xlsx"
+# also carries customer contact data, which must never be committed.
+/Knowledge-source/

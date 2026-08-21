@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "import:cst-rules": "node scripts/import-cst-rules.mjs"
   },
   "dependencies": {
     "next": "16.3.1",

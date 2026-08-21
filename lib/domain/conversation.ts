@@ -9,7 +9,17 @@ import type { ThreadingStrategy } from "@/lib/domain/threading";
  * downstream. Carries no business context: no order, SKU, product, or listing
  * facts. Those are resolved and verified separately.
  */
-export const inboxPlacements = ["reply_inbox", "outbound_only"] as const;
+/**
+ * Where a derived conversation belongs.
+ *
+ *   reply_inbox    has a customer message awaiting a reply
+ *   outbound_only  no customer message to answer, so not reply work
+ *   filtered       stored and threaded, but deliberately kept out of the
+ *                  inbox — a bounce, a courier notice, another channel's
+ *                  notification, or unsolicited mail. NOT deleted, and the
+ *                  reason is recorded alongside it.
+ */
+export const inboxPlacements = ["reply_inbox", "outbound_only", "filtered"] as const;
 
 export type InboxPlacement = (typeof inboxPlacements)[number];
 
@@ -42,6 +52,12 @@ export type DerivedConversation = {
   readonly needsContext: boolean;
 
   readonly inboxPlacement: InboxPlacement;
+  /**
+   * Why the conversation was filtered out of the inbox. Present only when
+   * `inboxPlacement` is `filtered`, so a hidden conversation can always account
+   * for itself.
+   */
+  readonly inboxFilterReason: string | null;
 
   /** Messages in source order: timestamp ASC, then source PK ASC. */
   readonly messages: readonly SourceMessage[];

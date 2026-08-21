@@ -10,7 +10,48 @@ NNNN_<description>.down.sql   reverses it
 
 | Migration | Purpose | Status |
 | --------- | ------- | ------ |
-| `0001_cst_core_schema` | Core schema: users, conversations, messages, sync state, verified context, audit | **Written, NOT executed — awaiting GPT Project review** |
+| `0001_cst_core_schema` | Core schema: users, conversations, messages, sync state, verified context, audit | Applied |
+| `0002_unresolved_marketplace_messages` | Storage for source messages whose direction, identity and grouping are unverified | **Written, NOT executed — awaiting review** |
+| `0005_cst_knowledge_base` | CST rule corpus: sources and sign-off, categories, rules, examples, triggers | **Written, NOT executed — awaiting review** |
+
+## Why `0005` exists
+
+`0004` records *which* rules a draft cited — `draft_revision_sources` holds
+opaque references and deliberately no rule text. `0005` is where that text lives,
+so a citation resolves back to the instruction it came from and can be shown to
+the reviewer.
+
+It is knowledge only. There is no column for a customer message, order, SKU,
+marketplace, conversation or draft, and no foreign key to any table holding one.
+The dependency runs one way: drafts cite rules; rules know nothing about drafts.
+
+`cst_knowledge_sources.active` is constrained to require `status = 'approved'`,
+so an unreviewed spreadsheet row cannot become grounding for a customer-facing
+reply. That status is a **document sign-off**, not a conversation workflow state
+— the workflow still terminates at `reviewed`, and `0005` adds no state to it.
+`tests/guards/draft-workflow.test.ts` carries a narrow exemption for this one
+literal in this one file, plus a test pinning it away from the workflow.
+
+The example pairs in `cst_rule_examples` come from the rule documents and are
+illustrative wording. **Real customer traffic must never be copied into them** —
+SQL cannot enforce the provenance of a string, so this is a rule for the importer.
+
+## Why `0002` exists
+
+`cst_app.conversation_messages.direction` is `NOT NULL` with
+`CHECK (direction IN ('inbound','outbound'))`. Both permitted values are claims
+about which way a message travelled. A source that does not record direction has
+no truthful value to write, and picking either one would store a guess that every
+downstream consumer reads as verified fact.
+
+Widening that CHECK to admit `'unknown'` was considered and rejected: it would put
+unverified rows in the table the conversation view reads, so every consumer would
+have to remember to exclude them. A separate table without a `direction`,
+`counterparty_ref` or `conversation_id` column makes the mistake impossible
+rather than merely discouraged.
+
+`0002` is purely additive. It alters nothing from `0001`, and applying or
+reverting it leaves existing conversations untouched.
 
 ## Naming
 

@@ -7,7 +7,7 @@ import {
   gapMillis,
   threadKeyOf,
 } from "@/lib/domain/threading";
-import { ENABLED_MARKETPLACES, isEnabled } from "@/lib/domain/marketplace";
+import { MARKETPLACES, marketplaceSchema } from "@/lib/domain/marketplace";
 
 const RULE = "test-rule-v1";
 
@@ -99,12 +99,14 @@ describe("reply inbox placement", () => {
 });
 
 describe("marketplace scope", () => {
-  it("enables eBay only", () => {
-    expect(ENABLED_MARKETPLACES).toEqual(["ebay"]);
-    expect(isEnabled("ebay")).toBe(true);
-    expect(isEnabled("amazon")).toBe(false);
-    expect(isEnabled("shopify")).toBe(false);
-    expect(isEnabled("bandq")).toBe(false);
-    expect(isEnabled("temu")).toBe(false);
+  it("covers all five marketplaces, with no enable/disable switch", () => {
+    expect(MARKETPLACES).toEqual(["ebay", "amazon", "shopify", "bandq", "temu"]);
+  });
+
+  it("accepts every marketplace name and nothing else", () => {
+    for (const marketplace of MARKETPLACES) {
+      expect(marketplaceSchema.parse(marketplace)).toBe(marketplace);
+    }
+    expect(marketplaceSchema.safeParse("etsy").success).toBe(false);
   });
 });

@@ -79,6 +79,11 @@ must never be committed. Every credential is server-side only — nothing is
 exposed under `NEXT_PUBLIC_`, and config modules are marked `server-only` so
 importing them from client code is a build error.
 
+`GEMINI_API_KEY` is optional. Left unset, the application starts and runs
+normally; only draft generation reports itself unconfigured, quoting the
+variable to set. Check it without spending a token via `geminiStatus()` in
+`lib/ai/gemini-client.ts`, which returns the model name and never the key.
+
 ## Layout
 
 | Path                | Purpose                                              |

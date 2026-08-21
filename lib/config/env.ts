@@ -69,7 +69,91 @@ export function knowledgeDbConfig(): DbConfig | undefined {
   return knowledgeCache;
 }
 
-/** Test seam: clears memoised config so a test can vary process.env. */
+/**
+ * Gemini access for draft generation.
+ *
+ * Server-side only, like every other credential here — the key must never be
+ * prefixed with NEXT_PUBLIC_ and never reach the browser. Returns undefined
+ * when unconfigured, so callers report that plainly instead of generating an
+ * ungrounded draft.
+ *
+ * The CST rules sheet is configured separately (see `lib/knowledge/`): holding
+ * an API key does not imply having the rule corpus, and the two degrade
+ * differently.
+ */
+export type GeminiConfig = {
+  readonly apiKey: string;
+  readonly model: string;
+};
+
+/**
+ * Default model.
+ *
+ * `gemini-2.5-flash` is closed to new API keys — the endpoint answers a
+ * `models.get` for it but refuses `generateContent`, so a key can look valid
+ * and still fail on the first real draft. Override with GEMINI_MODEL.
+ */
+export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
+
+/** The variable that is actually read, named once so errors can quote it. */
+export const GEMINI_API_KEY_VAR = "GEMINI_API_KEY";
+
+/**
+ * A key that is present but unusable is a configuration mistake, not a value.
+ *
+ * Whitespace and the template's own placeholder both survive a naive
+ * `if (!key)` check and would be sent to Google as a credential, producing a
+ * 4xx that reads like an outage. They are rejected here instead, where the
+ * cause is obvious.
+ */
+const apiKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => !/^<.*>$/.test(value), {
+    message: "still set to the .env.example placeholder",
+  });
+
+/**
+ * NOT CACHED. Read from `process.env` on every call, deliberately.
+ *
+ * There is no memo here and one must not be added back. Two earlier versions
+ * cached. The first cached forever, so a new API key in `.env` was ignored and
+ * the stale key’s 429 read as a Google quota problem — the one cause it could
+ * not have been. The second keyed the cache on the value, which fixed that but
+ * still kept a credential sitting in module scope.
+ *
+ * What a cache buys here is one small zod parse per draft, on a request that
+ * ships ~137,000 tokens over the network. It is not measurable. What it costs
+ * is the ability to know which key is in flight, and that turned out to be
+ * expensive twice.
+ *
+ * The object returned is built fresh each call and callers must not hold it —
+ * see `getDraftModelClient`, which re-reads at request time.
+ */
+export function geminiConfig(): GeminiConfig | undefined {
+  const raw = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_AI_API_KEY;
+  if (raw === undefined || raw.trim() === "") return undefined;
+
+  const parsed = apiKeySchema.safeParse(raw);
+  if (!parsed.success) {
+    // The message quotes the variable name, never the value.
+    throw new Error(
+      `${GEMINI_API_KEY_VAR} is set but not usable: ${parsed.error.issues[0]?.message ?? "invalid"}.`,
+    );
+  }
+
+  return {
+    apiKey: parsed.data,
+    model: process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
+  };
+}
+
+/**
+ * Test seam: clears memoised DATABASE config so a test can vary process.env.
+ *
+ * There is deliberately no Gemini entry: that config is never cached.
+ */
 export function resetConfigCacheForTests(): void {
   sourceCache = undefined;
   appCache = undefined;
