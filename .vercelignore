@@ -26,13 +26,28 @@ secrets.json
 # Both casings: the folder is `knowledge-source` on a case-insensitive Windows
 # disk and matching is case-sensitive elsewhere, so one pattern is not enough.
 #
-# NOTE: excluding these means draft generation on Vercel has no rules and will
-# state no policy. That is the SAFE default, not the finished answer — one of
-# these workbooks ("B2B customers.xlsx") carries customer contact data and must
-# never be deployed. Shipping the twelve rule workbooks without it, or loading
-# them from storage, is a decision still to be made.
-/Knowledge-source/
-/knowledge-source/
+# THE RULE WORKBOOKS SHIP; THE CUSTOMER LIST NEVER DOES.
+#
+# Excluding the whole folder was the safe first move, and it turned out to be
+# the wrong finished answer. The deployed application still needs these files
+# at runtime — not to generate a draft (OpenAI retrieves the rules from the
+# vector store) but to turn a stored citation like WROITE-MAJ-15 back into the
+# rule a reviewer can read. Without them, production resolved citations against
+# whatever happened to be in the bundle and reported the rest as "no longer
+# exist in the current documents", which was untrue: the documents were fine,
+# they simply were not deployed.
+#
+# The pattern below excludes the CONTENTS rather than the directory, because a
+# file cannot be re-included once its parent directory is excluded. The final
+# rule re-excludes "B2B  customers .xlsx", which carries customer contact data
+# and must never leave this machine. Later patterns win, so that rule is last.
+/Knowledge-source/*
+!/Knowledge-source/*.xlsx
+/Knowledge-source/B2B*
+
+/knowledge-source/*
+!/knowledge-source/*.xlsx
+/knowledge-source/B2B*
 
 # --- Not needed at runtime --------------------------------------------------
 # Keeps the serverless bundle down; the build already warns that dynamic
