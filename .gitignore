@@ -68,3 +68,10 @@ Thumbs.db
 /knowledge-source/
 
 .vercel
+
+# Rendered knowledge documents, produced by `npm run knowledge:sync` for review
+# before upload. Derived from the gitignored workbooks, so equally not committed.
+/.knowledge-build/
+
+# Scheduler output. Local operational logs, not source.
+/logs/

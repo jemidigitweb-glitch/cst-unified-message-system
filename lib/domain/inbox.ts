@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { attachmentSchema } from "@/lib/domain/attachment";
 import { isUnresolvedReference } from "@/lib/domain/conversation-reference";
 import { marketplaceSchema } from "@/lib/domain/marketplace";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
@@ -39,6 +40,14 @@ export const conversationMessageViewSchema = z.object({
   sourceTimestamp: z.string(),
   bodyText: z.string().nullable(),
   bodyDecodeStatus: z.enum(bodyDecodeStatuses),
+  /**
+   * Files the message arrived with, already filtered to what is safe to render.
+   *
+   * Defaults to empty so every existing caller and stored payload stays valid —
+   * a message with no attachments and a message from before the column existed
+   * are the same thing to a reader.
+   */
+  attachments: z.array(attachmentSchema).default([]),
 });
 
 export type ConversationMessageView = z.infer<typeof conversationMessageViewSchema>;

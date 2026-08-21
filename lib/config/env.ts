@@ -149,10 +149,58 @@ export function geminiConfig(): GeminiConfig | undefined {
   };
 }
 
+export type OpenAiConfig = {
+  readonly apiKey: string;
+  readonly model: string;
+  /**
+   * The vector store holding the approved CST knowledge files.
+   *
+   * OPTIONAL, and the distinction matters. Without it the provider still runs,
+   * but with no `file_search` tool — so the model has NO CST knowledge and can
+   * state no policy. That is a real, reportable state, not a failure to hide:
+   * `knowledgeSearchEnabled` on the outcome says which of the two happened.
+   */
+  readonly vectorStoreId: string | undefined;
+};
+
+/** Default model. Needs a large context and strict structured output. */
+export const DEFAULT_OPENAI_MODEL = "gpt-4.1";
+
+export const OPENAI_API_KEY_VAR = "OPENAI_API_KEY";
+export const OPENAI_VECTOR_STORE_VAR = "OPENAI_VECTOR_STORE_ID";
+
+/**
+ * OpenAI configuration. NOT CACHED, for the same reason as `geminiConfig`.
+ *
+ * A rotated key must take effect on the next request, not the next restart. A
+ * memo here cost two debugging sessions on the Gemini side, where a stale key's
+ * 429 read as a provider quota problem.
+ */
+export function openAiConfig(): OpenAiConfig | undefined {
+  const raw = process.env.OPENAI_API_KEY;
+  if (raw === undefined || raw.trim() === "") return undefined;
+
+  const parsed = apiKeySchema.safeParse(raw);
+  if (!parsed.success) {
+    // The message quotes the variable name, never the value.
+    throw new Error(
+      `${OPENAI_API_KEY_VAR} is set but not usable: ${parsed.error.issues[0]?.message ?? "invalid"}.`,
+    );
+  }
+
+  const vectorStoreId = process.env.OPENAI_VECTOR_STORE_ID?.trim();
+
+  return {
+    apiKey: parsed.data,
+    model: process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL,
+    vectorStoreId: vectorStoreId === "" ? undefined : vectorStoreId,
+  };
+}
+
 /**
  * Test seam: clears memoised DATABASE config so a test can vary process.env.
  *
- * There is deliberately no Gemini entry: that config is never cached.
+ * There is deliberately no Gemini or OpenAI entry: neither is ever cached.
  */
 export function resetConfigCacheForTests(): void {
   sourceCache = undefined;

@@ -39,6 +39,15 @@ export type SaveRevisionInput = {
 export type SavedRevision = {
   readonly revision: number;
   readonly draftReplyId: string;
+  /**
+   * The revision row's own id.
+   *
+   * Distinct from `revision`, which is the per-draft sequence number a reviewer
+   * sees. This is the primary key, needed by anything that must reference the
+   * revision — the AI usage log points at it so a token count can be traced to
+   * the exact generation that incurred it.
+   */
+  readonly revisionId: string;
 };
 
 /** Creates the conversation's draft on first use; returns it thereafter. */
@@ -137,7 +146,11 @@ export async function saveRevision(
     values: [draft.id, revision.revision],
   });
 
-  return { revision: Number(revision.revision), draftReplyId: draft.id };
+  return {
+    revision: Number(revision.revision),
+    draftReplyId: draft.id,
+    revisionId: revision.id,
+  };
 }
 
 /**

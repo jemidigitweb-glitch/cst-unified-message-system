@@ -18,6 +18,7 @@ function view(overrides: Partial<ConversationMessageView> = {}): ConversationMes
     sourceTimestamp: "2026-08-01 10:00:00",
     bodyText: "synthetic body",
     bodyDecodeStatus: "decoded",
+    attachments: [],
     ...overrides,
   };
 }

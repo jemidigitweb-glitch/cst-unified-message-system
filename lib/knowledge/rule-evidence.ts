@@ -25,10 +25,60 @@ import type { CstRule } from "@/lib/domain/knowledge";
  * returns the matching rules; loading is the caller's job.
  */
 
+/**
+ * Normalises a citation for lookup.
+ *
+ * The knowledge documents present each rule as `## [RETREF-GFR-9] EB4`, and the
+ * instruction asks the model to quote the bracketed reference exactly — so it
+ * returns `[RETREF-GFR-9]`, brackets included, while the corpus is keyed on
+ * `RETREF-GFR-9`. Every citation therefore failed to resolve and was reported
+ * as a rule that no longer exists. Stripping the brackets here means older
+ * drafts, already stored with them, resolve too.
+ */
+export function normaliseRef(ref: string): string {
+  return ref.trim().replace(/^\[+/, "").replace(/\]+$/, "").trim();
+}
+
+/**
+ * A title a CST user can read.
+ *
+ * The `ruleName` column in these workbooks is usually an internal code — `EB4`,
+ * `R-WD12`, `SS5` — and 229 of 1,329 rules have nothing else in it. Those are
+ * audit identifiers, not something to show a person deciding whether a reply is
+ * right. The rule's own first line is the human sentence ("Customer claims
+ * wrong colour received"), so it is preferred whenever the name is a bare code.
+ *
+ * The reference itself is never used as a display title. It stays on the record
+ * for audit, and this is what a reviewer sees.
+ */
+function isCodeLike(title: string): boolean {
+  return /^[A-Za-z]{1,6}[-_ ]?\d+[A-Za-z]?$/.test(title.trim());
+}
+
+const LABEL_PREFIX = /^(KEY RULE \/ ACTION|KEY RULE|ACTION|DO NOT|DO|NEVER SAY|SAY INSTEAD):\s*/i;
+
+export function displayTitleOf(rule: {
+  readonly title: string;
+  readonly text: string;
+  readonly category: string | null;
+}): string {
+  const title = rule.title.trim();
+  if (title !== "" && !isCodeLike(title) && title.split(/\s+/).length >= 2) return title;
+
+  const firstLine = (rule.text.split("\n")[0] ?? "").replace(LABEL_PREFIX, "").trim();
+  if (firstLine !== "") {
+    return firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
+  }
+  return title !== "" ? title : (rule.category ?? "CST rule");
+}
+
 /** One cited rule, resolved to something a person can verify. */
 export type RuleEvidence = {
   readonly ref: string;
+  /** The internal identifier. For audit only — never shown to a CST user. */
   readonly title: string;
+  /** What a CST user reads. Derived by `displayTitleOf`. */
+  readonly displayTitle: string;
   readonly category: string | null;
   /** The rule as written in the document. */
   readonly text: string;
@@ -95,15 +145,16 @@ export function resolveEvidence(
   rules: readonly CstRule[],
   refs: readonly string[],
 ): EvidenceReport {
-  const byRef = new Map(rules.map((rule) => [rule.ref, rule]));
+  const byRef = new Map(rules.map((rule) => [normaliseRef(rule.ref), rule]));
 
   const cited: RuleEvidence[] = [];
   const unresolved: string[] = [];
   const legacy: string[] = [];
   const seen = new Set<string>();
 
-  for (const ref of refs) {
-    if (seen.has(ref)) continue;
+  for (const raw of refs) {
+    const ref = normaliseRef(raw);
+    if (ref === "" || seen.has(ref)) continue;
     seen.add(ref);
 
     const rule = byRef.get(ref);
@@ -117,6 +168,7 @@ export function resolveEvidence(
     cited.push({
       ref: rule.ref,
       title: rule.title,
+      displayTitle: displayTitleOf(rule),
       category: rule.category,
       text: rule.text,
       sourceFile: rule.sourceFile ?? null,

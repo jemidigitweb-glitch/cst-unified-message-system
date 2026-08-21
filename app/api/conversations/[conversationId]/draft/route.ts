@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
 
-import { DraftGenerationUnavailable, generateDraft } from "@/lib/ai/draft-generator";
-import { GeminiNotConfigured, GeminiUnavailable, getDraftModelClient } from "@/lib/ai/gemini-client";
-import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
+import { getDraftProvider } from "@/lib/ai/draft-service";
+import {
+  DraftGenerationUnavailable,
+  DraftServiceNotConfigured,
+  DraftServiceUnavailable,
+} from "@/lib/ai/provider";
 import { getAppPool } from "@/lib/db/pools";
 import type { VerifiedFact } from "@/lib/domain/draft";
 import { getDraft, isDraftStoreMissing } from "@/lib/repositories/draft-repository";
 import { getConversation, parseConversationId } from "@/lib/repositories/conversation-repository";
+import { recordUsage } from "@/lib/sync/ai-usage-writer";
+import type { Writable as UsageWritable } from "@/lib/sync/ai-usage-writer";
 import { advanceWorkflowState, saveRevision } from "@/lib/sync/draft-writer";
 import type { Writable } from "@/lib/sync/draft-writer";
 
@@ -62,7 +67,7 @@ export async function GET(
 }
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ conversationId: string }> },
 ): Promise<NextResponse> {
   const { conversationId } = await context.params;
@@ -71,10 +76,12 @@ export async function POST(
     return NextResponse.json({ error: "Invalid conversation id" }, { status: 400 });
   }
 
-  const client = getDraftModelClient();
-  if (client === undefined) {
+  // One call decides which model answers. This handler names no vendor — see
+  // lib/ai/draft-service.ts for the preference order and why it is one place.
+  const provider = getDraftProvider();
+  if (provider === undefined) {
     return NextResponse.json(
-      { error: "Draft generation is not configured." },
+      { error: "Draft generation is not configured.", code: "provider_not_configured" },
       { status: 503 },
     );
   }
@@ -87,22 +94,57 @@ export async function POST(
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
     }
 
-    // The WHOLE rule corpus goes to the model — no topic filtering. The only
-    // thing this call narrows is the marketplace, which drops another
-    // platform's rules; see rule-scoping.ts for why the keyword layer went.
-    //
-    // Re-read per generation. The cache keys on each workbook's mtime, so an
-    // edited rule file takes effect on the next draft without a restart, and an
-    // unchanged one costs nothing. Unreadable files degrade the draft to its
-    // policy-free mode rather than taking the feature down.
-    const { knowledge, corpus } = loadRulesForConversation(
-      detail.conversation.marketplace ?? null,
-    );
+    /**
+     * ONE GENERATION PER CUSTOMER MESSAGE, unless the reviewer asks again.
+     *
+     * A POST already means a deliberate click, but "deliberate" and "intended
+     * twice" are different things: a double-click, a retried request, or two
+     * tabs on the same conversation each cost a full model call. This compares
+     * the newest inbound message against the newest generated revision and
+     * returns the existing draft instead of paying for an identical one.
+     *
+     * `?force=1` bypasses it, and that is what the Regenerate button sends.
+     * Regeneration stays possible and stays explicit; only the accidental
+     * repeat is stopped.
+     */
+    const force = new URL(request.url).searchParams.get("force") === "1";
+    if (!force) {
+      const existing = await getDraft(pool, id).catch(() => null);
+      const latestGenerated = existing?.revisions.find((r) => r.origin === "generated");
+      const newestInbound = [...detail.messages]
+        .reverse()
+        .find((message) => message.direction === "inbound");
 
-    const generated = await generateDraft(client, {
+      if (latestGenerated !== undefined && newestInbound !== undefined) {
+        // The draft postdates the last thing the customer said, so it already
+        // answers it. Anything older would be replying to a stale message.
+        if (Date.parse(latestGenerated.createdAt) > Date.parse(newestInbound.sourceTimestamp)) {
+          return NextResponse.json({
+            conversationId: id,
+            revision: latestGenerated.revision,
+            draftReply: latestGenerated.bodyText,
+            sourcesUsed: latestGenerated.sources,
+            missingInformation: latestGenerated.missingInformation,
+            requiresReview: latestGenerated.requiresReview,
+            rulesAvailable: latestGenerated.sources.length > 0,
+            provider: null,
+            model: latestGenerated.model,
+            // The client can tell "here is your draft" from "I just spent a
+            // model call for you", which is the difference this exists to make.
+            reused: true,
+          });
+        }
+      }
+    }
+
+    // HOW the CST knowledge reaches the model is the provider's business, not
+    // this handler's. OpenAI retrieves it from a vector store per conversation;
+    // Gemini is handed the rendered corpus. Both are asked for the same
+    // behaviour and both return the same validated shape, so nothing here
+    // changes when the provider does.
+    const generated = await provider.generate({
       messages: detail.messages,
       facts: verifiedFactsFor(),
-      knowledge,
       // Both come from the stored conversation, which was written from the
       // marketplace source — neither is inferred from the message text.
       marketplace: detail.conversation.marketplace,
@@ -125,6 +167,18 @@ export async function POST(
       await advanceWorkflowState(connection as unknown as Writable, id, "drafting");
       await connection.query("COMMIT");
 
+      // AFTER the commit, and never inside it. An accounting row is not worth
+      // rolling back a draft the reviewer is waiting for, and `recordUsage`
+      // swallows its own errors for the same reason.
+      await recordUsage(pool as unknown as UsageWritable, {
+        provider: generated.provider,
+        model: generated.model,
+        conversationId: id,
+        draftRevisionId: saved.revisionId,
+        usage: generated.usage,
+        outcome: "ok",
+      });
+
       return NextResponse.json({
         conversationId: id,
         revision: saved.revision,
@@ -132,11 +186,11 @@ export async function POST(
         sourcesUsed: generated.result.sources_used,
         missingInformation: generated.missingInformation,
         requiresReview: generated.requiresReview,
-        rulesAvailable: !generated.restricted,
-        // Every area the model was given, and how many rules that was. No
-        // longer "what we picked" — it is the whole corpus for this platform.
-        ruleAreas: corpus?.categories ?? [],
-        rulesConsidered: corpus?.rules.length ?? 0,
+        rulesAvailable: generated.knowledgeAvailable,
+        // Recorded so a reviewer can tell which model wrote a draft, and so a
+        // provider comparison has something to compare on.
+        provider: generated.provider,
+        model: generated.model,
       });
     } catch (cause) {
       await connection.query("ROLLBACK");
@@ -154,19 +208,19 @@ export async function POST(
     // reaches the browser (it can quote the request, which contains customer
     // text); what is returned is our wording for what went wrong, plus a stable
     // `code` the UI can branch on.
-    if (cause instanceof GeminiNotConfigured) {
-      console.error("[draft] gemini not configured", cause.message);
+    if (cause instanceof DraftServiceNotConfigured) {
+      console.error("[draft] provider not configured", cause.message);
       return NextResponse.json(
-        {
-          error: "Draft generation is not configured. Set GEMINI_API_KEY on the server.",
-          code: "gemini_not_configured",
-        },
+        { error: cause.message, code: "provider_not_configured" },
         { status: 503 },
       );
     }
-    if (cause instanceof GeminiUnavailable) {
-      console.error("[draft] gemini call failed", cause.message);
-      return NextResponse.json({ error: cause.message, code: "gemini_unavailable" }, { status: 503 });
+    if (cause instanceof DraftServiceUnavailable) {
+      console.error("[draft] provider call failed", cause.message);
+      return NextResponse.json(
+        { error: cause.message, code: "provider_unavailable" },
+        { status: 503 },
+      );
     }
     if (cause instanceof DraftGenerationUnavailable) {
       return NextResponse.json({ error: cause.message, code: "generation_unavailable" }, { status: 503 });

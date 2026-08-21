@@ -4,7 +4,12 @@ import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { DRAFT_ORIGINS } from "@/lib/domain/draft";
-import { RESTRICTED_INSTRUCTIONS, FULL_INSTRUCTIONS } from "@/lib/ai/draft-generator";
+// The LIVE instructions, shared by every provider. Repointed here when the
+// provider layer landed: this guard previously read the ones in
+// `draft-generator.ts`, which is now off the live path, so it was protecting a
+// prompt no model is sent. A guard aimed at dead code is worse than no guard,
+// because it reports green.
+import { cstInstructions, restrictedInstructions } from "@/lib/ai/instructions";
 import { TERMINAL_STATE, WORKFLOW_STATES, canTransition, nextStates } from "@/lib/domain/workflow";
 
 /**
@@ -125,15 +130,19 @@ describe("no send capability anywhere in the draft feature", () => {
   });
 
   /**
-   * ONE permitted host, down from two.
+   * TWO permitted hosts, and both are model providers.
    *
-   * `sheets.googleapis.com` was allowed for the Google Sheet rule reader. That
-   * reader is gone — the rules are read from local workbooks — so the host is
-   * no longer allowed either. An allowlist that keeps entries for deleted
-   * features stops being an allowlist: it grants reach nothing needs, and the
-   * next thing to call that host would pass the guard silently.
+   * `api.openai.com` is the primary path (Responses API + File Search);
+   * `generativelanguage.googleapis.com` is the Gemini fallback.
+   * `sheets.googleapis.com` was removed with the Google Sheet rule reader — an
+   * allowlist that keeps entries for deleted features stops being an
+   * allowlist, because the next thing to call that host passes silently.
+   *
+   * Nothing else may be reachable from the draft feature. In particular there
+   * is no marketplace, email or messaging host here, which is what makes
+   * "this cannot contact a customer" checkable rather than asserted.
    */
-  it("reaches only the model over the network", () => {
+  it("reaches only the model providers over the network", () => {
     const hosts = new Set<string>();
     for (const file of sources) {
       for (const [, host] of readFileSync(file, "utf8").matchAll(/https:\/\/([a-z0-9.-]+)/gi)) {
@@ -142,7 +151,7 @@ describe("no send capability anywhere in the draft feature", () => {
     }
     for (const host of hosts) {
       expect(
-        ["generativelanguage.googleapis.com"],
+        ["api.openai.com", "generativelanguage.googleapis.com"],
         `unexpected outbound host: ${host}`,
       ).toContain(host);
     }
@@ -150,8 +159,18 @@ describe("no send capability anywhere in the draft feature", () => {
 });
 
 describe("the model is told what it may not do", () => {
-  it("forbids inventing an order, SKU, tracking or approval in both modes", () => {
-    for (const instructions of [FULL_INSTRUCTIONS, RESTRICTED_INSTRUCTIONS]) {
+  // Both modes, and a marketplace either way: the clause that keeps one
+  // platform's process out of another's reply is part of the instruction, so a
+  // regression there must fail here too.
+  const LIVE = [
+    cstInstructions("ebay"),
+    cstInstructions(null),
+    restrictedInstructions("ebay"),
+    restrictedInstructions(null),
+  ];
+
+  it("forbids inventing an order, SKU, tracking or approval in every mode", () => {
+    for (const instructions of LIVE) {
       const lower = instructions.toLowerCase();
       for (const forbidden of [
         "order number",
@@ -167,8 +186,22 @@ describe("the model is told what it may not do", () => {
   });
 
   it("tells the model it never sends", () => {
-    for (const instructions of [FULL_INSTRUCTIONS, RESTRICTED_INSTRUCTIONS]) {
+    for (const instructions of LIVE) {
       expect(instructions).toMatch(/never send/i);
+    }
+  });
+
+  it("keeps one marketplace's process out of another's reply", () => {
+    expect(cstInstructions("ebay")).toContain("EBAY");
+    expect(cstInstructions("ebay")).toMatch(/do not mention.*any other marketplace/i);
+    // Unknown marketplace must name no platform at all rather than guess.
+    expect(cstInstructions(null)).toMatch(/not known/i);
+    expect(cstInstructions(null)).toMatch(/do not name/i);
+  });
+
+  it("keeps internal reasoning out of the customer's reply", () => {
+    for (const instructions of LIVE) {
+      expect(instructions).toMatch(/only what the customer should read/i);
     }
   });
 });

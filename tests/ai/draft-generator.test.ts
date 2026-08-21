@@ -24,6 +24,7 @@ function message(overrides: Partial<ConversationMessageView> = {}): Conversation
     direction: "inbound",
     sourceTimestamp: "2026-08-19 10:00:00",
     bodyText: "Where is my order?",
+    attachments: [],
     bodyDecodeStatus: "decoded",
     ...overrides,
   };

@@ -49,3 +49,9 @@ secrets.json
 /node_modules/
 .DS_Store
 Thumbs.db
+
+# Rendered knowledge documents (review artefact of knowledge:sync).
+/.knowledge-build/
+
+# Scheduler output.
+/logs/

@@ -10,7 +10,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "import:cst-rules": "node scripts/import-cst-rules.mjs"
+    "import:cst-rules": "node scripts/import-cst-rules.mjs",
+    "knowledge:sync": "node scripts/sync-knowledge-vector-store.mjs",
+    "backfill:attachments": "node scripts/backfill-attachments.mjs",
+    "sync:messages": "node --import ./scripts/register-hooks.mjs scripts/sync-messages.mjs",
+    "sync:daily": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-daily-sync.ps1",
+    "sync:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-daily-sync.ps1"
   },
   "dependencies": {
     "next": "16.3.1",

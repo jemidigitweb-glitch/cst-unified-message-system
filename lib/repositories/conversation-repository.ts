@@ -1,5 +1,6 @@
 import "server-only";
 
+import { attachmentsFrom } from "@/lib/domain/attachment";
 import type {
   ConversationDetail,
   ConversationMessageView,
@@ -83,7 +84,8 @@ SELECT id::text            AS id,
        direction,
        source_ts::text     AS source_ts,
        body_text,
-       body_decode_status
+       body_decode_status,
+       attachments
 FROM cst_app.conversation_messages
 WHERE conversation_id = $1::bigint
 ORDER BY source_ts ASC, source_pk::bigint ASC`;
@@ -108,6 +110,7 @@ type MessageRow = {
   source_ts: string;
   body_text: string | null;
   body_decode_status: string;
+  attachments: unknown;
 };
 
 function toInboxItem(row: ConversationRow): InboxItem {
@@ -133,6 +136,10 @@ function toMessageView(row: MessageRow): ConversationMessageView {
     sourceTimestamp: row.source_ts,
     bodyText: row.body_text,
     bodyDecodeStatus: row.body_decode_status as ConversationMessageView["bodyDecodeStatus"],
+    // Filtered here rather than in the view: what is safe to render is a
+    // domain decision, and the browser should never receive a URL the
+    // application would not itself be willing to load.
+    attachments: attachmentsFrom(row.attachments),
   };
 }
 

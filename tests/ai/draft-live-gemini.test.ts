@@ -40,6 +40,7 @@ describe.skipIf(!ready)("a real draft, grounded in the local rule files", () => 
         "Hi, the ceiling light I ordered turned up with the glass shade cracked. " +
         "Pretty disappointed. What can you do about it?",
       bodyDecodeStatus: "decoded" as const,
+      attachments: [],
     },
   ];
 

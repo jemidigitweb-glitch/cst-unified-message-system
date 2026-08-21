@@ -38,7 +38,10 @@ import type { WorkflowState } from "@/lib/domain/workflow";
 
 type RuleEvidence = {
   ref: string;
+  /** Internal identifier. Audit only — must not be rendered. */
   title: string;
+  /** What a CST user reads. */
+  displayTitle: string;
   category: string | null;
   text: string;
   sourceFile: string | null;
@@ -141,7 +144,6 @@ export function DraftPanel({
   const [step, setStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidencePayload | null>(null);
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [evidenceBusy, setEvidenceBusy] = useState(false);
 
   /**
@@ -204,12 +206,33 @@ export function DraftPanel({
    * Names for citations that predate the reference format.
    *
    * The ref cannot be looked up, but the label recorded alongside it at
-   * generation time still names the rule — so the trail degrades to "we know
+   * generation time still names the rule — so the list degrades to "we know
    * which rule, we just cannot link it" rather than disappearing.
    */
   const legacyLabels = (evidence?.evidence?.legacy ?? [])
     .map((ref) => citedRefs.find((source) => source.ref === ref)?.label?.trim())
     .filter((label): label is string => label !== undefined && label !== "");
+
+  const hasCitations = citedRefs.length > 0;
+
+  /**
+   * The cited rules, grouped by CST area.
+   *
+   * Grouped because that is how the team thinks about them and how the
+   * knowledge base is organised — "Returns & Refunds" then "Message Handling"
+   * reads as a reason for the reply, where a flat list of rule names reads as
+   * debug output. Areas keep the order the model cited them in.
+   */
+  const rulesByArea: { area: string; titles: string[] }[] = [];
+  for (const rule of evidence?.evidence?.cited ?? []) {
+    const area = rule.category ?? "General";
+    const group = rulesByArea.find((entry) => entry.area === area);
+    // `displayTitle`, never `title` and never `ref`. `title` is the workbook's
+    // internal code — "EB4", "R-WD12" — and the ref is an audit key. Neither
+    // means anything to a CST user deciding whether a reply is right.
+    if (group) group.titles.push(rule.displayTitle);
+    else rulesByArea.push({ area, titles: [rule.displayTitle] });
+  }
 
   /**
    * Reads the API's error.
@@ -232,58 +255,100 @@ export function DraftPanel({
   };
 
   /**
-   * Fetches the audit trail, once, on first open.
+   * Fetches the rules a draft used.
    *
-   * Not loaded with the draft: it re-reads the rule corpus server-side, and
-   * most drafts are read without anyone needing to check where they came from.
-   * Paying that on every conversation to serve the occasional audit would be
-   * the wrong trade.
+   * Loaded automatically now rather than on a click. The rules are part of the
+   * draft, not an audit trail filed behind it — a reviewer judging a reply
+   * needs to see what it was written from at the same moment they read it, and
+   * a disclosure meant they usually did not.
+   *
+   * Still a separate request from the draft itself: it re-reads the rule corpus
+   * server-side, so folding it into the conversation load would slow down every
+   * conversation, including the ones with no draft at all.
    */
-  const openEvidence = useCallback(async () => {
-    setEvidenceOpen((open) => !open);
-    if (evidence !== null || evidenceBusy) return;
+  const loadEvidence = useCallback(async () => {
     setEvidenceBusy(true);
     try {
       const response = await fetch(`/api/conversations/${conversationId}/draft/evidence`);
       if (!response.ok) throw new Error("request failed");
       setEvidence((await response.json()) as EvidencePayload);
     } catch {
-      setError("The rule trail could not be loaded.");
+      // Deliberately not an error banner. The draft is fine; only the list of
+      // rule names is missing, and the card still states how many were cited.
+      setEvidence(null);
     } finally {
       setEvidenceBusy(false);
     }
-  }, [conversationId, evidence, evidenceBusy]);
+  }, [conversationId]);
 
-  const generate = useCallback(async () => {
-    setBusy("generating");
-    setStep(0);
-    setError(null);
-    // A new draft has a new trail. Dropping the old one stops a regenerate
-    // showing the previous revision's citations under the new reply.
-    setEvidence(null);
-    setEvidenceOpen(false);
-    // Advance the visible step on a schedule; cleared in `finally` so a fast
-    // failure does not leave a stale timer running.
-    const timers = STEP_AT.slice(1).map((at, index) =>
-      setTimeout(() => setStep(index + 1), at),
-    );
-    try {
-      const response = await fetch(`/api/conversations/${conversationId}/draft`, {
-        method: "POST",
-      });
-      if (!response.ok) {
-        setError(await failureFrom(response, "The draft could not be written just now."));
-        return;
+  /**
+   * Pulls the rule names as soon as there is a draft that cites any.
+   *
+   * Declared after `loadEvidence` rather than beside the other derived values,
+   * because an effect that reads a callback declared below it captures a stale
+   * binding — the lint rule catches exactly that.
+   *
+   * Guarded on `evidence === null` so it runs once per draft rather than on
+   * every render, and skipped entirely when nothing was cited: there would be
+   * nothing to fetch, and the card already says so in amber.
+   */
+  useEffect(() => {
+    if (!hasCitations || evidence !== null || evidenceBusy) return;
+    // `setEvidenceBusy(true)` is the one synchronous update, and it is what
+    // makes this effect idempotent — the guard above reads it, so the fetch
+    // fires once rather than on every render. The remaining updates happen
+    // after an await. Same reasoning, and same scoped exemption, as the
+    // conversation load effect above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadEvidence();
+  }, [hasCitations, evidence, evidenceBusy, loadEvidence]);
+
+  /**
+   * The ONLY thing in this component that can spend a model call.
+   *
+   * Nothing calls it on mount, on render, or from an effect — it runs from a
+   * button and from nothing else. `busy` is set synchronously as the first
+   * statement, and every button that reaches here is disabled while `busy` is
+   * non-null, so a double-click cannot start a second request.
+   *
+   * `force` distinguishes the two callers. Generate sends nothing and the
+   * server may hand back an existing draft rather than pay for an identical
+   * one; Regenerate sends `force=1` and always spends a call, because asking
+   * again is the entire point of that button.
+   */
+  const generate = useCallback(
+    async (force = false) => {
+      setBusy("generating");
+      setStep(0);
+      setError(null);
+      // A new draft cites new rules. Dropping the old list stops a regenerate
+      // showing the previous revision's rules under the new reply.
+      setEvidence(null);
+      // Advance the visible step on a schedule; cleared in `finally` so a fast
+      // failure does not leave a stale timer running.
+      const timers = STEP_AT.slice(1).map((at, index) =>
+        setTimeout(() => setStep(index + 1), at),
+      );
+      try {
+        const response = await fetch(
+          `/api/conversations/${conversationId}/draft${force ? "?force=1" : ""}`,
+          { method: "POST" },
+        );
+        if (!response.ok) {
+          setError(await failureFrom(response, "The draft could not be written just now."));
+          return;
+        }
+        await load();
+        onWorkflowChange("drafting");
+      } catch {
+        setError("The draft service could not be reached.");
+      } finally {
+        for (const timer of timers) clearTimeout(timer);
+        setBusy(null);
       }
-      await load();
-      onWorkflowChange("drafting");
-    } catch {
-      setError("The draft service could not be reached.");
-    } finally {
-      for (const timer of timers) clearTimeout(timer);
-      setBusy(null);
-    }
-  }, [conversationId, load, onWorkflowChange]);
+    },
+    [conversationId, load, onWorkflowChange],
+  );
 
   const save = useCallback(async () => {
     setBusy("saving");
@@ -428,18 +493,23 @@ export function DraftPanel({
             </p>
           )}
           {/*
-           * WHAT THE DRAFT WAS BASED ON.
+           * WHAT THE DRAFT WAS BASED ON — always visible, never behind a click.
            *
-           * Titles only. The workbook, sheet, row and full rule text are all
-           * returned by the evidence endpoint and are all deliberately not
-           * shown: a reviewer checking a reply wants to know WHICH rules it
-           * followed, not to read the rule book underneath it. The detail stays
-           * available on the API for an audit that needs it.
+           * This used to be an accordion reading "Based on 4 CST rules". It was
+           * the wrong shape: the rules a reply was written from are part of
+           * judging the reply, not a footnote to it, and hiding them behind a
+           * disclosure meant a reviewer usually approved a draft without ever
+           * seeing them. Now they sit under the draft and cannot be missed.
+           *
+           * GROUPED BY AREA, TITLES ONLY. The workbook, sheet, row and full
+           * rule text all come back from the evidence endpoint and are all
+           * deliberately not shown — a reviewer wants to know WHICH rules
+           * applied, not to read the rule book underneath the reply. The detail
+           * stays on the API for an audit that needs it.
            *
            * A DRAFT MUST BE BASED ON AT LEAST ONE RULE. When none was cited
-           * there is nothing to disclose and nothing to prove, so instead of an
-           * empty list this says so directly, in amber, without needing to be
-           * opened. That case is the one that must not be quietly passed over.
+           * there is nothing to show and nothing to prove, so this says so
+           * directly, in amber. That is the case that must not pass quietly.
            */}
           {current.origin === "generated" &&
             (citedRefs.length === 0 ? (
@@ -450,68 +520,68 @@ export function DraftPanel({
                 Not based on any CST rule — do not use without checking it against the documents.
               </p>
             ) : (
-              <div data-testid="rule-evidence" className="text-xs">
-                <button
-                  type="button"
-                  onClick={() => void openEvidence()}
-                  aria-expanded={evidenceOpen}
-                  className="flex items-center gap-1.5 rounded px-1 py-0.5 font-medium opacity-60 transition-opacity hover:opacity-100"
-                >
-                  <span
-                    aria-hidden
-                    className={`inline-block transition-transform ${evidenceOpen ? "rotate-90" : ""}`}
-                  >
-                    ›
-                  </span>
-                  Based on {citedRefs.length} CST rule{citedRefs.length === 1 ? "" : "s"}
-                </button>
+              <div data-testid="rule-evidence" className="flex flex-col gap-1.5 text-xs">
+                <p className="text-[11px] font-medium tracking-wide uppercase opacity-55">
+                  Based on CST rules
+                </p>
 
-                {evidenceOpen && (
-                  <ul className="mt-1.5 flex list-disc flex-col gap-0.5 border-l-2 border-emerald-600/30 pl-6 opacity-80 dark:border-emerald-400/30">
-                    {evidenceBusy && <li className="list-none opacity-60">Reading the rule files…</li>}
+                {/*
+                 * The count is shown while the names load, so the section never
+                 * flashes empty and a reviewer can already see the draft was
+                 * grounded even on a slow request.
+                 */}
+                {rulesByArea.length === 0 && (
+                  <p className="opacity-60">
+                    {evidenceBusy
+                      ? `Loading ${citedRefs.length} cited rule${citedRefs.length === 1 ? "" : "s"}…`
+                      : `${citedRefs.length} cited rule${citedRefs.length === 1 ? "" : "s"}`}
+                  </p>
+                )}
 
-                    {!evidenceBusy &&
-                      evidence?.evidence?.cited.map((rule) => (
-                        <li key={rule.ref}>
-                          {rule.title}
-                          {rule.category !== null && (
-                            <span className="ml-1.5 opacity-55">{rule.category}</span>
-                          )}
-                        </li>
+                {rulesByArea.map((group) => (
+                  <div key={group.area} className="flex flex-col">
+                    <p className="font-medium text-emerald-800 dark:text-emerald-200">
+                      <span aria-hidden className="mr-1.5">
+                        ✓
+                      </span>
+                      {group.area}
+                    </p>
+                    <ul className="ml-4 flex flex-col gap-0.5 opacity-75">
+                      {group.titles.map((title, index) => (
+                        <li key={`${group.area}-${index}`}>{title}</li>
                       ))}
+                    </ul>
+                  </div>
+                ))}
 
-                    {/*
-                     * Two different failures, two different sentences.
-                     *
-                     * `unresolved` means the DOCUMENTS changed — a genuine
-                     * audit finding, so it is amber.
-                     *
-                     * `legacy` means OUR reference scheme changed while the
-                     * rule stayed exactly where it was. An earlier version
-                     * reported both as "no longer exists in the current
-                     * documents", which blamed the business for our own
-                     * migration and was alarming on every pre-existing draft.
-                     * It is stated neutrally, and the rule name we stored at
-                     * the time is shown so the trail is not actually lost.
-                     */}
-                    {!evidenceBusy && (evidence?.evidence?.unresolved.length ?? 0) > 0 && (
-                      <li className="list-none text-amber-700 dark:text-amber-300">
-                        {evidence!.evidence!.unresolved.length} cited rule
-                        {evidence!.evidence!.unresolved.length === 1 ? "" : "s"} no longer exist in
-                        the current documents.
-                      </li>
-                    )}
+                {/*
+                 * A cited rule the documents no longer contain is an audit
+                 * finding, not a glitch — kept visible for the same reason the
+                 * rest of this block is.
+                 */}
+                {(evidence?.evidence?.unresolved.length ?? 0) > 0 && (
+                  <p className="text-amber-700 dark:text-amber-300">
+                    {evidence!.evidence!.unresolved.length} cited rule
+                    {evidence!.evidence!.unresolved.length === 1 ? "" : "s"} no longer exist in the
+                    current documents.
+                  </p>
+                )}
 
-                    {!evidenceBusy && (evidence?.evidence?.legacy.length ?? 0) > 0 && (
-                      <li className="list-none opacity-55">
-                        Drafted before the rule reference format changed, so{" "}
-                        {evidence!.evidence!.legacy.length} citation
-                        {evidence!.evidence!.legacy.length === 1 ? "" : "s"} cannot be linked
-                        automatically. Recorded at the time as:{" "}
-                        {legacyLabels.join("; ") || evidence!.evidence!.legacy.join(", ")}
-                      </li>
-                    )}
-                  </ul>
+                {/*
+                 * Older drafts cite refs from before the reference format
+                 * changed. That says nothing about the documents, so it is
+                 * stated neutrally — and with the rule NAME recorded at the
+                 * time, never the reference itself. Falling back to printing
+                 * the raw refs, as this once did, is exactly the internal-id
+                 * leak the panel is supposed to prevent.
+                 */}
+                {(evidence?.evidence?.legacy.length ?? 0) > 0 && (
+                  <p className="opacity-55">
+                    {evidence!.evidence!.legacy.length} rule
+                    {evidence!.evidence!.legacy.length === 1 ? "" : "s"} cited before the reference
+                    format changed
+                    {legacyLabels.length > 0 ? `: ${legacyLabels.join("; ")}` : ""}
+                  </p>
                 )}
               </div>
             ))}
@@ -548,8 +618,15 @@ export function DraftPanel({
               </button>
             )}
 
+            {/* force: asking again IS the point of this button, so it must
+                never be answered with the draft that already exists. */}
             {!reviewed && !editing && (
-              <button type="button" onClick={() => void generate()} disabled={busy !== null} className={action}>
+              <button
+                type="button"
+                onClick={() => void generate(true)}
+                disabled={busy !== null}
+                className={action}
+              >
                 Regenerate
               </button>
             )}

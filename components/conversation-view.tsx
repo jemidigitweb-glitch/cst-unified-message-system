@@ -112,6 +112,70 @@ export function ConversationView({
                     >
                       {body.text}
                     </p>
+
+                    {/*
+                     * ATTACHMENTS, inside the bubble.
+                     *
+                     * Inside rather than beside it because they belong to this
+                     * message — the damage rules require photographs, and the
+                     * thread previously showed only the word "Photo 1" while
+                     * the evidence sat one system away.
+                     *
+                     * Images render; anything else (the live data holds PDF
+                     * invoices too) becomes a link rather than a broken image.
+                     * `attachmentsFrom` has already dropped anything that is
+                     * not an https URL, so nothing here can issue a request to
+                     * a scheme or host the server would not itself allow.
+                     */}
+                    {message.attachments.length > 0 && (
+                      <ul
+                        data-testid="message-attachments"
+                        className="mt-2 flex flex-wrap gap-2"
+                      >
+                        {message.attachments.map((attachment) =>
+                          attachment.kind === "image" ? (
+                            <li key={attachment.url}>
+                              <a
+                                href={attachment.url}
+                                target="_blank"
+                                // noreferrer as well as noopener: the URL is
+                                // ours, the page the customer photo opens in
+                                // does not need to know where it came from.
+                                rel="noopener noreferrer"
+                                title={attachment.label}
+                              >
+                                {/* Plain <img>, not next/image. next/image
+                                    would need the storage host added to
+                                    next.config remotePatterns, and it proxies
+                                    every image through the optimiser — routing
+                                    customer photographs through an extra hop
+                                    for a thumbnail in an internal tool is a
+                                    wider change than this warrants. */}
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={attachment.url}
+                                  alt={attachment.label}
+                                  loading="lazy"
+                                  className="max-h-44 max-w-[200px] rounded-lg border border-black/10 object-cover transition-opacity hover:opacity-90 dark:border-white/15"
+                                />
+                              </a>
+                            </li>
+                          ) : (
+                            <li key={attachment.url}>
+                              <a
+                                href={attachment.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block max-w-[200px] truncate rounded-lg border border-black/10 px-2 py-1 text-xs underline decoration-dotted underline-offset-2 opacity-80 hover:opacity-100 dark:border-white/15"
+                              >
+                                {attachment.label}
+                              </a>
+                            </li>
+                          ),
+                        )}
+                      </ul>
+                    )}
+
                     <p className="mt-1 text-right text-[10px] tabular-nums opacity-50">
                       {stamp.date} {stamp.time}
                     </p>

@@ -204,7 +204,7 @@ describe("conversation detail", () => {
     const { client } = fake([[conversationRow()], [messageRow()]]);
     const detail = await getConversation(client, "1");
     expect(Object.keys(detail!.messages[0]!).sort()).toEqual(
-      ["bodyDecodeStatus", "bodyText", "direction", "id", "sourceTimestamp"].sort(),
+      ["attachments", "bodyDecodeStatus", "bodyText", "direction", "id", "sourceTimestamp"].sort(),
     );
   });
 });
