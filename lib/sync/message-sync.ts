@@ -164,6 +164,7 @@ export type SyncOutcome = {
   readonly messagesInserted: number;
   readonly messagesUpdated: number;
   readonly excludedSystemNotices: number;
+  readonly conversationsRecounted: number;
   readonly watermarkBefore: SourceWatermark | null;
   readonly watermarkAfter: SourceWatermark | null;
   /** True when the page limit stopped the run before the source was exhausted. */
@@ -218,6 +219,7 @@ export async function syncFeed(
     messagesInserted: 0,
     messagesUpdated: 0,
     excludedSystemNotices: 0,
+    conversationsRecounted: 0,
   };
   let moreAvailable = false;
 
@@ -259,6 +261,7 @@ export async function syncFeed(
         totals.conversationsUpdated += stats.conversationsUpdated;
         totals.messagesInserted += stats.messagesInserted;
         totals.messagesUpdated += stats.messagesUpdated;
+        totals.conversationsRecounted += stats.conversationsRecounted;
         if (stats.watermark !== null) watermark = stats.watermark;
       });
     }

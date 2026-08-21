@@ -88,7 +88,7 @@ describe("all five tabs are present and active", () => {
 });
 
 describe("every marketplace gets a list-left, detail-right layout", () => {
-  it("renders a sidebar and a detail pane on both branches", () => {
+  it("renders every list and both detail panes", () => {
     for (const component of [
       "InboxList",
       "ConversationView",
@@ -97,19 +97,31 @@ describe("every marketplace gets a list-left, detail-right layout", () => {
     ]) {
       expect(workspace).toContain(`<${component}`);
     }
-    // Two <aside> sidebars on the conversation branch (inbox + context) and one
-    // on the unresolved branch; neither branch may lose its list.
-    expect(workspace.match(/<aside/g) ?? []).toHaveLength(3);
+    // One layout now, not two branches: a list sidebar and a context sidebar.
+    // Both lists live in the first, so neither can be dropped without also
+    // dropping its component above.
+    expect(workspace.match(/<aside/g) ?? []).toHaveLength(2);
   });
 
-  it("gives both branches the same sidebar width", () => {
-    // Split at the feed ternary so each branch is checked on its own; the
-    // conversation branch declares the width twice (md and xl breakpoints).
-    const split = workspace.lastIndexOf(") : (");
-    expect(split).toBeGreaterThan(0);
-    for (const branch of [workspace.slice(0, split), workspace.slice(split)]) {
-      expect(branch).toContain("320px_minmax(0,1fr)");
-    }
+  /**
+   * Both lists are reachable in every marketplace.
+   *
+   * The layout used to branch on the feed, and because every marketplace is
+   * conversation-backed the unresolved branch was dead -- around 4,200 stored
+   * messages had no route to the screen. A reintroduced branch would hide them
+   * again, so the ternary is what this guards against.
+   */
+  it("does not gate either list behind a feed branch", () => {
+    expect(workspace).not.toMatch(/conversationBackeds*?/);
+    const listBlock = workspace.slice(
+      workspace.indexOf("<InboxList"),
+      workspace.indexOf("</aside>"),
+    );
+    expect(listBlock).toContain("<UnresolvedMessageList");
+  });
+
+  it("keeps one sidebar width for the list column", () => {
+    expect(workspace).toContain("320px_minmax(0,1fr)");
   });
 
   it("selects an ungrouped message without issuing a request", () => {

@@ -188,11 +188,22 @@ export const CONVERSATION_MARKETPLACES: readonly Marketplace[] = MARKETPLACE_TAB
   (marketplace) => MARKETPLACE_CAPABILITIES[marketplace].feed === "conversations",
 );
 
-/** Marketplaces served by the read-only unresolved message feed. */
-export const UNRESOLVED_FEED_MARKETPLACES: readonly Marketplace[] =
-  MARKETPLACE_TAB_ORDER.filter(
-    (marketplace) => MARKETPLACE_CAPABILITIES[marketplace].feed === "unresolved_messages",
-  );
+/**
+ * Marketplaces the read-only unresolved feed may be asked for: ALL of them.
+ *
+ * `feed` says which read model a marketplace's TAB is built around, and every
+ * marketplace is now conversation-backed — which left this list empty and the
+ * unresolved feed unreachable. That was wrong in a way that hid data: a message
+ * whose direction the source cannot decide is stored in
+ * `unresolved_marketplace_messages` and was then queryable by nothing. 1,164
+ * messages sat there, including a real German order notification, with no route
+ * that would return them.
+ *
+ * Any marketplace can produce such a message, so any marketplace may be asked
+ * for them. A marketplace with none simply returns an empty feed, which is a
+ * true answer rather than a rejected request.
+ */
+export const UNRESOLVED_FEED_MARKETPLACES: readonly Marketplace[] = MARKETPLACE_TAB_ORDER;
 
 /**
  * Resolves an untrusted marketplace name against an explicit allowlist.

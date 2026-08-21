@@ -50,13 +50,20 @@ describe("every marketplace is active", () => {
     }
   });
 
-  it("serves every marketplace from exactly one feed", () => {
-    expect([...CONVERSATION_MARKETPLACES, ...UNRESOLVED_FEED_MARKETPLACES].sort()).toEqual(
-      [...MARKETPLACE_TAB_ORDER].sort(),
-    );
-    for (const marketplace of CONVERSATION_MARKETPLACES) {
-      expect(UNRESOLVED_FEED_MARKETPLACES).not.toContain(marketplace);
-    }
+  /**
+   * Every marketplace is reachable through BOTH feeds.
+   *
+   * These were once mutually exclusive -- a marketplace belonged to one feed or
+   * the other. Because all five are conversation-backed, that left the
+   * unresolved allowlist empty and its route rejecting every request, while
+   * 1,164 stored messages sat behind it with nothing able to return them.
+   *
+   * A marketplace with no unresolved rows now answers with an empty feed, which
+   * is a true answer rather than a rejected request.
+   */
+  it("serves every marketplace from both feeds", () => {
+    expect([...CONVERSATION_MARKETPLACES].sort()).toEqual([...MARKETPLACE_TAB_ORDER].sort());
+    expect([...UNRESOLVED_FEED_MARKETPLACES].sort()).toEqual([...MARKETPLACE_TAB_ORDER].sort());
   });
 });
 
@@ -208,21 +215,22 @@ describe("conversation reference presentation", () => {
 });
 
 describe("feed allowlists", () => {
-  it("routes conversation-backed marketplaces to the conversation feed only", () => {
+  it("routes every marketplace to both feeds", () => {
     expect(CONVERSATION_MARKETPLACES).toEqual(["ebay", "amazon", "shopify", "bandq", "temu"]);
-    for (const marketplace of CONVERSATION_MARKETPLACES) {
+    for (const marketplace of MARKETPLACE_TAB_ORDER) {
       expect(parseMarketplaceForFeed(marketplace, "conversations")).toBe(marketplace);
-      expect(parseMarketplaceForFeed(marketplace, "unresolved_messages")).toBeNull();
+      expect(parseMarketplaceForFeed(marketplace, "unresolved_messages")).toBe(marketplace);
     }
   });
 
-  it("routes no marketplace to the unresolved feed, now that all five decide direction", () => {
-    // The unresolved store still holds Shopify's ambiguous remainder, but no
-    // marketplace TAB is served from it, so the feed has an empty allowlist and
-    // its route rejects every request.
-    expect(UNRESOLVED_FEED_MARKETPLACES).toEqual([]);
-    for (const marketplace of MARKETPLACE_TAB_ORDER) {
-      expect(parseMarketplaceForFeed(marketplace, "unresolved_messages")).toBeNull();
+  /**
+   * Widening the allowlist must not weaken it. An arbitrary string is still
+   * rejected for both feeds -- the list is a fixed array of literals, so
+   * nothing a caller supplies can reach a query.
+   */
+  it("still rejects an unknown marketplace on the unresolved feed", () => {
+    for (const hostile of ["", "EBAY", "ebay ", "'; DROP TABLE", "etsy"]) {
+      expect(parseMarketplaceForFeed(hostile, "unresolved_messages")).toBeNull();
     }
   });
 

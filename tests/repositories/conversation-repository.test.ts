@@ -51,19 +51,25 @@ function fake(responses: unknown[][]) {
 }
 
 describe("inbox listing", () => {
-  it("requests only reply_inbox conversations", async () => {
+  /**
+   * EVERY placement is listed by default.
+   *
+   * This used to assert the opposite -- only 'reply_inbox' -- and that filter
+   * hid 3,046 stored conversations from every view in the application. The
+   * placement is still returned on each item so the interface can label it;
+   * what it no longer does is decide what exists.
+   */
+  it("lists every conversation, whatever its inbox placement", async () => {
     const { calls, client } = fake([[conversationRow()]]);
     await listConversations(client, { marketplace: "ebay" });
-    expect(calls[0]!.values![0]).toBe("reply_inbox");
-    expect(calls[0]!.text).toContain("WHERE inbox_visibility = $1");
+    expect(calls[0]!.values![1]).toBeNull();
+    expect(calls[0]!.text).not.toContain("WHERE inbox_visibility = 'reply_inbox'");
   });
 
-  it("cannot be asked for outbound_only conversations", async () => {
+  it("can still narrow to one placement when a caller asks", async () => {
     const { calls, client } = fake([[]]);
-    // The placement is fixed by the repository; there is no parameter for it.
-    await listConversations(client, { marketplace: "ebay", limit: 5 });
-    expect(calls[0]!.values).toEqual(["reply_inbox", "ebay", 5]);
-    expect(calls[0]!.text).not.toContain("outbound_only");
+    await listConversations(client, { marketplace: "ebay", limit: 5, placement: "reply_inbox" });
+    expect(calls[0]!.values).toEqual(["ebay", "reply_inbox", 5]);
   });
 
   it("orders the inbox by latest activity first", async () => {
@@ -117,8 +123,8 @@ describe("marketplace filtering", () => {
   it("filters the inbox to the requested marketplace", async () => {
     const { calls, client } = fake([[]]);
     await listConversations(client, { marketplace: "amazon" });
-    expect(calls[0]!.text).toContain("AND marketplace = $2");
-    expect(calls[0]!.values![1]).toBe("amazon");
+    expect(calls[0]!.text).toContain("WHERE marketplace = $1");
+    expect(calls[0]!.values![0]).toBe("amazon");
   });
 
   it("keeps eBay and Amazon queries separate", async () => {
@@ -126,8 +132,8 @@ describe("marketplace filtering", () => {
     await listConversations(a.client, { marketplace: "ebay" });
     const b = fake([[]]);
     await listConversations(b.client, { marketplace: "amazon" });
-    expect(a.calls[0]!.values![1]).toBe("ebay");
-    expect(b.calls[0]!.values![1]).toBe("amazon");
+    expect(a.calls[0]!.values![0]).toBe("ebay");
+    expect(b.calls[0]!.values![0]).toBe("amazon");
   });
 
   it("parameterises the marketplace rather than interpolating it", async () => {

@@ -29,12 +29,20 @@ export const DEFAULT_INBOX_LIMIT = 100;
 /**
  * Inbox projection.
  *
- * Only `reply_inbox` conversations are returned by default. Outbound-only
- * groups have no customer message to answer, so they are not customer-reply
- * conversations — they remain stored and are simply not listed here.
+ * EVERY conversation is returned, whatever its inbox placement.
  *
- * Ordered newest-first: the inbox is a work queue, so the most recent customer
- * activity belongs at the top.
+ * This used to filter to `inbox_visibility = 'reply_inbox'`, which hid 3,046
+ * conversations: 2,073 Shopify ones classified as non-customer contact, plus
+ * 973 outbound-only groups across Shopify, Amazon and eBay. The intent was a
+ * clean work queue, and the cost was that a message could be in the database,
+ * correctly stored, and impossible for anyone to find — which is how a German
+ * order notification for a real SKU became invisible.
+ *
+ * The placement is still computed, still stored, and still returned on every
+ * item as `inboxPlacement`, so the interface can label or group by it. What it
+ * no longer does is decide what exists.
+ *
+ * Ordered newest-first: the most recent activity belongs at the top.
  */
 const LIST_CONVERSATIONS = `
 SELECT id::text                    AS id,
@@ -49,8 +57,8 @@ SELECT id::text                    AS id,
        message_count,
        inbound_count
 FROM cst_app.conversations
-WHERE inbox_visibility = $1
-  AND marketplace = $2
+WHERE marketplace = $1
+  AND ($2::text IS NULL OR inbox_visibility = $2::text)
 ORDER BY last_source_ts DESC, id DESC
 LIMIT $3`;
 
@@ -159,11 +167,20 @@ function clampLimit(limit: number | undefined): number {
  */
 export async function listConversations(
   client: Queryable,
-  options: { readonly marketplace: Marketplace; readonly limit?: number },
+  options: {
+    readonly marketplace: Marketplace;
+    readonly limit?: number;
+    /**
+     * Narrow to one placement. Omit to list everything, which is the default:
+     * hiding a stored conversation from every view is how one becomes
+     * impossible to find.
+     */
+    readonly placement?: InboxItem["inboxPlacement"] | null;
+  },
 ): Promise<InboxItem[]> {
   const { rows } = await client.query({
     text: LIST_CONVERSATIONS,
-    values: ["reply_inbox", options.marketplace, clampLimit(options.limit)],
+    values: [options.marketplace, options.placement ?? null, clampLimit(options.limit)],
   });
   return (rows as ConversationRow[]).map(toInboxItem);
 }

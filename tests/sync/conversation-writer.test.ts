@@ -153,6 +153,63 @@ describe("idempotency strategy", () => {
     );
   });
 
+  /**
+   * Counters are DERIVED, never carried.
+   *
+   * They used to be written from EXCLUDED — the count of the batch being
+   * persisted — which was right for a one-shot bootstrap and wrong the moment
+   * sync became incremental: the last page's partial count overwrote the true
+   * total, and a ten-message eBay thread was stored as three.
+   *
+   * Adding the page's count instead is the tempting fix and breaks idempotency,
+   * because a re-run of the same page would count its messages twice. So the
+   * counters are recomputed from `conversation_messages` after the messages
+   * land, which gives the same answer however many times it runs.
+   */
+  it("does not carry a page's counts onto an existing conversation", async () => {
+    const { calls, client } = recorder();
+    await persistConversations(client, {
+      marketplace: "ebay",
+      feedKey: "ebay-headers",
+      conversations: [conversation()],
+    });
+    const update = calls[0]!.text.split("DO UPDATE SET")[1]!;
+    expect(update).not.toContain("message_count");
+    expect(update).not.toContain("inbound_count");
+  });
+
+  it("recomputes the counters from the messages, after writing them", async () => {
+    const { calls, client } = recorder();
+    await persistConversations(client, {
+      marketplace: "ebay",
+      feedKey: "ebay-headers",
+      conversations: [conversation()],
+    });
+    const recount = calls.find((call) => /SET message_count/.test(call.text));
+    expect(recount, "no recount statement was issued").toBeDefined();
+    // Derived from the message table, not from anything the caller passed.
+    expect(recount!.text).toContain("FROM cst_app.conversation_messages");
+    expect(recount!.text).toContain("count(*) FILTER (WHERE direction = 'inbound')");
+    // Never a running total: that would double-count a replayed page.
+    expect(recount!.text).not.toMatch(/message_count\s*=\s*c?\.?\s*message_count\s*\+/);
+    // It must follow the message upsert, or it would read a stale table.
+    const messageIndex = calls.findIndex((call) => /INSERT INTO cst_app.conversation_messages/.test(call.text));
+    expect(calls.indexOf(recount!)).toBeGreaterThan(messageIndex);
+  });
+
+  it("leaves an already-correct conversation untouched", async () => {
+    const { calls, client } = recorder();
+    await persistConversations(client, {
+      marketplace: "ebay",
+      feedKey: "ebay-headers",
+      conversations: [conversation()],
+    });
+    const recount = calls.find((call) => /SET message_count/.test(call.text))!;
+    // The predicate is what makes a repeat sync report no work and not churn
+    // updated_at on every conversation it re-reads.
+    expect(recount.text).toContain("IS DISTINCT FROM");
+  });
+
   it("never resets workflow_state on a repeat run", async () => {
     const { calls, client } = recorder();
     await persistConversations(client, {
@@ -252,7 +309,10 @@ describe("watermark", () => {
       feedKey: "ebay-headers",
       conversations: [conversation()],
     });
-    const sql = calls[2]!.text;
+    // Found by content, not by position. Indexing into `calls` broke the
+    // moment a statement was added ahead of this one, and the test then failed
+    // for a reason that had nothing to do with the watermark.
+    const sql = calls.find((call) => /INSERT INTO cst_app.sync_state/.test(call.text))!.text;
     expect(sql).toContain("ON CONFLICT (marketplace, feed_key) DO UPDATE");
     expect(sql).toMatch(/CASE\s+WHEN/);
     expect(sql).toContain("-infinity");

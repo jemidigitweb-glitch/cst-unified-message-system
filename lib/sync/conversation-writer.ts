@@ -26,6 +26,8 @@ export type PersistStats = {
   readonly conversationsUpdated: number;
   readonly messagesInserted: number;
   readonly messagesUpdated: number;
+  /** Conversations whose counters this batch corrected. Zero on a repeat run. */
+  readonly conversationsRecounted: number;
   readonly watermark: SourceWatermark | null;
 };
 
@@ -55,13 +57,55 @@ SELECT * FROM unnest(
 ON CONFLICT (threading_rule_version, thread_key) DO UPDATE SET
   first_source_ts     = LEAST(conversations.first_source_ts, EXCLUDED.first_source_ts),
   last_source_ts      = GREATEST(conversations.last_source_ts, EXCLUDED.last_source_ts),
-  message_count       = EXCLUDED.message_count,
-  inbound_count       = EXCLUDED.inbound_count,
   needs_context       = EXCLUDED.needs_context,
   inbox_visibility    = EXCLUDED.inbox_visibility,
   inbox_filter_reason = EXCLUDED.inbox_filter_reason,
   updated_at          = now()
 RETURNING id, threading_rule_version, thread_key, (xmax = 0) AS inserted`;
+
+/**
+ * Recomputes the conversation counters from the messages themselves.
+ *
+ * THE BUG THIS FIXES. `message_count` and `inbound_count` used to be written
+ * from EXCLUDED — the counts of the batch being persisted. That was right for a
+ * one-shot bootstrap, where every message of a conversation arrived together,
+ * and wrong the moment sync became incremental: each page carries only its own
+ * messages, so the last page's partial count overwrote the true total. One
+ * ten-message eBay thread was stored as three, with one inbound of five.
+ *
+ * ADDING THE PAGE'S COUNT INSTEAD WOULD BE WORSE. It reads as the obvious fix
+ * and it breaks idempotency: re-running the same page — which the writer must
+ * tolerate, since that is what its unique constraints are for — would count
+ * those messages twice and keep climbing on every re-run.
+ *
+ * So the count is not tracked at all; it is DERIVED. `conversation_messages` is
+ * the authority, this reads it, and the answer is the same however many times
+ * it runs and in whatever order the pages arrived.
+ *
+ * Runs AFTER the messages are upserted, inside the same transaction, so the
+ * counters can never describe a set of rows that failed to land. Scoped to the
+ * conversations in this batch rather than the whole table.
+ *
+ * The final predicate skips rows that are already right, so a repeat sync
+ * reports no work and does not churn `updated_at`.
+ */
+const RECOUNT_CONVERSATIONS = `
+UPDATE cst_app.conversations c
+SET message_count = t.total,
+    inbound_count = t.inbound,
+    updated_at    = now()
+FROM (
+  SELECT conversation_id,
+         count(*)::int                                        AS total,
+         count(*) FILTER (WHERE direction = 'inbound')::int    AS inbound
+  FROM cst_app.conversation_messages
+  WHERE conversation_id = ANY($1::bigint[])
+  GROUP BY conversation_id
+) AS t
+WHERE c.id = t.conversation_id
+  AND (c.message_count IS DISTINCT FROM t.total
+    OR c.inbound_count IS DISTINCT FROM t.inbound)
+RETURNING c.id`;
 
 /**
  * Messages upsert.
@@ -164,6 +208,7 @@ export async function persistConversations(
       conversationsUpdated: 0,
       messagesInserted: 0,
       messagesUpdated: 0,
+      conversationsRecounted: 0,
       watermark: null,
     };
   }
@@ -235,6 +280,19 @@ export async function persistConversations(
     }
   }
 
+  /**
+   * Counters last, from the messages that just landed.
+   *
+   * Order matters: this reads `conversation_messages`, so it has to follow the
+   * message upsert. Inside the same transaction, so a rollback takes the
+   * counters with the rows they describe.
+   */
+  const recounted = await client.query({
+    text: RECOUNT_CONVERSATIONS,
+    values: [[...idByKey.values()]],
+  });
+  const conversationsRecounted = recounted.rows.length;
+
   const watermark = highestWatermark(conversations);
   if (watermark !== null) {
     await client.query({
@@ -248,6 +306,7 @@ export async function persistConversations(
     conversationsUpdated: conversations.length - conversationsInserted,
     messagesInserted,
     messagesUpdated: flat.length - messagesInserted,
+    conversationsRecounted,
     watermark,
   };
 }

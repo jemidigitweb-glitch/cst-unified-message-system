@@ -220,8 +220,14 @@ describe("gemini key confinement", () => {
       .filter((line) => /\.(ts|tsx)$/.test(line));
 
     // A second reader is a second place the key can escape. Config is the one
-    // door; this test file references the names only to set them for a case.
-    const allowed = new Set(["lib/config/env.ts", "tests/ai/gemini-config.test.ts"]);
+    // door. The two test files below reference the names only to SET them for
+    // a case — they never read a real key, and both delete the variables again
+    // in an afterEach. Application code has no such exemption.
+    const allowed = new Set([
+      "lib/config/env.ts",
+      "tests/ai/gemini-config.test.ts",
+      "tests/ai/provider-selection.test.ts",
+    ]);
     const offenders = tracked.filter((relative) => {
       if (allowed.has(relative)) return false;
       try {
