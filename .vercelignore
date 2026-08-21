@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# What must NOT be uploaded to Vercel.
+#
+# WHY THIS FILE EXISTS. `.gitignore` governs git; it does NOT govern what the
+# Vercel CLI uploads. Without this file the first deployment shipped `.env` —
+# real source and application database passwords, and the Gemini key — into the
+# deployment bundle, where they are outside secret management and cannot be
+# rotated from the dashboard. Nothing in `.gitignore` prevented it, because
+# nothing in `.gitignore` was being consulted.
+#
+# Environment variables belong in Project Settings -> Environment Variables.
+# ---------------------------------------------------------------------------
+
+# --- Secrets. Never upload. -------------------------------------------------
+.env
+.env.*
+!.env.example
+*.env
+
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# --- CST rule documents -----------------------------------------------------
+# Both casings: the folder is `knowledge-source` on a case-insensitive Windows
+# disk and matching is case-sensitive elsewhere, so one pattern is not enough.
+#
+# NOTE: excluding these means draft generation on Vercel has no rules and will
+# state no policy. That is the SAFE default, not the finished answer — one of
+# these workbooks ("B2B customers.xlsx") carries customer contact data and must
+# never be deployed. Shipping the twelve rule workbooks without it, or loading
+# them from storage, is a decision still to be made.
+/Knowledge-source/
+/knowledge-source/
+
+# --- Not needed at runtime --------------------------------------------------
+# Keeps the serverless bundle down; the build already warns that dynamic
+# filesystem access causes the whole project to be traced into it.
+/tests/
+/scripts/
+/migrations/
+/.claude/
+
+# --- Local artefacts --------------------------------------------------------
+*.tsbuildinfo
+/coverage/
+/.next/
+/node_modules/
+.DS_Store
+Thumbs.db

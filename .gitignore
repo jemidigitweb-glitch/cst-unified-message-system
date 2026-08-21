@@ -59,4 +59,12 @@ Thumbs.db
 # CST rule source documents. The business owns these; the repo holds their
 # extracted rules in cst_app, not the documents themselves. "B2B customers.xlsx"
 # also carries customer contact data, which must never be committed.
+#
+# BOTH CASINGS, deliberately. The folder is `knowledge-source` on disk and this
+# pattern said `Knowledge-source`; it matched only because Windows compares
+# paths case-insensitively. On a case-sensitive checkout the customer workbook
+# would have been committed. A one-line pattern is not worth that risk.
 /Knowledge-source/
+/knowledge-source/
+
+.vercel
