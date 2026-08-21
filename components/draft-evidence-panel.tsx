@@ -139,6 +139,10 @@ export function DraftEvidencePanel({ conversationId }: { conversationId: string 
         sourceRow: rule.sourceRow,
       })),
       unresolvedReferences: data.evidence!.unresolved,
+      // Stated explicitly rather than left as an empty array to interpret. A
+      // draft that matched no rule is the one most worth exporting, and the
+      // export should say so in as many words.
+      noRulesMatched: cited.length === 0,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -183,11 +187,17 @@ export function DraftEvidencePanel({ conversationId }: { conversationId: string 
         </section>
       )}
 
-      {cited.length > 0 && (
-        <section>
-          <p className="mb-1.5 text-[11px] font-medium tracking-wide uppercase opacity-55">
-            Matched CST rules
+      <section>
+        <p className="mb-1.5 text-[11px] font-medium tracking-wide uppercase opacity-55">
+          Matched CST rules
+        </p>
+        {cited.length === 0 ? (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            No CST rule matched this draft. Export it and check the reply against the
+            documents before use.
           </p>
+        ) : (
+          <>
           <ul className="flex flex-col gap-2 text-xs">
             {cited.map((rule) => {
               const condition = conditionOf(rule);
@@ -208,15 +218,19 @@ export function DraftEvidencePanel({ conversationId }: { conversationId: string 
             })}
           </ul>
 
-          <button
-            type="button"
-            onClick={exportRules}
-            className="mt-3 rounded-full border border-black/15 px-3 py-1.5 text-xs font-medium transition-colors hover:border-emerald-600/40 hover:bg-emerald-600/[0.10] dark:border-white/20"
-          >
-            Export rules (JSON)
-          </button>
-        </section>
-      )}
+          </>
+        )}
+
+        {/* Outside the conditional above: an unmatched draft is precisely the
+            one a reviewer needs to export for someone else to look at. */}
+        <button
+          type="button"
+          onClick={exportRules}
+          className="mt-3 rounded-full border border-black/15 px-3 py-1.5 text-xs font-medium transition-colors hover:border-emerald-600/40 hover:bg-emerald-600/[0.10] dark:border-white/20"
+        >
+          {cited.length === 0 ? "Export conversation (JSON)" : "Export rules (JSON)"}
+        </button>
+      </section>
     </div>
   );
 }
