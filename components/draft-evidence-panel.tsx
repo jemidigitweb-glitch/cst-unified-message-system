@@ -67,18 +67,23 @@ const number = (value: number | null) =>
  * such as "Customer claims wrong colour received". That is genuine retrieved
  * evidence, and it is what a person would point at when asked why it matched.
  */
+const LABEL = /^(KEY RULE \/ ACTION|KEY RULE|ACTION|DO NOT|DO|NEVER SAY|SAY INSTEAD):\s*/i;
+
 function conditionOf(rule: RuleEvidence): string | null {
-  const lines = rule.text
+  const title = rule.displayTitle.trim().toLowerCase();
+
+  const candidate = rule.text
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
-  const condition = lines.find((line) => line !== rule.displayTitle);
-  if (condition === undefined) return null;
-  const cleaned = condition.replace(
-    /^(KEY RULE \/ ACTION|KEY RULE|ACTION|DO NOT|DO|NEVER SAY|SAY INSTEAD):\s*/i,
-    "",
-  );
-  return cleaned.length > 150 ? `${cleaned.slice(0, 147)}…` : cleaned;
+    .map((line) => line.trim().replace(LABEL, "").trim())
+    // Compared AFTER the label is stripped. Comparing before let
+    // "KEY RULE: Always communicate through eBay..." through as different from
+    // the title, and stripping then made the two identical — so the panel
+    // printed the same sentence twice, once as the rule and once as the reason
+    // it matched. A reason that restates the title is not a reason.
+    .find((line) => line !== "" && line.toLowerCase() !== title);
+
+  if (candidate === undefined) return null;
+  return candidate.length > 150 ? `${candidate.slice(0, 147)}…` : candidate;
 }
 
 export function DraftEvidencePanel({ conversationId }: { conversationId: string }) {
@@ -228,7 +233,7 @@ export function DraftEvidencePanel({ conversationId }: { conversationId: string 
           onClick={exportRules}
           className="mt-3 rounded-full border border-black/15 px-3 py-1.5 text-xs font-medium transition-colors hover:border-emerald-600/40 hover:bg-emerald-600/[0.10] dark:border-white/20"
         >
-          {cited.length === 0 ? "Export conversation (JSON)" : "Export rules (JSON)"}
+          Export conversation (JSON)
         </button>
       </section>
     </div>
