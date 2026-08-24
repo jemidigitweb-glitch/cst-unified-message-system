@@ -55,7 +55,8 @@ $ErrorActionPreference = 'Stop'
 
 $TaskName = 'CST Message Sync'
 $root = Split-Path -Parent $PSScriptRoot
-$wrapper = Join-Path $PSScriptRoot 'run-message-sync.ps1'
+$wrapper = Join-Path $PSScriptRoot 'run-message-sync.mjs'
+$hiddenLauncher = Join-Path $PSScriptRoot 'run-message-sync-hidden.vbs'
 
 if ($Remove) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -68,14 +69,21 @@ if ($Remove) {
 }
 
 if (-not (Test-Path $wrapper)) { throw "Wrapper not found: $wrapper" }
+if (-not (Test-Path $hiddenLauncher)) { throw "Hidden launcher not found: $hiddenLauncher" }
 
-# -WindowStyle Hidden: no console window flashes on screen when the trigger
-# fires. Purely cosmetic -- NonInteractive already meant nothing could be
-# typed into it -- but a window popping up every few minutes reads as
-# something going wrong, so it is suppressed.
+# PowerShell registers the task -- a one-time setup command -- but nothing
+# PowerShell-based runs on every tick, and no window of any kind appears on
+# any tick either. node.exe run directly still flashes its own console even
+# once its children are hidden, so the action is wscript.exe (Windows' own
+# script host, present on every machine) running a two-line .vbs that starts
+# node.exe with a hidden window style. No CLI window, ever -- not PowerShell,
+# not cmd, not a node console.
+$node = (Get-Command node -ErrorAction SilentlyContinue).Source
+if (-not $node) { throw "node.exe not found on PATH -- cannot register the task." }
+
 $action = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
-    -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapper`"" `
+    -Execute 'wscript.exe' `
+    -Argument "//B //Nologo `"$hiddenLauncher`" `"$node`"" `
     -WorkingDirectory $root
 
 # Repeats indefinitely from a minute after registration.

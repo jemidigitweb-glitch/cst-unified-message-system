@@ -14,7 +14,7 @@
     "knowledge:sync": "node scripts/sync-knowledge-vector-store.mjs",
     "backfill:attachments": "node scripts/backfill-attachments.mjs",
     "sync:messages": "node --import ./scripts/register-hooks.mjs scripts/sync-messages.mjs",
-    "sync:auto": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-message-sync.ps1",
+    "sync:auto": "node scripts/run-message-sync.mjs",
     "sync:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-message-sync.ps1"
   },
   "dependencies": {
