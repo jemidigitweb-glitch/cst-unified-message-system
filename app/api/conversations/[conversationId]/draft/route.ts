@@ -8,10 +8,19 @@ import {
 } from "@/lib/ai/provider";
 import { getAppPool } from "@/lib/db/pools";
 import type { VerifiedFact } from "@/lib/domain/draft";
+import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
+import { NO_APPLICABLE_RULE_CODE, coverageFor } from "@/lib/knowledge/rule-coverage";
+import { classifyCaseType } from "@/lib/knowledge/case-type";
 import { getDraft, isDraftStoreMissing } from "@/lib/repositories/draft-repository";
 import { getConversation, parseConversationId } from "@/lib/repositories/conversation-repository";
 import { recordUsage } from "@/lib/sync/ai-usage-writer";
 import type { Writable as UsageWritable } from "@/lib/sync/ai-usage-writer";
+import {
+  clearRuleAnalysis,
+  readRuleAnalysis,
+  recordNoApplicableRule,
+} from "@/lib/sync/rule-analysis-writer";
+import type { Writable as AnalysisWritable } from "@/lib/sync/rule-analysis-writer";
 import { advanceWorkflowState, saveRevision } from "@/lib/sync/draft-writer";
 import type { Writable } from "@/lib/sync/draft-writer";
 
@@ -55,11 +64,24 @@ export async function GET(
   }
 
   try {
-    const draft = await getDraft(getAppPool(), id);
-    return NextResponse.json({ conversationId: id, draft });
+    const pool = getAppPool();
+    const draft = await getDraft(pool, id);
+    /**
+     * The stored no-rule finding travels with the draft read.
+     *
+     * Without it, reopening a refused conversation looks identical to one
+     * nobody has tried: no draft, an inviting Generate button, and the same
+     * refusal waiting behind it. The finding is a fact about the conversation,
+     * so it outlives the page that produced it.
+     *
+     * Null once a grounded draft exists — the save clears it in the same
+     * transaction, so the two states cannot both be true.
+     */
+    const ruleAnalysis = await readRuleAnalysis(pool as unknown as AnalysisWritable, id);
+    return NextResponse.json({ conversationId: id, draft, ruleAnalysis });
   } catch (cause) {
     if (isDraftStoreMissing(cause)) {
-      return NextResponse.json({ conversationId: id, draft: null, storeReady: false });
+      return NextResponse.json({ conversationId: id, draft: null, ruleAnalysis: null, storeReady: false });
     }
     console.error("[draft] read failed", cause);
     return NextResponse.json({ error: "Unable to load the draft" }, { status: 500 });
@@ -151,6 +173,45 @@ export async function POST(
       }
     }
 
+    /**
+     * GATE ONE — BEFORE THE MODEL CALL.
+     *
+     * With no approved corpus for this marketplace there is nothing to ground a
+     * reply in, and whatever the model returned would be written from general
+     * knowledge of retail. That is the exact failure the grounding design
+     * exists to prevent, so the call does not happen: no request, no revision,
+     * no draft. The interface shows the no-rule state and offers the export.
+     *
+     * This deliberately does NOT decide which rules are relevant. Choosing a
+     * subset before the model reads anything is the rule-selection layer this
+     * project removed on purpose. It asks only whether there is anything to
+     * retrieve from.
+     */
+    const { knowledge } = loadRulesForConversation(detail.conversation.marketplace);
+    const coverage = coverageFor(knowledge);
+    if (!coverage.covered) {
+      console.info(`[draft] refused for ${id}: ${coverage.reason}`);
+      // Written down, so reopening the conversation shows the finding instead
+      // of an untried Generate button that would buy the same refusal again.
+      // Upserted on one row per conversation, so revisiting cannot accumulate.
+      const caseType = classifyCaseType(detail.messages);
+      await recordNoApplicableRule(pool as unknown as AnalysisWritable, {
+        conversationId: id,
+        caseType: caseType.label,
+        rulesAvailable: coverage.rulesAvailable,
+      });
+      return NextResponse.json(
+        {
+          error: coverage.reason,
+          code: NO_APPLICABLE_RULE_CODE,
+          conversationId: id,
+          caseType: caseType.label,
+          ruleCoverage: { covered: false, rulesAvailable: coverage.rulesAvailable },
+        },
+        { status: 409 },
+      );
+    }
+
     // HOW the CST knowledge reaches the model is the provider's business, not
     // this handler's. OpenAI retrieves it from a vector store per conversation;
     // Gemini is handed the rendered corpus. Both are asked for the same
@@ -165,6 +226,23 @@ export async function POST(
       listingItemRef: detail.conversation.listingItemRef,
     });
 
+    /*
+     * THERE IS DELIBERATELY NO SECOND GATE HERE, and the reason is worth
+     * recording because a version of this code had one and it was wrong.
+     *
+     * It discarded any draft whose citations did not resolve against the local
+     * corpus. That made CITATION RESOLUTION the definition of rule
+     * applicability, and the two are not the same thing. Measured on the live
+     * data: a conversation with all 1,329 marketplace-scoped rules available
+     * was refused because the model's references, on that one run, did not
+     * resolve — the rules applied, the bookkeeping was off, and the reviewer
+     * was told the knowledge base had nothing for them.
+     *
+     * Applicability is decided by the retrieval logic above, once, before the
+     * call. A stale ref, a legacy-format ref or one the documents no longer
+     * contain is an AUDIT finding about a citation. It is reported by the
+     * evidence endpoint and it never suppresses a draft.
+     */
     const connection = await pool.connect();
     try {
       await connection.query("BEGIN");
@@ -179,6 +257,10 @@ export async function POST(
         providerResponseId: null,
       });
       await advanceWorkflowState(connection as unknown as Writable, id, "drafting");
+      // In the SAME transaction as the draft. A grounded draft and a stored
+      // "no rule available" are the contradiction this whole mechanism exists
+      // to remove, so they must never both be true, not even between commits.
+      await clearRuleAnalysis(connection as unknown as AnalysisWritable, id);
       await connection.query("COMMIT");
 
       // AFTER the commit, and never inside it. An accounting row is not worth

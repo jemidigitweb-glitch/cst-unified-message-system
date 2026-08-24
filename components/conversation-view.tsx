@@ -35,11 +35,14 @@ export function ConversationView({
   error,
   loading,
   capability,
+  onDraftGenerated,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
   loading: boolean;
   capability: MarketplaceCapability;
+  /** Passed through to the draft panel so the sidebar can refresh itself. */
+  onDraftGenerated?: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   // Held locally so the draft panel's transitions show immediately; re-seeded
@@ -189,9 +192,10 @@ export function ConversationView({
 
       <DraftPanel
         conversationId={conversation.id}
-        messages={messages}
+        detail={detail}
         workflowState={workflowState}
         onWorkflowChange={setWorkflowState}
+        onGenerated={onDraftGenerated}
       />
 
       <div className="shrink-0 border-t border-black/10 px-5 py-3 text-xs opacity-55 dark:border-white/15">

@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { DraftSource } from "@/lib/domain/draft";
 import { workflowLabel } from "@/lib/domain/inbox";
-import type { ConversationMessageView } from "@/lib/domain/inbox";
+import type { ConversationDetail } from "@/lib/domain/inbox";
 import type { WorkflowState } from "@/lib/domain/workflow";
 
+import { ConversationExportButton } from "./conversation-export-button";
 import { NoRuleFlag } from "./no-rule-flag";
 
 /**
@@ -78,6 +79,15 @@ type DraftRevision = {
 
 type DraftPayload = {
   draft: { currentRevision: number; revisions: DraftRevision[] } | null;
+  /**
+   * The stored finding that the rule base could not ground a reply here.
+   *
+   * Read back with the draft so a refused conversation reads the same on reopen
+   * as it did when it was refused. Without it, "we will not draft this" and
+   * "nobody has tried yet" look identical, and the obvious next move is to
+   * click Generate and buy the same refusal again.
+   */
+  ruleAnalysis?: { outcome: string; case_type: string | null } | null;
   storeReady?: boolean;
 };
 
@@ -132,15 +142,30 @@ function GeneratingIndicator({ step }: { step: number }) {
 
 export function DraftPanel({
   conversationId,
-  messages,
+  detail,
   workflowState,
   onWorkflowChange,
+  onGenerated,
 }: {
   conversationId: string;
-  /** The thread, read only to name the case type on an ungrounded draft. */
-  messages: readonly ConversationMessageView[];
+  /**
+   * The loaded thread.
+   *
+   * Read for two things only: naming the case type on a refused conversation,
+   * and writing the export file. Neither needs a request of its own, because
+   * the view above already holds this.
+   */
+  detail: ConversationDetail;
   workflowState: WorkflowState;
   onWorkflowChange: (state: WorkflowState) => void;
+  /**
+   * Fired after a draft is generated AND saved.
+   *
+   * The sidebar's usage figures and rule list describe the revision that just
+   * landed, so it is told from this same successful flow — a reviewer should
+   * never have to reload to see what the draft they are looking at cost.
+   */
+  onGenerated?: () => void;
 }) {
   const [revisions, setRevisions] = useState<DraftRevision[] | null>(null);
   const [bodyText, setBodyText] = useState("");
@@ -151,6 +176,13 @@ export function DraftPanel({
   const [error, setError] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidencePayload | null>(null);
   const [evidenceBusy, setEvidenceBusy] = useState(false);
+  /**
+   * Set when the server REFUSED to generate: no approved rule could ground a
+   * reply, so it wrote none. Held here rather than derived from the absence of
+   * a draft, because "never generated" and "refused" are different states and
+   * only the second one has something to say.
+   */
+  const [noApplicableRule, setNoApplicableRule] = useState(false);
 
   /**
    * Reads the stored draft.
@@ -170,6 +202,7 @@ export function DraftPanel({
         if (signal?.aborted) return;
         const list = data.draft?.revisions ?? [];
         setRevisions(list);
+        setNoApplicableRule(data.ruleAnalysis?.outcome === "no_applicable_rule");
         setBodyText(list[0]?.bodyText ?? "");
         setDirty(false);
         setEditing(false);
@@ -340,12 +373,32 @@ export function DraftPanel({
           `/api/conversations/${conversationId}/draft${force ? "?force=1" : ""}`,
           { method: "POST" },
         );
+        /**
+         * REFUSED, not failed.
+         *
+         * 409 `no_applicable_rule` means the rule base cannot ground a reply
+         * for this conversation, so the server wrote no draft — by design. It
+         * is a finished, actionable state rather than an error to retry, so it
+         * raises the flag instead of the red error line, and `load()` is
+         * skipped because there is nothing new to load.
+         */
+        if (response.status === 409) {
+          const body = (await response.json().catch(() => ({}))) as { code?: string };
+          if (body.code === "no_applicable_rule") {
+            setNoApplicableRule(true);
+            return;
+          }
+        }
         if (!response.ok) {
           setError(await failureFrom(response, "The draft could not be written just now."));
           return;
         }
+        setNoApplicableRule(false);
         await load();
         onWorkflowChange("drafting");
+        // The sidebar's usage and rules describe the revision that just landed.
+        // Told now, from this same successful flow, so neither needs a refresh.
+        onGenerated?.();
       } catch {
         setError("The draft service could not be reached.");
       } finally {
@@ -353,7 +406,7 @@ export function DraftPanel({
         setBusy(null);
       }
     },
-    [conversationId, load, onWorkflowChange],
+    [conversationId, load, onGenerated, onWorkflowChange],
   );
 
   const save = useCallback(async () => {
@@ -432,6 +485,24 @@ export function DraftPanel({
         <p className="text-sm opacity-60">Loading…</p>
       ) : generating ? (
         <GeneratingIndicator step={step} />
+      ) : noApplicableRule ? (
+        /*
+         * REFUSED. The server found nothing in the current approved knowledge
+         * that could ground a reply, so it wrote none — and there is therefore
+         * no draft here to read, no revision number, and no Generate button
+         * offering to try the same thing again.
+         *
+         * This branch sits ABOVE the empty state on purpose. "Nothing drafted
+         * yet" and "we will not draft this" look the same from the absence of a
+         * draft, and only the second has something to tell the reviewer.
+         */
+        <NoRuleFlag messages={detail.messages}>
+          {/* The export lives INSIDE the flag, because it is the one action
+              this state offers: the file is what the team reads to write the
+              rule that was missing. Available on reopen too, since the flag
+              itself is restored from storage. */}
+          <ConversationExportButton detail={detail} />
+        </NoRuleFlag>
       ) : current === null ? (
         /* Nothing drafted yet: one button, and nothing else to weigh up. */
         <div
@@ -530,7 +601,7 @@ export function DraftPanel({
                * the two cannot say different things.
                */
               <div data-testid="not-rule-based">
-                <NoRuleFlag messages={messages} />
+                <NoRuleFlag messages={detail.messages} />
               </div>
             ) : (
               <div data-testid="rule-evidence" className="flex flex-col gap-1.5 text-xs">
@@ -568,17 +639,18 @@ export function DraftPanel({
                 ))}
 
                 {/*
-                 * A cited rule the documents no longer contain is an audit
-                 * finding, not a glitch — kept visible for the same reason the
-                 * rest of this block is.
+                 * The "N cited rules no longer exist in the current documents"
+                 * line used to sit here, and has been removed from the screen
+                 * by request — deliberately with nothing in its place.
+                 *
+                 * THE VALIDATION BEHIND IT IS UNCHANGED. An unresolvable
+                 * citation is still separated from a resolvable one, still
+                 * excluded from the rules shown here, and still returned by the
+                 * evidence endpoint for an audit. It now also blocks
+                 * generation: a draft grounded only in citations that no longer
+                 * resolve is not saved at all, so the state this sentence
+                 * warned about can no longer reach a reviewer.
                  */}
-                {(evidence?.evidence?.unresolved.length ?? 0) > 0 && (
-                  <p className="text-amber-700 dark:text-amber-300">
-                    {evidence!.evidence!.unresolved.length} cited rule
-                    {evidence!.evidence!.unresolved.length === 1 ? "" : "s"} no longer exist in the
-                    current documents.
-                  </p>
-                )}
 
                 {/*
                  * Older drafts cite refs from before the reference format

@@ -64,6 +64,20 @@ export function Workspace() {
   const [feedError, setFeedError] = useState<string | null>(null);
   /** Which top-level view is on screen. "status" replaces the inbox entirely. */
   const [view, setView] = useState<"inbox" | "status">("inbox");
+  /**
+   * Bumped when a draft is generated.
+   *
+   * Part of the evidence panel's `key`, so a successful generation remounts it
+   * and it re-reads its own endpoint. The usage figures and the rule list both
+   * describe the revision that just landed, and a reviewer should never have to
+   * reload the page to see what the draft in front of them cost.
+   *
+   * A counter rather than a prop carrying the payload: the panel already owns
+   * that request and knows how to render every one of its states, and threading
+   * a second copy of the same data through three components would give the two
+   * paths room to disagree.
+   */
+  const [draftGeneration, setDraftGeneration] = useState(0);
 
   const capability = capabilityOf(marketplace);
 
@@ -259,6 +273,7 @@ export function Workspace() {
               error={detailError}
               loading={loadingDetail}
               capability={capability}
+              onDraftGenerated={() => setDraftGeneration((n) => n + 1)}
             />
           )}
         </main>
@@ -278,7 +293,7 @@ export function Workspace() {
                   model's. Renders nothing when there is no draft. */}
               {detail !== null && (
                 <DraftEvidencePanel
-                  key={detail.conversation.id}
+                  key={`${detail.conversation.id}:${draftGeneration}`}
                   conversationId={detail.conversation.id}
                   // The loaded thread. The panel needs it for the no-rule
                   // export, and using it avoids a second request for a
