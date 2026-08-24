@@ -42,11 +42,14 @@
 
 param(
     [switch]$Remove,
-    # Minutes between runs. 30 by default; anything from 5 upward is sane.
+    # Minutes between runs. 30 by default. IgnoreNew below means a run slower
+    # than the interval just skips its next slot rather than overlapping, so a
+    # short interval is safe -- it costs one cheap incremental query per feed
+    # on a quiet cycle, not a growing pile of concurrent runs.
     [int]$IntervalMinutes = 30
 )
 
-if ($IntervalMinutes -lt 5) { throw "IntervalMinutes must be at least 5." }
+if ($IntervalMinutes -lt 1) { throw "IntervalMinutes must be at least 1." }
 
 $ErrorActionPreference = 'Stop'
 
@@ -66,9 +69,13 @@ if ($Remove) {
 
 if (-not (Test-Path $wrapper)) { throw "Wrapper not found: $wrapper" }
 
+# -WindowStyle Hidden: no console window flashes on screen when the trigger
+# fires. Purely cosmetic -- NonInteractive already meant nothing could be
+# typed into it -- but a window popping up every few minutes reads as
+# something going wrong, so it is suppressed.
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
-    -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$wrapper`"" `
+    -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapper`"" `
     -WorkingDirectory $root
 
 # Repeats indefinitely from a minute after registration.
