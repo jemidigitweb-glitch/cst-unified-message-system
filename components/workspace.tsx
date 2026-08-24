@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import type { ConversationDetail, InboxItem } from "@/lib/domain/inbox";
+import type { ConversationDetail, InboxItem, ReadState } from "@/lib/domain/inbox";
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import type { UnresolvedFeed } from "@/lib/domain/unresolved-messages";
@@ -48,6 +48,15 @@ export function Workspace() {
   const [marketplace, setMarketplace] = useState<Marketplace>("ebay");
   const [inbox, setInbox] = useState<InboxItem[] | null>(null);
   const [inboxError, setInboxError] = useState<string | null>(null);
+  /**
+   * Read/Unread sub-tab, local to whichever marketplace tab is on screen.
+   *
+   * Reset on every marketplace switch alongside the rest of the per-marketplace
+   * state below, so eBay's filter choice never leaks into Amazon's view.
+   * Starts on "unread" — the customer messages nobody has replied to yet are
+   * the ones worth triaging first.
+   */
+  const [readFilter, setReadFilter] = useState<ReadState>("unread");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /**
    * Which list the selection came from.
@@ -134,6 +143,7 @@ export function Workspace() {
     // messages can be on screen even for a frame.
     setInbox(null);
     setInboxError(null);
+    setReadFilter("unread");
     setSelectedId(null);
     setSelectedKind(null);
     setDetail(null);
@@ -233,6 +243,8 @@ export function Workspace() {
             selectedId={selectedKind === "conversation" ? selectedId : null}
             onSelect={(id) => void select(id)}
             capability={capability}
+            readFilter={readFilter}
+            onReadFilterChange={setReadFilter}
           />
 
           {/*

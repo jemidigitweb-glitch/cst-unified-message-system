@@ -9,6 +9,8 @@ import {
   formatSourceTimestamp,
   messageSide,
   previewOf,
+  readStateLabel,
+  readStateOf,
 } from "@/lib/domain/inbox";
 
 function view(overrides: Partial<ConversationMessageView> = {}): ConversationMessageView {
@@ -95,6 +97,25 @@ describe("inbox preview", () => {
 
   it("handles a conversation with no messages", () => {
     expect(previewOf(null)).toBe("No messages");
+  });
+});
+
+describe("read state", () => {
+  it("is read when the last message is a CST/marketplace outbound reply", () => {
+    expect(readStateOf({ lastDirection: "outbound" })).toBe("read");
+  });
+
+  it("is unread when the last message is from the customer", () => {
+    expect(readStateOf({ lastDirection: "inbound" })).toBe("unread");
+  });
+
+  it("is unread when no message has landed yet, rather than assuming read", () => {
+    expect(readStateOf({ lastDirection: null })).toBe("unread");
+  });
+
+  it("labels each state in plain English", () => {
+    expect(readStateLabel("read")).toBe("Read");
+    expect(readStateLabel("unread")).toBe("Unread");
   });
 });
 

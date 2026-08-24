@@ -44,40 +44,56 @@ export const DEFAULT_INBOX_LIMIT = 100;
  *
  * Ordered newest-first: the most recent activity belongs at the top.
  */
+/**
+ * Direction of the thread's most recent message, by the same (source_ts,
+ * source_pk) ordering `GET_MESSAGES` below uses — a correlated subquery
+ * rather than a stored column, so it can never drift from the messages it
+ * describes. Null only for a conversation with no messages landed yet.
+ */
+const LAST_DIRECTION = `(
+  SELECT cm.direction
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id
+  ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+  LIMIT 1
+)`;
+
 const LIST_CONVERSATIONS = `
-SELECT id::text                    AS id,
-       marketplace,
-       sub_source_id,
-       counterparty_ref,
-       listing_item_ref,
-       workflow_state,
-       needs_context,
-       inbox_visibility,
-       first_source_ts::text       AS first_source_ts,
-       last_source_ts::text        AS last_source_ts,
-       message_count,
-       inbound_count
-FROM cst_app.conversations
-WHERE marketplace = $1
-  AND ($2::text IS NULL OR inbox_visibility = $2::text)
-ORDER BY last_source_ts DESC, id DESC
+SELECT c.id::text                  AS id,
+       c.marketplace,
+       c.sub_source_id,
+       c.counterparty_ref,
+       c.listing_item_ref,
+       c.workflow_state,
+       c.needs_context,
+       c.inbox_visibility,
+       c.first_source_ts::text     AS first_source_ts,
+       c.last_source_ts::text      AS last_source_ts,
+       c.message_count,
+       c.inbound_count,
+       ${LAST_DIRECTION}           AS last_direction
+FROM cst_app.conversations c
+WHERE c.marketplace = $1
+  AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
+ORDER BY c.last_source_ts DESC, c.id DESC
 LIMIT $3`;
 
 const GET_CONVERSATION = `
-SELECT id::text                    AS id,
-       marketplace,
-       sub_source_id,
-       counterparty_ref,
-       listing_item_ref,
-       workflow_state,
-       needs_context,
-       inbox_visibility,
-       first_source_ts::text       AS first_source_ts,
-       last_source_ts::text        AS last_source_ts,
-       message_count,
-       inbound_count
-FROM cst_app.conversations
-WHERE id = $1::bigint`;
+SELECT c.id::text                  AS id,
+       c.marketplace,
+       c.sub_source_id,
+       c.counterparty_ref,
+       c.listing_item_ref,
+       c.workflow_state,
+       c.needs_context,
+       c.inbox_visibility,
+       c.first_source_ts::text     AS first_source_ts,
+       c.last_source_ts::text      AS last_source_ts,
+       c.message_count,
+       c.inbound_count,
+       ${LAST_DIRECTION}           AS last_direction
+FROM cst_app.conversations c
+WHERE c.id = $1::bigint`;
 
 /**
  * Thread messages.
@@ -113,6 +129,7 @@ type ConversationRow = {
   last_source_ts: string;
   message_count: number;
   inbound_count: number;
+  last_direction: string | null;
 };
 
 type MessageRow = {
@@ -141,6 +158,7 @@ function toInboxItem(row: ConversationRow): InboxItem {
     lastSourceTimestamp: row.last_source_ts,
     messageCount: Number(row.message_count),
     inboundCount: Number(row.inbound_count),
+    lastDirection: row.last_direction as InboxItem["lastDirection"],
   };
 }
 

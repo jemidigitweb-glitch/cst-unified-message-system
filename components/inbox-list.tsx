@@ -3,8 +3,12 @@
 import {
   type InboxItem,
   NEEDS_CONTEXT_LABEL,
+  READ_STATES,
+  type ReadState,
   conversationTitle,
   formatSourceTimestamp,
+  readStateLabel,
+  readStateOf,
   workflowLabel,
 } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
@@ -21,6 +25,11 @@ import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilitie
  *
  * No source table or column name is shown; the marketplace is presented by its
  * business name.
+ *
+ * READ/UNREAD is a client-side filter over the same list the marketplace tab
+ * already loaded — see `readStateOf` for the rule. It triggers no request and
+ * no AI call: everything it needs (the last message's direction) is already on
+ * each `InboxItem`.
  */
 export function InboxList({
   items,
@@ -28,12 +37,16 @@ export function InboxList({
   selectedId,
   onSelect,
   capability,
+  readFilter,
+  onReadFilterChange,
 }: {
   items: InboxItem[] | null;
   error: string | null;
   selectedId: string | null;
   onSelect: (id: string) => void;
   capability: MarketplaceCapability;
+  readFilter: ReadState;
+  onReadFilterChange: (next: ReadState) => void;
 }) {
   if (error !== null) {
     return <p className="p-5 text-sm opacity-70">{error}</p>;
@@ -41,19 +54,42 @@ export function InboxList({
   if (items === null) {
     return <p className="p-5 text-sm opacity-60">Loading conversations…</p>;
   }
-  if (items.length === 0) {
-    return <p className="p-5 text-sm opacity-60">No conversations to review.</p>;
-  }
 
-  const everyItemNeedsContext = items.every((item) => item.needsContext);
+  const filtered = items.filter((item) => readStateOf(item) === readFilter);
+  const everyItemNeedsContext = filtered.every((item) => item.needsContext);
 
   return (
     <>
-      <h2 className="px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase opacity-55">
-        Inbox · {items.length}
-      </h2>
+      <div className="flex items-center justify-between gap-2 px-4 pt-4 pb-2">
+        <h2 className="text-xs font-medium tracking-wide uppercase opacity-55">
+          Inbox · {filtered.length}
+        </h2>
+        <div className="flex gap-1" role="tablist" aria-label="Read state">
+          {READ_STATES.map((state) => (
+            <button
+              key={state}
+              type="button"
+              role="tab"
+              aria-selected={readFilter === state}
+              onClick={() => onReadFilterChange(state)}
+              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                readFilter === state
+                  ? "bg-black/[0.09] dark:bg-white/[0.16]"
+                  : "opacity-55 hover:opacity-100"
+              }`}
+            >
+              {readStateLabel(state)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {filtered.length === 0 ? (
+        <p className="px-4 pb-4 text-sm opacity-60">
+          No {readStateLabel(readFilter).toLowerCase()} conversations.
+        </p>
+      ) : (
       <ul>
-        {items.map((item) => {
+        {filtered.map((item) => {
           const stamp = formatSourceTimestamp(item.lastSourceTimestamp);
           const selected = item.id === selectedId;
           return (
@@ -100,6 +136,7 @@ export function InboxList({
           );
         })}
       </ul>
+      )}
     </>
   );
 }

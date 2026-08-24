@@ -38,6 +38,7 @@ function conversation(overrides: Partial<InboxItem> = {}): InboxItem {
     lastSourceTimestamp: "2026-08-03 17:30:00",
     messageCount: 3,
     inboundCount: 2,
+    lastDirection: "outbound",
     ...overrides,
   };
 }

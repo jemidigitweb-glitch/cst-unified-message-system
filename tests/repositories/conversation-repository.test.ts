@@ -24,6 +24,7 @@ function conversationRow(overrides: Record<string, unknown> = {}) {
     last_source_ts: "2026-08-02 10:00:00",
     message_count: 2,
     inbound_count: 1,
+    last_direction: "outbound",
     ...overrides,
   };
 }
@@ -76,7 +77,7 @@ describe("inbox listing", () => {
   it("orders the inbox by latest activity first", async () => {
     const { calls, client } = fake([[]]);
     await listConversations(client, { marketplace: "ebay" });
-    expect(calls[0]!.text).toContain("ORDER BY last_source_ts DESC");
+    expect(calls[0]!.text).toContain("ORDER BY c.last_source_ts DESC");
   });
 
   it("bounds the result size", async () => {
@@ -109,6 +110,7 @@ describe("inbox listing", () => {
       lastSourceTimestamp: "2026-08-02 10:00:00",
       messageCount: 2,
       inboundCount: 1,
+      lastDirection: "outbound",
     });
   });
 
@@ -121,11 +123,41 @@ describe("inbox listing", () => {
   });
 });
 
+describe("last message direction", () => {
+  it("derives it from conversation_messages, ordered like the thread view", async () => {
+    const { calls, client } = fake([[conversationRow()]]);
+    await listConversations(client, { marketplace: "ebay" });
+    expect(calls[0]!.text).toContain(
+      "ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC",
+    );
+    expect(calls[0]!.text).toContain("cm.conversation_id = c.id");
+  });
+
+  it("does not read it from a stored/carried column", async () => {
+    const { client } = fake([[conversationRow({ last_direction: "inbound" })]]);
+    const [item] = await listConversations(client, { marketplace: "ebay" });
+    expect(item?.lastDirection).toBe("inbound");
+  });
+
+  it("is null for a conversation with no messages landed yet", async () => {
+    const { client } = fake([[conversationRow({ last_direction: null })]]);
+    const [item] = await listConversations(client, { marketplace: "ebay" });
+    expect(item?.lastDirection).toBeNull();
+  });
+
+  it("is included on a single conversation lookup too", async () => {
+    const { calls, client } = fake([[conversationRow({ last_direction: "inbound" })], []]);
+    const detail = await getConversation(client, "1");
+    expect(calls[0]!.text).toContain("AS last_direction");
+    expect(detail?.conversation.lastDirection).toBe("inbound");
+  });
+});
+
 describe("marketplace filtering", () => {
   it("filters the inbox to the requested marketplace", async () => {
     const { calls, client } = fake([[]]);
     await listConversations(client, { marketplace: "amazon" });
-    expect(calls[0]!.text).toContain("WHERE marketplace = $1");
+    expect(calls[0]!.text).toContain("WHERE c.marketplace = $1");
     expect(calls[0]!.values![0]).toBe("amazon");
   });
 

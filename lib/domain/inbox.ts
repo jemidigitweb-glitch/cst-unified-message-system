@@ -40,6 +40,14 @@ export const inboxItemSchema = z.object({
   lastSourceTimestamp: z.string(),
   messageCount: z.number().int(),
   inboundCount: z.number().int(),
+  /**
+   * Direction of the most recent message in the thread, by the same
+   * (source_ts, source_pk) ordering every other view uses. Null only for a
+   * conversation row with no messages yet landed, which the recount step
+   * should never leave behind — nullable so that impossible state stays
+   * representable rather than lying with a guessed direction.
+   */
+  lastDirection: messageDirectionSchema.nullable(),
 });
 
 export type InboxItem = z.infer<typeof inboxItemSchema>;
@@ -118,6 +126,37 @@ export function previewOf(message: MessageBody | null, maxLength = 90): string {
   if (!available) return UNAVAILABLE_BODY_TEXT;
   const flattened = text.replace(/\s+/g, " ").trim();
   return flattened.length <= maxLength ? flattened : `${flattened.slice(0, maxLength - 1)}…`;
+}
+
+/**
+ * Read/unread, derived from the last message's direction alone.
+ *
+ * READ:   the last message in the thread is a CST/marketplace outbound reply
+ *         — the customer has already been answered.
+ * UNREAD: the last message is inbound (or the thread has no messages at
+ *         all), meaning the most recent customer message has no reply after
+ *         it yet.
+ *
+ * This intentionally never reads a marketplace's own read/unread flag — the
+ * source's notion of "read" tracks whether someone opened it there, not
+ * whether the customer got a reply, and the two would disagree for a
+ * conversation this application has already answered but the source
+ * mailbox still shows unopened.
+ */
+export const READ_STATES = ["read", "unread"] as const;
+export type ReadState = (typeof READ_STATES)[number];
+
+export function readStateOf(conversation: Pick<InboxItem, "lastDirection">): ReadState {
+  return conversation.lastDirection === "outbound" ? "read" : "unread";
+}
+
+const READ_STATE_LABELS: Readonly<Record<ReadState, string>> = {
+  read: "Read",
+  unread: "Unread",
+};
+
+export function readStateLabel(state: ReadState): string {
+  return READ_STATE_LABELS[state];
 }
 
 /** Plain-English copy for context that has not been resolved yet. */
