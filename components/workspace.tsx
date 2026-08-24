@@ -188,6 +188,23 @@ export function Workspace() {
   }, []);
 
   /**
+   * Clears whichever conversation or message is open, without touching the
+   * loaded lists themselves.
+   *
+   * Used when the LIST feeding the left column changes but the marketplace
+   * does not -- entering or leaving the No Rule view. Without this, a
+   * conversation opened from the ordinary inbox stayed on screen after
+   * switching to No Rule, showing a detail pane for a conversation that
+   * is not even in the list now on screen.
+   */
+  const clearSelection = useCallback(() => {
+    setSelectedId(null);
+    setSelectedKind(null);
+    setDetail(null);
+    setDetailError(null);
+  }, []);
+
+  /**
    * Selecting an ungrouped message needs no request: the feed already holds
    * every message, and there is no thread to expand it into.
    */
@@ -241,7 +258,15 @@ export function Workspace() {
               selected={marketplace}
               onSelect={(next) => {
                 setView("inbox");
-                switchMarketplace(next);
+                // Re-clicking the marketplace you're already on (the natural
+                // way back from its No Rule or Status view) must not run
+                // switchMarketplace: setMarketplace(next) with the SAME value
+                // is a no-op in React, so the [marketplace] effect below would
+                // never re-fire to refetch -- but the rest of switchMarketplace
+                // still clears inbox/feed/noRule to null unconditionally,
+                // leaving the screen stuck on "Loading..." with nothing left
+                // to trigger a reload short of a full page refresh.
+                if (next !== marketplace) switchMarketplace(next);
               }}
             />
           </div>
@@ -257,7 +282,14 @@ export function Workspace() {
               type="button"
               role="tab"
               aria-selected={view === "no_rule"}
-              onClick={() => setView(view === "no_rule" ? "inbox" : "no_rule")}
+              onClick={() => {
+                setView(view === "no_rule" ? "inbox" : "no_rule");
+                // Either direction: entering shows a different list than the
+                // one the open conversation came from, and leaving would
+                // otherwise show a No-Rule-selected conversation under the
+                // ordinary inbox list it is not part of.
+                clearSelection();
+              }}
               className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
                 view === "no_rule"
                   ? "border-emerald-600 font-medium dark:border-emerald-400"
