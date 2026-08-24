@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type ConversationDetail,
@@ -13,6 +13,13 @@ import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilitie
 import type { WorkflowState } from "@/lib/domain/workflow";
 
 import { DraftPanel } from "./draft-panel";
+
+/** Floor on the draft panel's height: short enough to never be pointless, tall enough that a drag can't hide the action buttons under it. */
+const MIN_DRAFT_HEIGHT = 160;
+/** Reserved for the header, the resize handle and the footer, so a drag to the ceiling still leaves the message thread visible rather than zeroing it out. */
+const RESERVED_FOR_CHROME = 170;
+const DEFAULT_DRAFT_HEIGHT = 340;
+const KEYBOARD_STEP = 32;
 
 /**
  * Conversation view for marketplaces whose message direction is verified.
@@ -45,9 +52,89 @@ export function ConversationView({
   onDraftGenerated?: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const container = useRef<HTMLDivElement>(null);
   // Held locally so the draft panel's transitions show immediately; re-seeded
   // whenever a different conversation is opened.
   const [workflowState, setWorkflowState] = useState<WorkflowState>("received");
+
+  /**
+   * How tall the draft panel is, in pixels. Purely a display preference —
+   * nothing about the draft, its rules, or the workflow depends on this
+   * number, and it is never sent anywhere.
+   */
+  const [draftHeight, setDraftHeight] = useState(DEFAULT_DRAFT_HEIGHT);
+  const [resizing, setResizing] = useState(false);
+
+  /**
+   * How tall the draft panel is allowed to get right now.
+   *
+   * Computed from the actual container height rather than a fixed number, so
+   * the same drag behaves correctly on a 768px-tall laptop and a 1440px
+   * desktop alike: it can always fill "most of the space," never "the whole
+   * space," because RESERVED_FOR_CHROME keeps the header/handle/footer and a
+   * sliver of the message thread on screen no matter how far it is dragged.
+   */
+  const maxDraftHeight = useCallback(() => {
+    const available = container.current?.clientHeight ?? window.innerHeight;
+    return Math.max(MIN_DRAFT_HEIGHT, available - RESERVED_FOR_CHROME);
+  }, []);
+
+  const clampDraftHeight = useCallback(
+    (value: number) => Math.min(maxDraftHeight(), Math.max(MIN_DRAFT_HEIGHT, value)),
+    [maxDraftHeight],
+  );
+
+  /**
+   * The ceiling, mirrored into state.
+   *
+   * `maxDraftHeight` reads a ref, and a ref must not be read during render --
+   * so this effect is what keeps a render-safe copy around for the `aria-*`
+   * attributes below. It also re-clamps a previously dragged height on window
+   * resize, so shrinking the browser cannot leave the draft panel taller than
+   * the window it is now in.
+   */
+  const [maxHeight, setMaxHeight] = useState(DEFAULT_DRAFT_HEIGHT);
+  useEffect(() => {
+    const sync = () => {
+      const next = maxDraftHeight();
+      setMaxHeight(next);
+      setDraftHeight((height) => Math.min(height, next));
+    };
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, [maxDraftHeight]);
+
+  /**
+   * Drag-to-resize on the handle above the draft panel.
+   *
+   * Pointer events cover mouse, touch and pen with the same handlers, so the
+   * same drag works on a laptop trackpad and a tablet touch screen. The
+   * listeners are attached to `window` rather than the handle itself so the
+   * drag keeps tracking even if the pointer moves off the thin handle mid-drag.
+   */
+  const startResize = useCallback(
+    (startClientY: number) => {
+      setResizing(true);
+      const startHeight = draftHeight;
+
+      const onMove = (clientY: number) => {
+        // Dragging UP (smaller clientY) grows the draft panel.
+        setDraftHeight(clampDraftHeight(startHeight + (startClientY - clientY)));
+      };
+      const onPointerMove = (event: PointerEvent) => onMove(event.clientY);
+      const stop = () => {
+        setResizing(false);
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      };
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    },
+    [draftHeight, clampDraftHeight],
+  );
 
   // Open a thread at its newest message while keeping oldest→newest order.
   useEffect(() => {
@@ -74,7 +161,7 @@ export function ConversationView({
   const { conversation, messages } = detail;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={container} className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-black/10 px-5 py-3 dark:border-white/15">
         {/* Never the bare stored reference: for most sources it is an order
             reference, and printing it where a name belongs presents it as one. */}
@@ -190,13 +277,72 @@ export function ConversationView({
         )}
       </div>
 
-      <DraftPanel
-        conversationId={conversation.id}
-        detail={detail}
-        workflowState={workflowState}
-        onWorkflowChange={setWorkflowState}
-        onGenerated={onDraftGenerated}
-      />
+      {/*
+       * DRAG HANDLE. The border above the draft panel used to be a plain
+       * divider; it is now also how a reviewer controls how much of the
+       * column the draft gets versus the message thread -- a fixed cap
+       * suits most drafts, but a very long one or a very short window
+       * sometimes calls for more. The affordance (grip icon + "Drag to
+       * resize") only appears on hover/focus so the divider still reads as
+       * a plain line the rest of the time, matching the existing look.
+       */}
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize draft panel"
+        aria-valuenow={Math.round(draftHeight)}
+        aria-valuemin={MIN_DRAFT_HEIGHT}
+        aria-valuemax={Math.round(maxHeight)}
+        tabIndex={0}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          startResize(event.clientY);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setDraftHeight((height) => clampDraftHeight(height + KEYBOARD_STEP));
+          } else if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setDraftHeight((height) => clampDraftHeight(height - KEYBOARD_STEP));
+          }
+        }}
+        className={`group relative flex h-2.5 shrink-0 cursor-row-resize touch-none items-center justify-center border-t border-black/10 outline-none focus-visible:bg-emerald-600/10 dark:border-white/15 dark:focus-visible:bg-emerald-400/10 ${
+          resizing ? "bg-emerald-600/10 dark:bg-emerald-400/10" : ""
+        }`}
+      >
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute -top-7 flex items-center gap-1 rounded bg-black/80 px-2 py-1 text-[10px] whitespace-nowrap text-white opacity-0 transition-opacity dark:bg-white/90 dark:text-black ${
+            resizing ? "opacity-100" : "group-hover:opacity-100 group-focus-visible:opacity-100"
+          }`}
+        >
+          {/* Grip glyph: two rows of three dots, the usual "drag" icon. */}
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden>
+            <circle cx="2" cy="2" r="1.1" />
+            <circle cx="5" cy="2" r="1.1" />
+            <circle cx="8" cy="2" r="1.1" />
+            <circle cx="2" cy="8" r="1.1" />
+            <circle cx="5" cy="8" r="1.1" />
+            <circle cx="8" cy="8" r="1.1" />
+          </svg>
+          Drag to resize
+        </span>
+        <span
+          aria-hidden
+          className="h-1 w-10 rounded-full bg-black/15 transition-colors group-hover:bg-black/30 dark:bg-white/20 dark:group-hover:bg-white/35"
+        />
+      </div>
+
+      <div style={{ height: draftHeight }} className="shrink-0 overflow-hidden">
+        <DraftPanel
+          conversationId={conversation.id}
+          detail={detail}
+          workflowState={workflowState}
+          onWorkflowChange={setWorkflowState}
+          onGenerated={onDraftGenerated}
+        />
+      </div>
 
       <div className="shrink-0 border-t border-black/10 px-5 py-3 text-xs opacity-55 dark:border-white/15">
         Review only — this phase has no capability to reply to a customer.

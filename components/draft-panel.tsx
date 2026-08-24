@@ -463,7 +463,12 @@ export function DraftPanel({
   return (
     <section
       data-testid="draft-panel"
-      className="flex min-h-0 flex-col gap-3 border-t border-black/10 px-5 py-4 dark:border-white/15"
+      // h-full + overflow-y-auto: the height itself is set by the wrapper in
+      // ConversationView (a fixed pixel value the reviewer can drag), not by
+      // this section. Without overflow-y-auto here, content taller than that
+      // wrapper would spill out rather than scroll -- draft card + rules +
+      // buttons pushing past the visible area with no way to reach them.
+      className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto px-5 py-4"
     >
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-xs font-medium tracking-wide uppercase opacity-55">

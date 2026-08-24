@@ -26,7 +26,7 @@ export function MarketplaceTabs({
   onSelect: (marketplace: Marketplace) => void;
 }) {
   return (
-    <nav aria-label="Marketplace" className="flex shrink-0 gap-1 px-4">
+    <nav aria-label="Marketplace" className="flex min-w-0 gap-1 overflow-x-auto px-4">
       {MARKETPLACE_TAB_ORDER.map((marketplace) => {
         const capability = capabilityOf(marketplace);
         const active = marketplace === selected;
