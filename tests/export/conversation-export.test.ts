@@ -6,9 +6,9 @@ import { describe, expect, it } from "vitest";
 import type { ConversationDetail, ConversationMessageView, InboxItem } from "@/lib/domain/inbox";
 import {
   CONVERSATION_EXPORT_LABEL,
-  NO_COMPATIBLE_RULE_HEADING,
   buildConversationTextExport,
 } from "@/lib/export/conversation-export";
+import { NO_RULE_HEADING, NO_RULE_REASON } from "@/components/no-rule-flag";
 
 /**
  * The one export this application has, and everything it must not become.
@@ -120,19 +120,28 @@ describe("no rule export exists", () => {
   });
 
   /**
-   * The export is ALWAYS on screen, and it is not part of the evidence panel.
+   * The export belongs to ONE case: no applicable rule was found.
    *
-   * It was briefly inside the no-rule branch, which tied the one thing a
-   * reviewer might want at any moment to something unrelated to it — and hid it
-   * completely on a conversation nobody had drafted yet, since that panel
-   * renders nothing without a draft.
+   * That is what the file is for — the team reads it to write the rule that was
+   * missing — so it is offered inside the no-rule branch and nowhere else.
    */
-  it("stands outside the evidence panel, so no draft is required", () => {
+  it("is offered only where no rule matched", () => {
     expect(button).toContain("CONVERSATION_EXPORT_LABEL");
-    expect(panel).not.toContain("CONVERSATION_EXPORT_LABEL");
-    expect(panel).not.toContain("buildConversationTextExport");
-    // Rendered on the conversation, not on the draft.
-    expect(workspace).toMatch(/<ConversationExportButton detail=\{detail\} \/>/);
+
+    const start = panel.indexOf("cited.length === 0 ?");
+    const otherwise = panel.indexOf(") : (", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(panel.slice(start, otherwise)).toContain("<ConversationExportButton");
+    expect(panel.slice(otherwise)).not.toContain("<ConversationExportButton");
+    // Not mounted anywhere else in the interface either.
+    expect(workspace).not.toContain("ConversationExportButton");
+  });
+
+  it("creates or edits no CST rule", () => {
+    for (const file of [button, source]) {
+      expect(file).not.toMatch(/writeRule|createRule|updateRule|saveRule/i);
+      expect(file).not.toMatch(/\.xlsx/);
+    }
   });
 });
 
@@ -340,8 +349,34 @@ describe("exporting neither generates nor transmits", () => {
     expect(button).toContain("URL.revokeObjectURL");
   });
 
-  it("names the no-rule state the reviewer will read", () => {
-    expect(NO_COMPATIBLE_RULE_HEADING).toBe("No compatible CST rule found");
-    expect(panel).toContain("NO_COMPATIBLE_RULE_HEADING");
+  it("flags the case rather than presenting a normal draft", () => {
+    expect(NO_RULE_HEADING).toBe("NO CST RULE / TEMPLATE AVAILABLE");
+    expect(panel).toContain("<NoRuleFlag");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The file carries what the CST team needs to write the missing rule.
+ * ------------------------------------------------------------------ */
+
+describe("the export states why it exists", () => {
+  const flagged = buildConversationTextExport({
+    detail: detail(),
+    caseType: "Customer requesting an invoice, receipt or proof of purchase",
+    reason: NO_RULE_REASON,
+    exportedAt: EXPORTED_AT,
+  });
+
+  it("names the identified message type and the reason", () => {
+    expect(flagged.content).toContain(
+      "Message type:       Customer requesting an invoice, receipt or proof of purchase",
+    );
+    expect(flagged.content).toContain(`Reason:             ${NO_RULE_REASON}`);
+    expect(flagged.content).toContain("write the missing rule");
+  });
+
+  it("says 'not recorded' rather than guessing when nothing was passed", () => {
+    expect(file.content).toContain("Message type:       not recorded");
+    expect(file.content).toContain("Reason:             not recorded");
   });
 });

@@ -8,7 +8,6 @@ import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import type { UnresolvedFeed } from "@/lib/domain/unresolved-messages";
 
 import { ContextPanel } from "./context-panel";
-import { ConversationExportButton } from "./conversation-export-button";
 import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { InboxList } from "./inbox-list";
@@ -278,17 +277,14 @@ export function Workspace() {
                   draft?" -- one from the conversation's side, one from the
                   model's. Renders nothing when there is no draft. */}
               {detail !== null && (
-                <>
-                  <DraftEvidencePanel
-                    key={detail.conversation.id}
-                    conversationId={detail.conversation.id}
-                  />
-                  {/* Last, and OUTSIDE the evidence panel. The panel renders
-                      nothing until a draft exists; the export must be there on
-                      every conversation, drafted or not. It writes the thread
-                      already loaded here — no second request. */}
-                  <ConversationExportButton detail={detail} />
-                </>
+                <DraftEvidencePanel
+                  key={detail.conversation.id}
+                  conversationId={detail.conversation.id}
+                  // The loaded thread. The panel needs it for the no-rule
+                  // export, and using it avoids a second request for a
+                  // conversation already on screen.
+                  detail={detail}
+                />
               )}
             </>
           )}

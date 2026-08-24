@@ -4,7 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { DraftSource } from "@/lib/domain/draft";
 import { workflowLabel } from "@/lib/domain/inbox";
+import type { ConversationMessageView } from "@/lib/domain/inbox";
 import type { WorkflowState } from "@/lib/domain/workflow";
+
+import { NoRuleFlag } from "./no-rule-flag";
 
 /**
  * Draft reply panel.
@@ -129,10 +132,13 @@ function GeneratingIndicator({ step }: { step: number }) {
 
 export function DraftPanel({
   conversationId,
+  messages,
   workflowState,
   onWorkflowChange,
 }: {
   conversationId: string;
+  /** The thread, read only to name the case type on an ungrounded draft. */
+  messages: readonly ConversationMessageView[];
   workflowState: WorkflowState;
   onWorkflowChange: (state: WorkflowState) => void;
 }) {
@@ -513,12 +519,19 @@ export function DraftPanel({
            */}
           {current.origin === "generated" &&
             (citedRefs.length === 0 ? (
-              <p
-                data-testid="not-rule-based"
-                className="text-xs font-medium text-amber-700 dark:text-amber-300"
-              >
-                Not based on any CST rule — do not use without checking it against the documents.
-              </p>
+              /*
+               * The full flag, not a one-line caution.
+               *
+               * This used to be a single amber sentence, which sat under a
+               * fluent reply and read as a footnote to a successful draft. It
+               * is not: nothing in the knowledge base covered this case, the
+               * text above is ungrounded, and the useful next step is writing
+               * the missing rule. The same component appears in the sidebar so
+               * the two cannot say different things.
+               */
+              <div data-testid="not-rule-based">
+                <NoRuleFlag messages={messages} />
+              </div>
             ) : (
               <div data-testid="rule-evidence" className="flex flex-col gap-1.5 text-xs">
                 <p className="text-[11px] font-medium tracking-wide uppercase opacity-55">

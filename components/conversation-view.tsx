@@ -189,6 +189,7 @@ export function ConversationView({
 
       <DraftPanel
         conversationId={conversation.id}
+        messages={messages}
         workflowState={workflowState}
         onWorkflowChange={setWorkflowState}
       />

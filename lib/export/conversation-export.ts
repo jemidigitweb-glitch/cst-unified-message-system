@@ -34,6 +34,16 @@ export type ExportFile = {
 
 export type ConversationExportInput = {
   readonly detail: ConversationDetail;
+  /**
+   * The case type the classifier named, for the team triaging these files.
+   *
+   * Optional, and printed verbatim. Whether it could be determined at all is
+   * the classifier's decision, not this module's — an absent value prints
+   * "not recorded" like any other, rather than a guess made here.
+   */
+  readonly caseType?: string | null;
+  /** Why no rule applied. Stated in the file so it needs no covering note. */
+  readonly reason?: string | null;
   /** Passed in rather than read from the clock, so the output is testable. */
   readonly exportedAt: string;
 };
@@ -152,8 +162,12 @@ export function buildConversationTextExport(input: ConversationExportInput): Exp
     field("Messages:", String(ordered.length)),
     field("Exported:", input.exportedAt),
     "",
-    "No CST rule matched the current draft, so the full conversation is exported",
-    "for manual review. This file contains this conversation only.",
+    field("Message type:", input.caseType ?? null),
+    field("Reason:", input.reason ?? null),
+    "",
+    "No applicable CST rule or approved template covered this conversation, so it",
+    "is exported for the CST team to review and write the missing rule.",
+    "This file contains this conversation only. No CST rule is included.",
     "",
     // Said plainly, because the whole project refuses to convert these and a
     // reader comparing against a marketplace console deserves to know why the

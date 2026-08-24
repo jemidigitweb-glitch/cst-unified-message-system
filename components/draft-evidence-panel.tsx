@@ -2,8 +2,11 @@
 
 import { useEffect, useState } from "react";
 
-import { NO_COMPATIBLE_RULE_HEADING } from "@/lib/export/conversation-export";
+import type { ConversationDetail } from "@/lib/domain/inbox";
 import { matchReasonOf } from "@/lib/knowledge/rule-evidence";
+
+import { ConversationExportButton } from "./conversation-export-button";
+import { NoRuleFlag } from "./no-rule-flag";
 
 /**
  * What the draft cost, and which CST rules it was built from.
@@ -82,7 +85,20 @@ function Heading({ children }: { children: string }) {
   );
 }
 
-export function DraftEvidencePanel({ conversationId }: { conversationId: string }) {
+export function DraftEvidencePanel({
+  conversationId,
+  detail,
+}: {
+  conversationId: string;
+  /**
+   * The loaded thread, for the no-rule export.
+   *
+   * Passed rather than fetched: the workspace already holds it and is already
+   * rendering it, so a second request would ask the database for a thread that
+   * is on screen.
+   */
+  detail: ConversationDetail;
+}) {
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -134,12 +150,6 @@ export function DraftEvidencePanel({ conversationId }: { conversationId: string 
 
   const cited = data.evidence.cited;
 
-  /*
-   * NO EXPORT LIVES HERE. The conversation download is its own component below
-   * this panel, because it must be available on every conversation — including
-   * one with no draft, where this panel renders nothing at all.
-   */
-
   return (
     <div className="flex flex-col gap-4 border-t border-black/10 p-4 dark:border-white/15">
       {data.usage !== null && (
@@ -173,16 +183,20 @@ export function DraftEvidencePanel({ conversationId }: { conversationId: string 
       )}
 
       <section>
-        <Heading>Matched CST rules</Heading>
+        {/* Not "Matched CST rules" when none matched: a heading that promises
+            matches above a flag saying there are none reads as a loading
+            state. */}
+        <Heading>{cited.length === 0 ? "CST rule coverage" : "Matched CST rules"}</Heading>
         {cited.length === 0 ? (
-          <>
-            <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
-              {NO_COMPATIBLE_RULE_HEADING}
-            </p>
-            <p className="mt-1 text-xs opacity-70">
-              Check the reply against the CST documents before use.
-            </p>
-          </>
+          /*
+           * The ONLY place the export is offered. It belongs to this case and
+           * to no other: the file exists so the team can write the rule that
+           * was missing, which is a question only an unmatched conversation
+           * raises.
+           */
+          <NoRuleFlag messages={detail.messages}>
+            <ConversationExportButton detail={detail} />
+          </NoRuleFlag>
         ) : (
           /*
            * Every cited rule, in citation order, with no export beside them.

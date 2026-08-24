@@ -44,7 +44,6 @@ describe("every marketplace gets the same sidebar", () => {
     // Exactly one mount of each pane in the whole workspace.
     expect(workspace.match(/<ContextPanel/g)).toHaveLength(1);
     expect(workspace.match(/<DraftEvidencePanel/g)).toHaveLength(1);
-    expect(workspace.match(/<ConversationExportButton/g)).toHaveLength(1);
   });
 
   /**
@@ -151,36 +150,60 @@ describe("the rules section adds no export", () => {
     expect(evidence).not.toContain("application/json");
   });
 
-  it("says plainly when nothing matched", () => {
-    expect(evidence).toContain("NO_COMPATIBLE_RULE_HEADING");
+  it("flags the no-rule case instead", () => {
+    expect(evidence).toContain("<NoRuleFlag");
   });
 });
 
 /**
- * The export is a property of the CONVERSATION, not of the draft.
+ * The no-rule case must not read as a successful draft.
  *
- * It is offered on every conversation in every marketplace, including one that
- * has never been drafted — which is why it cannot live inside the evidence
- * panel, since that panel renders nothing at all without a draft.
+ * The failure mode here is quiet: a fluent, confident, entirely ungrounded
+ * reply looks exactly like a good one. The flag says what happened, names the
+ * case type from the customer's own words, and offers the export — in the same
+ * component on the draft card and in the sidebar, so the two cannot drift.
  */
-describe("the conversation export is always offered", () => {
-  it("sits beside the evidence panel, not inside it", () => {
-    expect(evidence).not.toContain("CONVERSATION_EXPORT_LABEL");
-    expect(evidence).not.toContain("buildConversationTextExport");
-    expect(exportButton).toContain("buildConversationTextExport");
+describe("the no-rule flag", () => {
+  const flag = stripComments(read("no-rule-flag.tsx"));
+  const draft = stripComments(read("draft-panel.tsx"));
+
+  it("states the heading, the reason and the action", () => {
+    expect(flag).toContain("NO CST RULE / TEMPLATE AVAILABLE");
+    expect(flag).toContain("no applicable CST rule or approved template was found");
+    expect(flag).toContain(">Message type<");
+    expect(flag).toContain(">Reason<");
+    expect(flag).toContain(">Action<");
   });
 
-  it("is mounted on the conversation, with no draft condition", () => {
-    const aside = workspace.slice(workspace.lastIndexOf("<aside"));
-    const mount = aside.indexOf("<ConversationExportButton");
-    expect(mount).toBeGreaterThan(-1);
-    // The only gate above it is "a conversation is loaded".
-    expect(aside.slice(0, mount)).toContain("detail !== null");
-    expect(aside.slice(0, mount)).not.toMatch(/cited|usage|revision|hasDraft/);
+  it("names the case type from the conversation, never from the model", () => {
+    expect(flag).toContain("classifyCaseType");
+    expect(flag).not.toMatch(/fetch\(|useEffect|useState/);
+  });
+
+  it("is the same component on the draft card and in the sidebar", () => {
+    expect(draft).toContain("<NoRuleFlag");
+    expect(evidence).toContain("<NoRuleFlag");
+  });
+
+  it("creates no rule and edits no rule file", () => {
+    for (const source of [flag, exportButton]) {
+      expect(source).not.toMatch(/writeRule|createRule|updateRule|\.xlsx/i);
+      expect(source).not.toMatch(/method:\s*["'](POST|PUT|PATCH)/);
+    }
+  });
+});
+
+describe("the export belongs to the no-rule case", () => {
+  it("is offered inside the flag, and nowhere else", () => {
+    const start = evidence.indexOf("cited.length === 0 ?");
+    const otherwise = evidence.indexOf(") : (", start);
+    expect(evidence.slice(start, otherwise)).toContain("<ConversationExportButton");
+    expect(evidence.slice(otherwise)).not.toContain("<ConversationExportButton");
+    expect(workspace).not.toContain("ConversationExportButton");
   });
 
   it("reads nothing and fetches nothing", () => {
     expect(exportButton).not.toMatch(/useEffect|useState|fetch\(/);
-    expect(exportButton).toContain("detail");
+    expect(exportButton).toContain("buildConversationTextExport");
   });
 });
