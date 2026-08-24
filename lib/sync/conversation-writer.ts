@@ -59,6 +59,14 @@ ON CONFLICT (threading_rule_version, thread_key) DO UPDATE SET
   last_source_ts      = GREATEST(conversations.last_source_ts, EXCLUDED.last_source_ts),
   needs_context       = EXCLUDED.needs_context,
   inbox_visibility    = EXCLUDED.inbox_visibility,
+  -- Widened, not overwritten, same as the timestamps above. This row is
+  -- transient: RECOUNT_CONVERSATIONS below replaces it with the true total
+  -- moments later. But the row still has to satisfy
+  -- ck_conversations_reply_inbox_needs_inbound the instant this statement
+  -- runs — a page that flips a thread to reply_inbox would otherwise pair
+  -- that with the stale pre-recount inbound_count, which can be 0.
+  message_count       = GREATEST(conversations.message_count, EXCLUDED.message_count),
+  inbound_count       = GREATEST(conversations.inbound_count, EXCLUDED.inbound_count),
   inbox_filter_reason = EXCLUDED.inbox_filter_reason,
   updated_at          = now()
 RETURNING id, threading_rule_version, thread_key, (xmax = 0) AS inserted`;

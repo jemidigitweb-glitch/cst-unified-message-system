@@ -154,7 +154,8 @@ describe("idempotency strategy", () => {
   });
 
   /**
-   * Counters are DERIVED, never carried.
+   * Counters are DERIVED, never carried — the UPDATE clause may only widen
+   * them, never assign a page's count outright.
    *
    * They used to be written from EXCLUDED — the count of the batch being
    * persisted — which was right for a one-shot bootstrap and wrong the moment
@@ -165,8 +166,15 @@ describe("idempotency strategy", () => {
    * because a re-run of the same page would count its messages twice. So the
    * counters are recomputed from `conversation_messages` after the messages
    * land, which gives the same answer however many times it runs.
+   *
+   * The UPDATE clause still has to carry a GREATEST(existing, batch) value
+   * through in the same statement: a page that flips a thread to reply_inbox
+   * pairs that with whatever inbound_count the row already had, and
+   * ck_conversations_reply_inbox_needs_inbound is checked on this row before
+   * the recount below gets to correct it. GREATEST never carries a smaller
+   * page count onto a bigger existing total, so idempotency is unaffected.
    */
-  it("does not carry a page's counts onto an existing conversation", async () => {
+  it("only widens a page's counts onto an existing conversation, never overwrites", async () => {
     const { calls, client } = recorder();
     await persistConversations(client, {
       marketplace: "ebay",
@@ -174,8 +182,10 @@ describe("idempotency strategy", () => {
       conversations: [conversation()],
     });
     const update = calls[0]!.text.split("DO UPDATE SET")[1]!;
-    expect(update).not.toContain("message_count");
-    expect(update).not.toContain("inbound_count");
+    expect(update).not.toContain("= EXCLUDED.message_count");
+    expect(update).not.toContain("= EXCLUDED.inbound_count");
+    expect(update).toContain("GREATEST(conversations.message_count, EXCLUDED.message_count)");
+    expect(update).toContain("GREATEST(conversations.inbound_count, EXCLUDED.inbound_count)");
   });
 
   it("recomputes the counters from the messages, after writing them", async () => {
