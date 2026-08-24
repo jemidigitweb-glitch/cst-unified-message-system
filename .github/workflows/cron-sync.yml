@@ -1,0 +1,37 @@
+name: Production message sync trigger
+
+# Calls the existing GET /api/cron/sync route every 5 minutes so production
+# stays synced without depending on any one machine and without needing
+# Vercel's own Cron Jobs (Hobby-plan projects only allow daily crons there).
+#
+# THIS WORKFLOW DOES NOTHING BUT CALL THE ROUTE. No sync logic, watermark
+# handling, marketplace adapter, or database access lives here -- all of that
+# is unchanged in lib/sync/* and app/api/cron/sync/route.ts. This is purely an
+# external caller, running on GitHub's infrastructure instead of a local PC.
+#
+# 5 minutes is the shortest interval GitHub Actions' schedule trigger
+# supports. Runs on a public repo, so this costs nothing against any minutes
+# quota.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  # Lets a run be fired on demand from the Actions tab, to verify the route
+  # responds correctly without waiting for the next scheduled tick.
+  workflow_dispatch: {}
+
+jobs:
+  trigger-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/sync
+        run: |
+          status=$(curl -s -o response.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://cst-unified-message-system.vercel.app/api/cron/sync")
+          echo "HTTP status: $status"
+          cat response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "::error::/api/cron/sync returned $status, expected 200"
+            exit 1
+          fi
