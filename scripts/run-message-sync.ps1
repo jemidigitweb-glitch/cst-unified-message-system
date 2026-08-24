@@ -1,5 +1,10 @@
 # =============================================================================
-# Daily marketplace message sync -- scheduler wrapper.
+# Automatic marketplace message sync -- scheduler wrapper.
+#
+# Runs on a repeating trigger (see register-message-sync.ps1), so a message that
+# lands in a source database appears in the CST inbox without anyone running a
+# command. It generates NO AI draft: syncing and drafting are separate, and a
+# new customer message must never spend a model call on its own.
 #
 # Runs the EXISTING command and nothing else:
 #
@@ -36,7 +41,7 @@ function Write-Log([string]$line) {
 }
 
 Write-Log ''
-Write-Log "===== $stamp  daily sync starting ====="
+Write-Log "===== $stamp  message sync starting ====="
 
 Push-Location $root
 try {

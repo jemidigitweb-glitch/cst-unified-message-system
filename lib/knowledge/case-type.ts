@@ -106,6 +106,38 @@ const SIGNALS: readonly { readonly label: string; readonly phrases: readonly str
   },
 ];
 
+/**
+ * The customer's words, and only theirs.
+ *
+ * Shared by the classifier and the complexity assessment so both read exactly
+ * the same text. An outbound CST reply is our words: counting it would let a
+ * long reply we already wrote make the case look more complicated than it is.
+ */
+export function customerText(messages: readonly ConversationMessageView[]): string {
+  return messages
+    .filter((message) => message.direction === "inbound")
+    .map((message) => {
+      const body = displayBody(message);
+      return body.available ? body.text : "";
+    })
+    .join("\n")
+    .toLowerCase();
+}
+
+/**
+ * How many DISTINCT kinds of problem the customer raised.
+ *
+ * A message about a damaged item that also asks for an invoice and threatens a
+ * chargeback is three separate rule areas, and a reply has to satisfy all of
+ * them at once. That is the single best cheap predictor of how hard a draft
+ * will be, which is why the model selector leans on it.
+ */
+export function countDistinctIssues(messages: readonly ConversationMessageView[]): number {
+  const text = customerText(messages);
+  if (text.trim() === "") return 0;
+  return SIGNALS.filter((signal) => signal.phrases.some((phrase) => contains(text, phrase))).length;
+}
+
 /** Word-boundary match, so "cancel" does not fire on "cancellation policy link". */
 function contains(haystack: string, phrase: string): boolean {
   const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -123,14 +155,7 @@ function contains(haystack: string, phrase: string): boolean {
 export function classifyCaseType(
   messages: readonly ConversationMessageView[],
 ): CaseType {
-  const text = messages
-    .filter((message) => message.direction === "inbound")
-    .map((message) => {
-      const body = displayBody(message);
-      return body.available ? body.text : "";
-    })
-    .join("\n")
-    .toLowerCase();
+  const text = customerText(messages);
 
   if (text.trim() === "") return { label: UNCLASSIFIED_CASE_TYPE, matchedPhrase: null };
 

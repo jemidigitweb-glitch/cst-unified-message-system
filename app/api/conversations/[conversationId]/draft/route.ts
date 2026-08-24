@@ -78,6 +78,20 @@ export async function POST(
 
   // One call decides which model answers. This handler names no vendor — see
   // lib/ai/draft-service.ts for the preference order and why it is one place.
+  /**
+   * The clock for the whole user-visible operation.
+   *
+   * Started here, before anything is read, and stopped once the draft is
+   * committed — so it covers retrieval, File Search, the model call, response
+   * processing, validation and the save. That is what the reviewer waited for.
+   *
+   * `performance.now()` and not `Date.now()`: it is monotonic, so an NTP
+   * correction mid-request cannot produce a negative duration or a nonsense
+   * one. Nothing here is estimated; the number is the difference between two
+   * readings taken around the work.
+   */
+  const startedAt = performance.now();
+
   const provider = getDraftProvider();
   if (provider === undefined) {
     return NextResponse.json(
@@ -177,6 +191,9 @@ export async function POST(
         draftRevisionId: saved.revisionId,
         usage: generated.usage,
         outcome: "ok",
+        // Stopped AFTER the commit, because a draft is not generated until it
+        // is saved — that is the moment the reviewer can act on it.
+        durationMs: performance.now() - startedAt,
       });
 
       return NextResponse.json({

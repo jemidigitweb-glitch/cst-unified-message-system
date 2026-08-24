@@ -66,10 +66,22 @@ export function estimateCost(
 const INSERT_USAGE = `
 INSERT INTO cst_app.ai_usage_log (
   provider, model, conversation_id, draft_revision_id,
-  input_tokens, output_tokens, total_tokens, estimated_cost_usd, outcome
+  input_tokens, output_tokens, total_tokens, estimated_cost_usd, outcome, duration_ms
 )
-VALUES ($1, $2, $3::bigint, $4::bigint, $5::int, $6::int, $7::int, $8::numeric, $9)
+VALUES ($1, $2, $3::bigint, $4::bigint, $5::int, $6::int, $7::int, $8::numeric, $9, $10::int)
 RETURNING id`;
+
+/**
+ * A duration fit to store, or null.
+ *
+ * Rejects anything that is not a finite, non-negative number rather than
+ * coercing it. A NULL reads as "not recorded", which is true; a coerced 0 would
+ * read as "instant", which never is.
+ */
+function storableDuration(durationMs: number | undefined): number | null {
+  if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return null;
+  return Math.round(durationMs);
+}
 
 export type UsageRecord = {
   readonly provider: string;
@@ -80,6 +92,15 @@ export type UsageRecord = {
   readonly usage: DraftUsage | undefined;
   /** 'ok', or a short reason. Never a provider message: those quote the request. */
   readonly outcome: string;
+  /**
+   * Measured wall-clock milliseconds for the whole generation.
+   *
+   * MEASURED, never estimated, and omitted rather than guessed. A failed
+   * generation may still carry one — how long it took to fail is useful — and
+   * `outcome` is what distinguishes the two, so a failure can never be read as
+   * a successful draft that happened to be slow.
+   */
+  readonly durationMs?: number;
 };
 
 export async function recordUsage(
@@ -99,6 +120,7 @@ export async function recordUsage(
         record.usage?.totalTokens ?? null,
         estimateCost(record.model, record.usage),
         record.outcome,
+        storableDuration(record.durationMs),
       ],
     });
     return { recorded: true };

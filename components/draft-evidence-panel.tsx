@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { formatDuration } from "@/lib/domain/duration";
 import type { ConversationDetail } from "@/lib/domain/inbox";
 import { matchReasonOf } from "@/lib/knowledge/rule-evidence";
 
@@ -65,6 +66,7 @@ type Payload = {
     output_tokens: number | null;
     total_tokens: number | null;
     estimated_cost_usd: string | null;
+    duration_ms: number | null;
   } | null;
   evidence: {
     cited: RuleEvidence[];
@@ -167,6 +169,14 @@ export function DraftEvidencePanel({
             <dt className="opacity-55">Total</dt>
             <dd className="text-right font-medium tabular-nums">
               {number(data.usage.total_tokens)}
+            </dd>
+            {/* The MEASURED wall-clock time of the whole generation --
+                retrieval, the model call, validation and the save. Shown
+                beside the tokens because both answer "what did this cost".
+                A draft written before timing existed says so. */}
+            <dt className="opacity-55">Generation time</dt>
+            <dd className="text-right tabular-nums">
+              {formatDuration(data.usage.duration_ms)}
             </dd>
             {/* Omitted rather than shown as $0 when the model has no local
                 price: a confident zero is harder to notice than a gap. */}

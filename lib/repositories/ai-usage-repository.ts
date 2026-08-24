@@ -83,9 +83,15 @@ SELECT provider,
        output_tokens,
        total_tokens,
        estimated_cost_usd::text AS estimated_cost_usd,
+       duration_ms,
        created_at::text         AS created_at
 FROM cst_app.ai_usage_log
 WHERE draft_revision_id = $1::bigint
+  -- Successful runs only. A failed generation produces no revision, so it
+  -- could not match anyway — this states the intent rather than relying on
+  -- that, so a future failure row that did carry a revision id could never be
+  -- read back as the draft's own timing.
+  AND outcome = 'ok'
 ORDER BY created_at DESC
 LIMIT 1`;
 
@@ -96,6 +102,14 @@ export type RevisionUsage = {
   output_tokens: number | null;
   total_tokens: number | null;
   estimated_cost_usd: string | null;
+  /**
+   * Measured wall-clock milliseconds for the generation.
+   *
+   * Null for a draft written before timing existed, and for one whose
+   * accounting row was written without it. The panel prints "not recorded"
+   * rather than a zero, because zero milliseconds is a claim.
+   */
+  duration_ms: number | null;
   created_at: string;
 };
 

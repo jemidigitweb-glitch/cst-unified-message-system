@@ -5,6 +5,7 @@ import { DRAFT_RESULT_JSON_SCHEMA } from "@/lib/domain/draft";
 
 import { buildDraftInput, validateDraft } from "./draft-assembly";
 import { cstInstructions, restrictedInstructions } from "./instructions";
+import { assessComplexity, modelForTier } from "./model-selection";
 import {
   type DraftOutcome,
   type DraftProvider,
@@ -157,8 +158,23 @@ export function getOpenAiProvider(): DraftProvider | undefined {
         ? undefined
         : `No CST knowledge base is attached: set ${OPENAI_VECTOR_STORE_VAR} in the server environment. This draft states no policy — check it before using.`;
 
+      /**
+       * The model is chosen PER CONVERSATION, not per deployment.
+       *
+       * `config.model` is the fallback and the value reported by
+       * `draftProviderStatus`; what actually runs is the tier's model. The
+       * decision is logged with its reasons so a surprising choice can be
+       * traced without instrumenting the request — and no model id appears in
+       * this file, because which model serves a tier is configuration.
+       */
+      const complexity = assessComplexity(request);
+      const model = modelForTier(complexity.tier, config.model);
+      console.info(
+        `[draft] ${complexity.tier} (score ${complexity.score}) → ${model}: ${complexity.reasons.join("; ")}`,
+      );
+
       const body = {
-        model: config.model,
+        model,
         instructions: searchable
           ? cstInstructions(request.marketplace)
           : restrictedInstructions(request.marketplace),
@@ -232,7 +248,7 @@ export function getOpenAiProvider(): DraftProvider | undefined {
          */
         if (!attempt.ok && attempt.status === 400 && /temperature/i.test(attempt.message ?? "")) {
           console.info(
-            `[draft] ${config.model} rejects 'temperature'; retrying without it`,
+            `[draft] ${model} rejects 'temperature'; retrying without it`,
           );
           const withoutTemperature: Record<string, unknown> = { ...body };
           delete withoutTemperature.temperature;
@@ -276,7 +292,10 @@ export function getOpenAiProvider(): DraftProvider | undefined {
         // was written without policy.
         requiresReview: !searchable || validated.requiresReview,
         missingInformation: missing,
-        model: config.model,
+        // The model that ACTUALLY ran, not the configured default. This is
+        // what reaches ai_usage_log and the sidebar, so a tiered deployment
+        // can be audited per draft.
+        model,
         provider: "openai",
         knowledgeAvailable: searchable,
         knowledgeReason,

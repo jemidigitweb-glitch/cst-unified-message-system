@@ -74,6 +74,7 @@ describe("recording usage", () => {
       draftRevisionId: "77",
       usage: { inputTokens: 12_000, outputTokens: 400, totalTokens: 12_400 },
       outcome: "ok",
+      durationMs: 1_842.6,
     });
 
     expect(result.recorded).toBe(true);
@@ -81,6 +82,8 @@ describe("recording usage", () => {
     expect(calls[0]!.text).toContain("INSERT INTO cst_app.ai_usage_log");
     expect(calls[0]!.values).toEqual([
       "openai", "gpt-4.1", "239", "77", 12_000, 400, 12_400, expect.any(Number), "ok",
+      // Rounded to whole milliseconds, which is what the integer column holds.
+      1_843,
     ]);
   });
 
@@ -96,7 +99,9 @@ describe("recording usage", () => {
     });
     // input, output, total and cost all null — a zero would understate spend
     // in exactly the case where the number matters.
-    expect(calls[0]!.values?.slice(4)).toEqual([null, null, null, null, "ok"]);
+    // An unmeasured duration is null too, for the same reason: a zero would
+    // read as "instant", which no generation ever is.
+    expect(calls[0]!.values?.slice(4)).toEqual([null, null, null, null, "ok", null]);
   });
 
   /**
