@@ -52,6 +52,43 @@ export const inboxItemSchema = z.object({
 
 export type InboxItem = z.infer<typeof inboxItemSchema>;
 
+/**
+ * Why a conversation has no rule-grounded reply. Two different findings,
+ * both shown as one "No Rule" list because both leave a reviewer with the
+ * same next action:
+ *
+ *   no_corpus     the marketplace's entire approved rule set was empty when
+ *                 generation was attempted, so the model was never called.
+ *                 Recorded once, by the pre-generation gate.
+ *   no_citation   generation ran and read the whole corpus, but the newest
+ *                 generated reply for THIS conversation cited none of it.
+ *                 Derived, not recorded — read back from that revision's
+ *                 own stored citations every time the list loads.
+ */
+export const NO_RULE_REASONS = ["no_corpus", "no_citation"] as const;
+export type NoRuleReason = (typeof NO_RULE_REASONS)[number];
+
+/**
+ * A conversation the CST knowledge base could not ground a reply for.
+ *
+ * Every field an `InboxItem` has, plus what explains the finding. Deliberately
+ * NOT a new normalisation of either finding — `caseType` for `no_corpus` comes
+ * back exactly as the writer stored it (the same classifier `NoRuleFlag`
+ * calls), and for `no_citation` it is produced by calling that same classifier
+ * fresh, never a second implementation of it. `analysedAt` is the finding's
+ * own timestamp either way: when it was recorded, or when the ungrounded
+ * reply was generated.
+ */
+export const noRuleConversationSchema = inboxItemSchema.extend({
+  /** The classifier's label for the case, or null when it declined to name one. */
+  caseType: z.string().nullable(),
+  /** When this finding was recorded or last confirmed, verbatim. */
+  analysedAt: z.string(),
+  reason: z.enum(NO_RULE_REASONS),
+});
+
+export type NoRuleConversationItem = z.infer<typeof noRuleConversationSchema>;
+
 export const conversationMessageViewSchema = z.object({
   id: z.string(),
   direction: messageDirectionSchema,

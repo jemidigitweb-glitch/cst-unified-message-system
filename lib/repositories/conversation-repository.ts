@@ -5,8 +5,10 @@ import type {
   ConversationDetail,
   ConversationMessageView,
   InboxItem,
+  NoRuleConversationItem,
 } from "@/lib/domain/inbox";
 import type { Marketplace } from "@/lib/domain/marketplace";
+import { classifyCaseType } from "@/lib/knowledge/case-type";
 
 /**
  * Read-only conversation repository over cst_app.
@@ -78,6 +80,101 @@ WHERE c.marketplace = $1
 ORDER BY c.last_source_ts DESC, c.id DESC
 LIMIT $3`;
 
+/**
+ * The No Rule list, source 1 of 2: conversations refused before generation
+ * ever ran, because the marketplace's whole approved corpus was empty.
+ *
+ * Writing the finding is entirely `lib/sync/rule-analysis-writer.ts`'s
+ * business, unchanged by this query — `recordNoApplicableRule` (a refused
+ * Generate) and `clearRuleAnalysis` (a grounded draft landing) are the only
+ * two places a row here is created or removed. This only reads what is
+ * already there, joined to the conversation it describes.
+ *
+ * Newest finding first: a conversation flagged five minutes ago is more
+ * likely to need attention than one flagged three weeks ago.
+ */
+const LIST_NO_RULE_CONVERSATIONS = `
+SELECT c.id::text                  AS id,
+       c.marketplace,
+       c.sub_source_id,
+       c.counterparty_ref,
+       c.listing_item_ref,
+       c.workflow_state,
+       c.needs_context,
+       c.inbox_visibility,
+       c.first_source_ts::text     AS first_source_ts,
+       c.last_source_ts::text      AS last_source_ts,
+       c.message_count,
+       c.inbound_count,
+       ${LAST_DIRECTION}           AS last_direction,
+       ra.case_type,
+       ra.analysed_at::text        AS analysed_at,
+       'no_corpus'::text           AS reason
+FROM cst_app.conversation_rule_analysis ra
+JOIN cst_app.conversations c ON c.id = ra.conversation_id
+WHERE c.marketplace = $1
+  AND ra.outcome = 'no_applicable_rule'
+ORDER BY ra.analysed_at DESC, c.id DESC
+LIMIT $2`;
+
+/**
+ * The No Rule list, source 2 of 2: conversations where generation DID run —
+ * the marketplace had a corpus — but this conversation's newest generated
+ * reply cited none of it.
+ *
+ * Nothing here decides applicability or re-runs any check the generator
+ * already made. `latest_generated` picks each conversation's newest revision
+ * with `origin = 'generated'` (an edit carries no citations of its own and is
+ * not this question); the outer query reads whether ANY row for that exact
+ * revision names a `cst_document` source — precisely the citation list
+ * `DraftPanel` already reads to decide whether to show the same flag.
+ *
+ * Excludes a conversation already covered by the no_corpus source above: a
+ * grounded-or-not generation only happens once a corpus exists, and saving
+ * any generated revision clears that finding in the same transaction (see
+ * `lib/sync/draft-writer.ts` / the draft route), so the two are not expected
+ * to overlap — this is defence in depth against showing one conversation
+ * twice, not a case this schema can actually produce today.
+ */
+const LIST_UNGROUNDED_DRAFT_CONVERSATIONS = `
+WITH latest_generated AS (
+  SELECT DISTINCT ON (dr.conversation_id)
+         dr.conversation_id,
+         r.id         AS revision_id,
+         r.created_at AS created_at
+  FROM cst_app.draft_replies dr
+  JOIN cst_app.draft_revisions r ON r.draft_reply_id = dr.id
+  WHERE r.origin = 'generated'
+  ORDER BY dr.conversation_id, r.revision DESC
+)
+SELECT c.id::text                  AS id,
+       c.marketplace,
+       c.sub_source_id,
+       c.counterparty_ref,
+       c.listing_item_ref,
+       c.workflow_state,
+       c.needs_context,
+       c.inbox_visibility,
+       c.first_source_ts::text     AS first_source_ts,
+       c.last_source_ts::text      AS last_source_ts,
+       c.message_count,
+       c.inbound_count,
+       ${LAST_DIRECTION}           AS last_direction,
+       lg.created_at::text         AS analysed_at,
+       'no_citation'::text         AS reason
+FROM latest_generated lg
+JOIN cst_app.conversations c ON c.id = lg.conversation_id
+WHERE c.marketplace = $1
+  AND NOT EXISTS (
+    SELECT 1 FROM cst_app.draft_revision_sources s
+    WHERE s.draft_revision_id = lg.revision_id AND s.source_kind = 'cst_document'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM cst_app.conversation_rule_analysis ra WHERE ra.conversation_id = c.id
+  )
+ORDER BY lg.created_at DESC, c.id DESC
+LIMIT $2`;
+
 const GET_CONVERSATION = `
 SELECT c.id::text                  AS id,
        c.marketplace,
@@ -132,6 +229,18 @@ type ConversationRow = {
   last_direction: string | null;
 };
 
+type NoRuleConversationRow = ConversationRow & {
+  case_type: string | null;
+  analysed_at: string;
+  reason: string;
+};
+
+/** The `no_citation` query's row: same shape, minus the case type it doesn't have yet. */
+type UngroundedDraftRow = ConversationRow & {
+  analysed_at: string;
+  reason: string;
+};
+
 type MessageRow = {
   id: string;
   direction: string;
@@ -159,6 +268,15 @@ function toInboxItem(row: ConversationRow): InboxItem {
     messageCount: Number(row.message_count),
     inboundCount: Number(row.inbound_count),
     lastDirection: row.last_direction as InboxItem["lastDirection"],
+  };
+}
+
+function toNoRuleItem(row: NoRuleConversationRow): NoRuleConversationItem {
+  return {
+    ...toInboxItem(row),
+    caseType: row.case_type,
+    analysedAt: row.analysed_at,
+    reason: row.reason as NoRuleConversationItem["reason"],
   };
 }
 
@@ -208,6 +326,66 @@ export async function listConversations(
     values: [options.marketplace, options.placement ?? null, clampLimit(options.limit)],
   });
   return (rows as ConversationRow[]).map(toInboxItem);
+}
+
+/**
+ * Lists one marketplace's No Rule conversations, most recently flagged first.
+ *
+ * The marketplace is required for the same reason it is on `listConversations`:
+ * a mixed list would put findings from different sources side by side, which
+ * is exactly what the tabbed workspace exists to prevent.
+ *
+ * TWO SOURCES, MERGED. `no_corpus` (the marketplace had nothing to generate
+ * from) and `no_citation` (generation ran but this conversation's newest
+ * reply cited nothing) are read separately — see the two queries above — and
+ * combined here into one newest-first list, because both leave a reviewer
+ * with the same next action.
+ *
+ * `no_citation` rows do not carry a stored case type, so it is produced the
+ * same way `NoRuleFlag` produces it for an open conversation: read that
+ * conversation's messages and call the SAME classifier. This is the one place
+ * that costs an extra query per row, and it is bounded by `limit` rather than
+ * by how large the marketplace is.
+ */
+export async function listNoRuleConversations(
+  client: Queryable,
+  options: {
+    readonly marketplace: Marketplace;
+    readonly limit?: number;
+  },
+): Promise<NoRuleConversationItem[]> {
+  const limit = clampLimit(options.limit);
+
+  const [corpusResult, citationResult] = await Promise.all([
+    client.query({ text: LIST_NO_RULE_CONVERSATIONS, values: [options.marketplace, limit] }),
+    client.query({
+      text: LIST_UNGROUNDED_DRAFT_CONVERSATIONS,
+      values: [options.marketplace, limit],
+    }),
+  ]);
+
+  const corpusItems = (corpusResult.rows as NoRuleConversationRow[]).map(toNoRuleItem);
+
+  const citationRows = citationResult.rows as UngroundedDraftRow[];
+  const citationItems = await Promise.all(
+    citationRows.map(async (row): Promise<NoRuleConversationItem> => {
+      const { rows: messageRows } = await client.query({
+        text: GET_MESSAGES,
+        values: [row.id],
+      });
+      const caseType = classifyCaseType((messageRows as MessageRow[]).map(toMessageView)).label;
+      return {
+        ...toInboxItem(row),
+        caseType,
+        analysedAt: row.analysed_at,
+        reason: row.reason as NoRuleConversationItem["reason"],
+      };
+    }),
+  );
+
+  return [...corpusItems, ...citationItems]
+    .sort((a, b) => (a.analysedAt < b.analysedAt ? 1 : a.analysedAt > b.analysedAt ? -1 : 0))
+    .slice(0, limit);
 }
 
 /** A conversation id as it arrives from a URL, before it is trusted. */
