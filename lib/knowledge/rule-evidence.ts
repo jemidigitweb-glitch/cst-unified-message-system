@@ -72,6 +72,61 @@ export function displayTitleOf(rule: {
   return title !== "" ? title : (rule.category ?? "CST rule");
 }
 
+/**
+ * Why a rule applies, taken from the rule itself.
+ *
+ * Retrieval reports no reason, and inventing one would be exactly the
+ * fabrication the grounding design exists to prevent. So the reason shown
+ * beside a rule is the rule's OWN opening condition — "Customer claims wrong
+ * colour received" — which is genuine retrieved text, and is what a person
+ * would point at if asked why it matched.
+ *
+ * Returns null when the only candidate restates the title. The comparison
+ * happens AFTER the label prefix is stripped: comparing before let
+ * "KEY RULE: Always use official messaging" through as different from the
+ * title, and stripping then made the two identical, so the panel printed the
+ * same sentence twice. A reason that repeats the title is not a reason.
+ */
+export function matchReasonOf(rule: {
+  readonly displayTitle: string;
+  readonly text: string;
+}): string | null {
+  const title = rule.displayTitle.trim().replace(/…$/, "").toLowerCase();
+
+  /**
+   * A TRUNCATED title still restates itself, so this compares by prefix.
+   *
+   * Two different things truncate a title, and neither is detectable from the
+   * string alone. `displayTitleOf` cuts a long first line at 120 characters and
+   * appends an ellipsis; separately, some workbooks store an already-clipped
+   * sentence in the name column with no marker at all — live Amazon rule
+   * "Is every fact stated in this message ... verified from the l" is one. An
+   * exact comparison called both of those different from the full sentence, so
+   * the panel printed the long version directly beneath the short one.
+   *
+   * The 30-character floor is what keeps this honest. Without it a short area
+   * title would swallow any line that happened to open with the same word; with
+   * it, a prefix that long is the same sentence and not a coincidence. Below the
+   * floor the comparison stays exact.
+   */
+  const MEANINGFUL_PREFIX = 30;
+  const restatesTitle = (line: string) => {
+    const candidate = line.toLowerCase();
+    if (candidate === title) return true;
+    const shorter = Math.min(candidate.length, title.length);
+    if (shorter < MEANINGFUL_PREFIX) return false;
+    return candidate.startsWith(title) || title.startsWith(candidate);
+  };
+
+  const candidate = rule.text
+    .split("\n")
+    .map((line) => line.trim().replace(LABEL_PREFIX, "").trim())
+    .find((line) => line !== "" && !restatesTitle(line));
+
+  if (candidate === undefined) return null;
+  return candidate.length > 150 ? `${candidate.slice(0, 147)}…` : candidate;
+}
+
 /** One cited rule, resolved to something a person can verify. */
 export type RuleEvidence = {
   readonly ref: string;

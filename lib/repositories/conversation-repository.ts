@@ -47,6 +47,7 @@ export const DEFAULT_INBOX_LIMIT = 100;
 const LIST_CONVERSATIONS = `
 SELECT id::text                    AS id,
        marketplace,
+       sub_source_id,
        counterparty_ref,
        listing_item_ref,
        workflow_state,
@@ -65,6 +66,7 @@ LIMIT $3`;
 const GET_CONVERSATION = `
 SELECT id::text                    AS id,
        marketplace,
+       sub_source_id,
        counterparty_ref,
        listing_item_ref,
        workflow_state,
@@ -101,6 +103,7 @@ ORDER BY source_ts ASC, source_pk::bigint ASC`;
 type ConversationRow = {
   id: string;
   marketplace: string;
+  sub_source_id: number | null;
   counterparty_ref: string;
   listing_item_ref: string | null;
   workflow_state: string;
@@ -125,6 +128,10 @@ function toInboxItem(row: ConversationRow): InboxItem {
   return {
     id: row.id,
     marketplace: row.marketplace as InboxItem["marketplace"],
+    // The column is NOT NULL, but a row read through an older projection would
+    // arrive undefined, and `undefined` in a JSON response is a dropped field
+    // rather than a stated absence.
+    subSourceId: row.sub_source_id ?? null,
     counterpartyRef: row.counterparty_ref,
     listingItemRef: row.listing_item_ref,
     workflowState: row.workflow_state as InboxItem["workflowState"],

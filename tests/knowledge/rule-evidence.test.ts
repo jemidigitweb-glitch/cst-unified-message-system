@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { CstRule } from "@/lib/domain/knowledge";
-import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
+import { matchReasonOf, resolveEvidence } from "@/lib/knowledge/rule-evidence";
 
 /**
  * The audit trail behind a draft.
@@ -135,5 +135,96 @@ describe("resolving citations to documents", () => {
       sourceRow: null,
     });
     expect(report.documents).toEqual([]);
+  });
+});
+
+/**
+ * Why a rule matched, as the sidebar states it.
+ *
+ * The reason must be evidence, never generated prose, so it is taken from the
+ * rule text itself -- and withheld entirely when the only candidate line would
+ * repeat the title back at the reader.
+ */
+describe("the reason a rule matched", () => {
+  it("is the rule's own condition, taken from its text", () => {
+    expect(
+      matchReasonOf({
+        displayTitle: "Wrong colour",
+        text: "Wrong colour\nCustomer claims the colour differs from the listing.",
+      }),
+    ).toBe("Customer claims the colour differs from the listing.");
+  });
+
+  it("looks past a label prefix to the sentence behind it", () => {
+    expect(
+      matchReasonOf({
+        displayTitle: "Business invoice generation requested",
+        text: "Business invoice generation requested\nESCALATE TO: Accounts Team",
+      }),
+    ).toBe("ESCALATE TO: Accounts Team");
+  });
+
+  it("is withheld when it would only restate the title", () => {
+    expect(
+      matchReasonOf({
+        displayTitle: "Always use official messaging",
+        text: "KEY RULE: Always use official messaging",
+      }),
+    ).toBeNull();
+  });
+
+  /**
+   * Found on live Amazon conversation 31757. `displayTitleOf` had cut the
+   * title at 120 characters, so an exact comparison called the full sentence
+   * different and the panel printed it twice -- once short, once long.
+   */
+  const LONG =
+    "Is every fact stated in this message - tracking status, refund amount, stock status, dispatch date - verified from the live system right now?";
+
+  it("is withheld when the title is a truncated form of the same sentence", () => {
+    expect(matchReasonOf({ displayTitle: `${LONG.slice(0, 117)}…`, text: LONG })).toBeNull();
+  });
+
+  /**
+   * Live Amazon conversation 31757. Some workbooks store an ALREADY-clipped
+   * sentence in the name column, with no ellipsis to detect it by, so the panel
+   * printed the full sentence directly beneath the clipped one.
+   */
+  it("is withheld when the workbook itself clipped the title, with no marker", () => {
+    expect(matchReasonOf({ displayTitle: LONG.slice(0, 120), text: LONG })).toBeNull();
+  });
+
+  it("still reports a different line that merely opens the same way", () => {
+    const long = "Customer asks about delivery timing and the promised date".padEnd(130, ".");
+    expect(
+      matchReasonOf({
+        displayTitle: long.slice(0, 120),
+        text: `${long}\nEscalate to the Delivery Team.`,
+      }),
+    ).toBe("Escalate to the Delivery Team.");
+  });
+
+  /**
+   * A short title must not swallow a longer line that opens the same way —
+   * "Delivery" would otherwise suppress every reason beginning "Delivery...".
+   */
+  it("does not suppress a reason merely sharing a short title's opening", () => {
+    expect(
+      matchReasonOf({
+        displayTitle: "Delivery",
+        text: "Delivery\nDelivery is late by more than ten working days.",
+      }),
+    ).toBe("Delivery is late by more than ten working days.");
+  });
+
+  it("is withheld when the rule has no text at all", () => {
+    expect(matchReasonOf({ displayTitle: "A title", text: "" })).toBeNull();
+  });
+
+  it("truncates rather than filling the sidebar with one rule", () => {
+    const reason = matchReasonOf({ displayTitle: "T", text: "x".repeat(400) });
+    // 147 characters plus the ellipsis.
+    expect(reason).toHaveLength(148);
+    expect(reason?.endsWith("\u2026")).toBe(true);
   });
 });

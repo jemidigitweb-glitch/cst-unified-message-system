@@ -20,6 +20,17 @@ export const inboxPlacementSchema = z.enum(["reply_inbox", "outbound_only", "fil
 export const inboxItemSchema = z.object({
   id: z.string(),
   marketplace: marketplaceSchema,
+  /**
+   * Which of the marketplace's own accounts the conversation arrived on.
+   *
+   * An integer the source uses to separate its selling accounts — not a
+   * customer, not a person, and not a connection detail. It is here because an
+   * exported conversation has to say which account it came from to be
+   * actionable; a reviewer chasing a B&Q order needs to know which B&Q account
+   * received it. Nullable so a source that attributes nothing stays
+   * representable rather than being given a made-up account.
+   */
+  subSourceId: z.number().int().nullable(),
   counterpartyRef: z.string(),
   listingItemRef: z.string().nullable(),
   workflowState: workflowStateSchema,

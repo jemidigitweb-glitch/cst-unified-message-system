@@ -14,6 +14,7 @@ function conversationRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "1",
     marketplace: "ebay",
+    sub_source_id: 7,
     counterparty_ref: "counterparty-a",
     listing_item_ref: "listing-1",
     workflow_state: "received",
@@ -98,6 +99,7 @@ describe("inbox listing", () => {
     expect(item).toEqual({
       id: "1",
       marketplace: "ebay",
+      subSourceId: 7,
       counterpartyRef: "counterparty-a",
       listingItemRef: "listing-1",
       workflowState: "received",
