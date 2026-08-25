@@ -154,9 +154,23 @@ export function DraftEvidencePanel({
 
   return (
     <div className="flex flex-col gap-4 border-t border-black/10 p-4 dark:border-white/15">
+      {/*
+       * A one-line answer to the first question a reviewer has before reading
+       * anything else here: did this conversation actually get a draft? The
+       * rest of the panel (tokens, cited rules) only renders once that is
+       * already true — see the `data.evidence === null` early return above —
+       * so this line states a fact already guaranteed, it does not compute one.
+       */}
+      <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">
+        <span aria-hidden className="mr-1">
+          ✓
+        </span>
+        Draft generated
+      </p>
+
       {data.usage !== null && (
         <section>
-          <Heading>AI usage</Heading>
+          <Heading>AI Usage</Heading>
           <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <dt className="opacity-55">Provider</dt>
             <dd className="text-right">{data.usage.provider}</dd>
@@ -196,7 +210,7 @@ export function DraftEvidencePanel({
         {/* Not "Matched CST rules" when none matched: a heading that promises
             matches above a flag saying there are none reads as a loading
             state. */}
-        <Heading>{cited.length === 0 ? "CST rule coverage" : "Matched CST rules"}</Heading>
+        <Heading>{cited.length === 0 ? "CST rule coverage" : "CST Rules Used"}</Heading>
         {cited.length === 0 ? (
           /*
            * The ONLY place the export is offered. It belongs to this case and

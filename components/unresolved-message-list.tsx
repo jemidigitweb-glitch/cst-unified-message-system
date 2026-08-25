@@ -54,7 +54,7 @@ export function UnresolvedMessageList({
 
   return (
     <>
-      <h2 className="px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase opacity-55">
+      <h2 className="px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase opacity-70">
         Inbox · {feed.messages.length}
       </h2>
       <ul data-testid="unresolved-message-list">
@@ -78,7 +78,7 @@ export function UnresolvedMessageList({
                   <span className="truncate text-sm font-medium">
                     {unresolvedMessageTitle(message, capability)}
                   </span>
-                  <span className="shrink-0 text-[11px] tabular-nums opacity-55">
+                  <span className="shrink-0 text-[11px] tabular-nums opacity-70">
                     {stamp.date} {stamp.time}
                   </span>
                 </span>

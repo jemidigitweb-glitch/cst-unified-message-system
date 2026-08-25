@@ -9,6 +9,8 @@ import type {
 } from "@/lib/domain/inbox";
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
+import { type LoadedRules, loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
+import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
 
 /**
  * Read-only conversation repository over cst_app.
@@ -78,7 +80,8 @@ FROM cst_app.conversations c
 WHERE c.marketplace = $1
   AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
 ORDER BY c.last_source_ts DESC, c.id DESC
-LIMIT $3`;
+LIMIT $3
+OFFSET $4`;
 
 /**
  * The No Rule list, source 1 of 2: conversations refused before generation
@@ -160,20 +163,33 @@ SELECT c.id::text                  AS id,
        c.message_count,
        c.inbound_count,
        ${LAST_DIRECTION}           AS last_direction,
+       lg.revision_id::text        AS revision_id,
        lg.created_at::text         AS analysed_at,
        'no_citation'::text         AS reason
 FROM latest_generated lg
 JOIN cst_app.conversations c ON c.id = lg.conversation_id
 WHERE c.marketplace = $1
   AND NOT EXISTS (
-    SELECT 1 FROM cst_app.draft_revision_sources s
-    WHERE s.draft_revision_id = lg.revision_id AND s.source_kind = 'cst_document'
-  )
-  AND NOT EXISTS (
     SELECT 1 FROM cst_app.conversation_rule_analysis ra WHERE ra.conversation_id = c.id
   )
-ORDER BY lg.created_at DESC, c.id DESC
-LIMIT $2`;
+ORDER BY lg.created_at DESC, c.id DESC`;
+
+/**
+ * Every `cst_document` ref stored against a batch of draft revisions, keyed
+ * by revision so the caller can resolve each candidate independently.
+ *
+ * A stored ref row is not itself proof of grounding — see `resolveEvidence`
+ * and its caller below. This query only fetches what was cited; whether it
+ * still resolves against the current corpus is decided in application code,
+ * the same place `/draft/evidence` decides it, so the two can never
+ * disagree about the same conversation.
+ */
+const LIST_CITED_REFS = `
+SELECT draft_revision_id::text AS revision_id,
+       source_ref
+FROM cst_app.draft_revision_sources
+WHERE source_kind = 'cst_document'
+  AND draft_revision_id = ANY($1::bigint[])`;
 
 const GET_CONVERSATION = `
 SELECT c.id::text                  AS id,
@@ -237,6 +253,7 @@ type NoRuleConversationRow = ConversationRow & {
 
 /** The `no_citation` query's row: same shape, minus the case type it doesn't have yet. */
 type UngroundedDraftRow = ConversationRow & {
+  revision_id: string;
   analysed_at: string;
   reason: string;
 };
@@ -300,19 +317,45 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_INBOX_LIMIT);
 }
 
+function clampOffset(offset: number | undefined): number {
+  if (offset === undefined || !Number.isInteger(offset) || offset < 0) return 0;
+  return offset;
+}
+
+export type ConversationPage = {
+  readonly items: InboxItem[];
+  /**
+   * Whether a conversation older than the last one in `items` still exists
+   * for this marketplace. Read from a one-extra-row overfetch rather than a
+   * separate COUNT query — cheap, and it cannot drift from what was actually
+   * returned the way a count taken before or after could.
+   */
+  readonly hasMore: boolean;
+};
+
 /**
- * Lists one marketplace's customer-reply inbox, newest activity first.
+ * Lists one marketplace's customer-reply inbox, newest activity first, one
+ * page at a time.
  *
  * The marketplace is required, not optional: a mixed default inbox would put
  * conversations from different sources — with different direction guarantees —
  * side by side, which is exactly what the tabbed workspace exists to prevent.
  * Callers pass a value already validated against the capability allowlist.
+ *
+ * PAGED, NOT WINDOWED BY DATE. A high-volume marketplace can put hundreds of
+ * conversations inside even a short date range, so "the last 30 days" is not
+ * a fixed row count and cannot be a single fixed-size request. `offset` lets
+ * a caller keep asking for the next page until `hasMore` is false, however
+ * far back that turns out to be, rather than guessing a limit large enough
+ * up front.
  */
 export async function listConversations(
   client: Queryable,
   options: {
     readonly marketplace: Marketplace;
     readonly limit?: number;
+    /** How many conversations to skip, for the second and later pages. */
+    readonly offset?: number;
     /**
      * Narrow to one placement. Omit to list everything, which is the default:
      * hiding a stored conversation from every view is how one becomes
@@ -320,12 +363,22 @@ export async function listConversations(
      */
     readonly placement?: InboxItem["inboxPlacement"] | null;
   },
-): Promise<InboxItem[]> {
+): Promise<ConversationPage> {
+  const limit = clampLimit(options.limit);
   const { rows } = await client.query({
     text: LIST_CONVERSATIONS,
-    values: [options.marketplace, options.placement ?? null, clampLimit(options.limit)],
+    values: [
+      options.marketplace,
+      options.placement ?? null,
+      // One extra row, never returned, purely to learn whether the next
+      // page would be non-empty.
+      limit + 1,
+      clampOffset(options.offset),
+    ],
   });
-  return (rows as ConversationRow[]).map(toInboxItem);
+  const hasMore = rows.length > limit;
+  const items = (rows as ConversationRow[]).slice(0, limit).map(toInboxItem);
+  return { items, hasMore };
 }
 
 /**
@@ -337,38 +390,60 @@ export async function listConversations(
  *
  * TWO SOURCES, MERGED. `no_corpus` (the marketplace had nothing to generate
  * from) and `no_citation` (generation ran but this conversation's newest
- * reply cited nothing) are read separately — see the two queries above — and
- * combined here into one newest-first list, because both leave a reviewer
- * with the same next action.
+ * reply has no citation that actually resolves) are read separately — see
+ * the queries above — and combined here into one newest-first list, because
+ * both leave a reviewer with the same next action.
+ *
+ * A STORED `cst_document` ROW IS NOT PROOF OF GROUNDING. It used to be: a
+ * conversation was excluded from `no_citation` as soon as any such row
+ * existed for its latest generated revision, whatever the ref inside it
+ * said. That let a draft through with citations that were malformed, or
+ * that named a rule the current documents no longer contain — exactly as
+ * ungrounded as no citation at all, but invisible to this list. Every
+ * candidate's refs are now resolved against the SAME corpus and the SAME
+ * `resolveEvidence` function the `/draft/evidence` sidebar uses, so the two
+ * can never disagree about the same conversation: a ref that fails to
+ * resolve there fails to resolve here, and the conversation belongs in No
+ * Rule either way.
  *
  * `no_citation` rows do not carry a stored case type, so it is produced the
  * same way `NoRuleFlag` produces it for an open conversation: read that
  * conversation's messages and call the SAME classifier. This is the one place
- * that costs an extra query per row, and it is bounded by `limit` rather than
- * by how large the marketplace is.
+ * that costs an extra query per row, and it runs only for rows that survive
+ * the citation check, not for every generated draft in the marketplace.
  */
 export async function listNoRuleConversations(
   client: Queryable,
   options: {
     readonly marketplace: Marketplace;
     readonly limit?: number;
+    /**
+     * Loads the CST rule corpus for one marketplace. Defaults to the real
+     * file-backed corpus (`loadRulesForConversation`); tests inject a fake
+     * one so this stays a query test, not a filesystem test.
+     */
+    readonly loadRules?: (marketplace: string) => LoadedRules;
   },
 ): Promise<NoRuleConversationItem[]> {
   const limit = clampLimit(options.limit);
 
   const [corpusResult, citationResult] = await Promise.all([
     client.query({ text: LIST_NO_RULE_CONVERSATIONS, values: [options.marketplace, limit] }),
-    client.query({
-      text: LIST_UNGROUNDED_DRAFT_CONVERSATIONS,
-      values: [options.marketplace, limit],
-    }),
+    client.query({ text: LIST_UNGROUNDED_DRAFT_CONVERSATIONS, values: [options.marketplace] }),
   ]);
 
   const corpusItems = (corpusResult.rows as NoRuleConversationRow[]).map(toNoRuleItem);
 
-  const citationRows = citationResult.rows as UngroundedDraftRow[];
+  const candidateRows = citationResult.rows as UngroundedDraftRow[];
+  const ungroundedRows = await filterToUnresolvedCitations(
+    client,
+    candidateRows,
+    options.marketplace,
+    options.loadRules ?? loadRulesForConversation,
+  );
+
   const citationItems = await Promise.all(
-    citationRows.map(async (row): Promise<NoRuleConversationItem> => {
+    ungroundedRows.map(async (row): Promise<NoRuleConversationItem> => {
       const { rows: messageRows } = await client.query({
         text: GET_MESSAGES,
         values: [row.id],
@@ -386,6 +461,47 @@ export async function listNoRuleConversations(
   return [...corpusItems, ...citationItems]
     .sort((a, b) => (a.analysedAt < b.analysedAt ? 1 : a.analysedAt > b.analysedAt ? -1 : 0))
     .slice(0, limit);
+}
+
+/**
+ * Narrows candidates (every marketplace conversation whose newest generated
+ * draft stored at least one `cst_document` row, or none at all) down to the
+ * ones where nothing actually resolves.
+ *
+ * Skips the corpus load entirely when there are no candidates — the common
+ * case for a quiet marketplace — since loading fourteen workbooks is not
+ * free even cached, and a check with nothing to check is not worth it.
+ */
+async function filterToUnresolvedCitations(
+  client: Queryable,
+  candidates: readonly UngroundedDraftRow[],
+  marketplace: string,
+  loadRules: (marketplace: string) => LoadedRules,
+): Promise<UngroundedDraftRow[]> {
+  if (candidates.length === 0) return [];
+
+  const { knowledge } = loadRules(marketplace);
+  const rules = knowledge.state === "available" ? knowledge.rules : [];
+
+  const { rows: refRows } = await client.query({
+    text: LIST_CITED_REFS,
+    values: [candidates.map((row) => row.revision_id)],
+  });
+
+  const refsByRevision = new Map<string, string[]>();
+  for (const { revision_id, source_ref } of refRows as {
+    revision_id: string;
+    source_ref: string;
+  }[]) {
+    const existing = refsByRevision.get(revision_id);
+    if (existing) existing.push(source_ref);
+    else refsByRevision.set(revision_id, [source_ref]);
+  }
+
+  return candidates.filter((row) => {
+    const refs = refsByRevision.get(row.revision_id) ?? [];
+    return resolveEvidence(rules, refs).cited.length === 0;
+  });
 }
 
 /** A conversation id as it arrives from a URL, before it is trusted. */

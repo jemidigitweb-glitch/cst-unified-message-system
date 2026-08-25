@@ -177,6 +177,16 @@ export function DraftPanel({
   const [evidence, setEvidence] = useState<EvidencePayload | null>(null);
   const [evidenceBusy, setEvidenceBusy] = useState(false);
   /**
+   * Display only — whether the "Based on CST rules" list is expanded.
+   *
+   * Starts closed, by request: a reviewer opens it when they want to check
+   * the rules, rather than always seeing the full list before they have
+   * asked for it. This only changes what is rendered on first paint — it
+   * does not change when or how the rules are fetched, validated, or which
+   * ones appear once opened.
+   */
+  const [rulesExpanded, setRulesExpanded] = useState(false);
+  /**
    * Set when the server REFUSED to generate: no approved rule could ground a
    * reply, so it wrote none. Held here rather than derived from the absence of
    * a draft, because "never generated" and "refused" are different states and
@@ -610,68 +620,99 @@ export function DraftPanel({
               </div>
             ) : (
               <div data-testid="rule-evidence" className="flex flex-col gap-1.5 text-xs">
-                <p className="text-[11px] font-medium tracking-wide uppercase opacity-55">
+                {/*
+                 * UI-ONLY DISCLOSURE. Expanding or collapsing this never
+                 * fetches, revalidates, or drops anything — `evidence` and
+                 * `rulesByArea` are unchanged either way, this only decides
+                 * whether the same list is rendered on screen right now.
+                 */}
+                <button
+                  type="button"
+                  onClick={() => setRulesExpanded((expanded) => !expanded)}
+                  aria-expanded={rulesExpanded}
+                  className="flex items-center gap-1 text-[11px] font-medium tracking-wide uppercase opacity-55"
+                >
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    aria-hidden
+                    className={`transition-transform ${rulesExpanded ? "rotate-90" : ""}`}
+                  >
+                    <path
+                      d="M3 1.5 7 5l-4 3.5"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
                   Based on CST rules
-                </p>
+                </button>
 
-                {/*
-                 * The count is shown while the names load, so the section never
-                 * flashes empty and a reviewer can already see the draft was
-                 * grounded even on a slow request.
-                 */}
-                {rulesByArea.length === 0 && (
-                  <p className="opacity-60">
-                    {evidenceBusy
-                      ? `Loading ${citedRefs.length} cited rule${citedRefs.length === 1 ? "" : "s"}…`
-                      : `${citedRefs.length} cited rule${citedRefs.length === 1 ? "" : "s"}`}
-                  </p>
-                )}
+                {rulesExpanded && (
+                  <>
+                    {/*
+                     * The count is shown while the names load, so the section
+                     * never flashes empty and a reviewer can already see the
+                     * draft was grounded even on a slow request.
+                     */}
+                    {rulesByArea.length === 0 && (
+                      <p className="opacity-60">
+                        {evidenceBusy
+                          ? `Loading ${citedRefs.length} cited rule${citedRefs.length === 1 ? "" : "s"}…`
+                          : `${citedRefs.length} cited rule${citedRefs.length === 1 ? "" : "s"}`}
+                      </p>
+                    )}
 
-                {rulesByArea.map((group) => (
-                  <div key={group.area} className="flex flex-col">
-                    <p className="font-medium text-emerald-800 dark:text-emerald-200">
-                      <span aria-hidden className="mr-1.5">
-                        ✓
-                      </span>
-                      {group.area}
-                    </p>
-                    <ul className="ml-4 flex flex-col gap-0.5 opacity-75">
-                      {group.titles.map((title, index) => (
-                        <li key={`${group.area}-${index}`}>{title}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
+                    {rulesByArea.map((group) => (
+                      <div key={group.area} className="flex flex-col">
+                        <p className="font-medium text-emerald-800 dark:text-emerald-200">
+                          <span aria-hidden className="mr-1.5">
+                            ✓
+                          </span>
+                          {group.area}
+                        </p>
+                        <ul className="ml-4 flex flex-col gap-0.5 opacity-75">
+                          {group.titles.map((title, index) => (
+                            <li key={`${group.area}-${index}`}>{title}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
 
-                {/*
-                 * The "N cited rules no longer exist in the current documents"
-                 * line used to sit here, and has been removed from the screen
-                 * by request — deliberately with nothing in its place.
-                 *
-                 * THE VALIDATION BEHIND IT IS UNCHANGED. An unresolvable
-                 * citation is still separated from a resolvable one, still
-                 * excluded from the rules shown here, and still returned by the
-                 * evidence endpoint for an audit. It now also blocks
-                 * generation: a draft grounded only in citations that no longer
-                 * resolve is not saved at all, so the state this sentence
-                 * warned about can no longer reach a reviewer.
-                 */}
+                    {/*
+                     * The "N cited rules no longer exist in the current documents"
+                     * line used to sit here, and has been removed from the screen
+                     * by request — deliberately with nothing in its place.
+                     *
+                     * THE VALIDATION BEHIND IT IS UNCHANGED. An unresolvable
+                     * citation is still separated from a resolvable one, still
+                     * excluded from the rules shown here, and still returned by the
+                     * evidence endpoint for an audit. It now also blocks
+                     * generation: a draft grounded only in citations that no longer
+                     * resolve is not saved at all, so the state this sentence
+                     * warned about can no longer reach a reviewer.
+                     */}
 
-                {/*
-                 * Older drafts cite refs from before the reference format
-                 * changed. That says nothing about the documents, so it is
-                 * stated neutrally — and with the rule NAME recorded at the
-                 * time, never the reference itself. Falling back to printing
-                 * the raw refs, as this once did, is exactly the internal-id
-                 * leak the panel is supposed to prevent.
-                 */}
-                {(evidence?.evidence?.legacy.length ?? 0) > 0 && (
-                  <p className="opacity-55">
-                    {evidence!.evidence!.legacy.length} rule
-                    {evidence!.evidence!.legacy.length === 1 ? "" : "s"} cited before the reference
-                    format changed
-                    {legacyLabels.length > 0 ? `: ${legacyLabels.join("; ")}` : ""}
-                  </p>
+                    {/*
+                     * Older drafts cite refs from before the reference format
+                     * changed. That says nothing about the documents, so it is
+                     * stated neutrally — and with the rule NAME recorded at the
+                     * time, never the reference itself. Falling back to printing
+                     * the raw refs, as this once did, is exactly the internal-id
+                     * leak the panel is supposed to prevent.
+                     */}
+                    {(evidence?.evidence?.legacy.length ?? 0) > 0 && (
+                      <p className="opacity-55">
+                        {evidence!.evidence!.legacy.length} rule
+                        {evidence!.evidence!.legacy.length === 1 ? "" : "s"} cited before the
+                        reference format changed
+                        {legacyLabels.length > 0 ? `: ${legacyLabels.join("; ")}` : ""}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             ))}

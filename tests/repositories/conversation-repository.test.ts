@@ -83,7 +83,9 @@ describe("inbox listing", () => {
   it("can still narrow to one placement when a caller asks", async () => {
     const { calls, client } = fake([[]]);
     await listConversations(client, { marketplace: "ebay", limit: 5, placement: "reply_inbox" });
-    expect(calls[0]!.values).toEqual(["ebay", "reply_inbox", 5]);
+    // limit+1: one extra row is requested, never returned, purely to learn
+    // whether a next page exists. offset defaults to 0.
+    expect(calls[0]!.values).toEqual(["ebay", "reply_inbox", 6, 0]);
   });
 
   it("orders the inbox by latest activity first", async () => {
@@ -93,22 +95,54 @@ describe("inbox listing", () => {
   });
 
   it("bounds the result size", async () => {
+    // The query asks for one row more than the bound, purely to detect a
+    // next page; the bound itself is what these assert.
     const a = fake([[]]);
     await listConversations(a.client, { marketplace: "ebay" });
-    expect(a.calls[0]!.values![2]).toBe(DEFAULT_INBOX_LIMIT);
+    expect(a.calls[0]!.values![2]).toBe(DEFAULT_INBOX_LIMIT + 1);
 
     const b = fake([[]]);
     await listConversations(b.client, { marketplace: "ebay", limit: 99_999 });
-    expect(b.calls[0]!.values![2]).toBe(MAX_INBOX_LIMIT);
+    expect(b.calls[0]!.values![2]).toBe(MAX_INBOX_LIMIT + 1);
 
     const c = fake([[]]);
     await listConversations(c.client, { marketplace: "ebay", limit: 0 });
-    expect(c.calls[0]!.values![2]).toBe(DEFAULT_INBOX_LIMIT);
+    expect(c.calls[0]!.values![2]).toBe(DEFAULT_INBOX_LIMIT + 1);
+  });
+
+  it("skips by offset for the second and later pages", async () => {
+    const { calls, client } = fake([[]]);
+    await listConversations(client, { marketplace: "ebay", offset: 100 });
+    expect(calls[0]!.values![3]).toBe(100);
+
+    const { calls: defaultCalls, client: defaultClient } = fake([[]]);
+    await listConversations(defaultClient, { marketplace: "ebay" });
+    expect(defaultCalls[0]!.values![3]).toBe(0);
+  });
+
+  it("reports hasMore from the one-extra-row overfetch, not a count", async () => {
+    const rows = Array.from({ length: 3 }, (_, index) =>
+      conversationRow({ id: String(index + 1) }),
+    );
+
+    const exact = fake([rows.slice(0, 2)]);
+    const exactPage = await listConversations(exact.client, { marketplace: "ebay", limit: 2 });
+    expect(exactPage.items).toHaveLength(2);
+    expect(exactPage.hasMore).toBe(false);
+
+    const overflow = fake([rows]);
+    const overflowPage = await listConversations(overflow.client, {
+      marketplace: "ebay",
+      limit: 2,
+    });
+    // The third row proved a next page exists; it is not itself returned.
+    expect(overflowPage.items).toHaveLength(2);
+    expect(overflowPage.hasMore).toBe(true);
   });
 
   it("maps rows to the neutral inbox shape", async () => {
     const { client } = fake([[conversationRow({ needs_context: true })]]);
-    const [item] = await listConversations(client, { marketplace: "ebay" });
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
     expect(item).toEqual({
       id: "1",
       marketplace: "ebay",
@@ -128,7 +162,7 @@ describe("inbox listing", () => {
 
   it("exposes no source table or connection metadata to callers", async () => {
     const { client } = fake([[conversationRow()]]);
-    const [item] = await listConversations(client, { marketplace: "ebay" });
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
     for (const leaked of ["source_database", "source_schema", "source_table", "source_pk", "password", "host"]) {
       expect(item).not.toHaveProperty(leaked);
     }
@@ -147,13 +181,13 @@ describe("last message direction", () => {
 
   it("does not read it from a stored/carried column", async () => {
     const { client } = fake([[conversationRow({ last_direction: "inbound" })]]);
-    const [item] = await listConversations(client, { marketplace: "ebay" });
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
     expect(item?.lastDirection).toBe("inbound");
   });
 
   it("is null for a conversation with no messages landed yet", async () => {
     const { client } = fake([[conversationRow({ last_direction: null })]]);
-    const [item] = await listConversations(client, { marketplace: "ebay" });
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
     expect(item?.lastDirection).toBeNull();
   });
 
@@ -268,6 +302,7 @@ describe("No Rule listing: ungrounded generated drafts", () => {
   function ungroundedRow(overrides: Record<string, unknown> = {}) {
     return {
       ...conversationRow(),
+      revision_id: "50",
       analysed_at: "2026-08-22 14:00:00",
       reason: "no_citation",
       ...overrides,
@@ -286,13 +321,32 @@ describe("No Rule listing: ungrounded generated drafts", () => {
     };
   }
 
+  /** A stored citation row, as the third query (LIST_CITED_REFS) returns it. */
+  function citedRefRow(overrides: Record<string, unknown> = {}) {
+    return { revision_id: "50", source_ref: "RETREF-1-1", ...overrides };
+  }
+
+  /** A corpus with one real rule, resolvable by its ref. */
+  const RESOLVABLE_RULE = { ref: "RETREF-1-1", title: "Refund rule", text: "Refund text", category: null };
+  const loadRulesWith = (rules: typeof RESOLVABLE_RULE[]) => () => ({
+    knowledge:
+      rules.length > 0
+        ? ({ state: "available" as const, rules, sheetRef: "test" })
+        : ({ state: "not_configured" as const, reason: "test: empty corpus" }),
+    corpus: undefined,
+  });
+
   it("finds a conversation whose newest generated reply cited nothing", async () => {
-    const { calls, client } = fake([[], [ungroundedRow()], [messageRow()]]);
-    await listNoRuleConversations(client, { marketplace: "ebay" });
-    const query = calls[1]!.text;
-    expect(query).toContain("origin = 'generated'");
-    expect(query).toContain("source_kind = 'cst_document'");
-    expect(query).toContain("DISTINCT ON (dr.conversation_id)");
+    const { calls, client } = fake([[], [ungroundedRow()], [], [messageRow()]]);
+    await listNoRuleConversations(client, {
+      marketplace: "ebay",
+      loadRules: loadRulesWith([]),
+    });
+    const candidateQuery = calls[1]!.text;
+    expect(candidateQuery).toContain("origin = 'generated'");
+    expect(candidateQuery).toContain("DISTINCT ON (dr.conversation_id)");
+    // The presence check moved to its own query, run only for candidates that exist.
+    expect(calls[2]!.text).toContain("source_kind = 'cst_document'");
   });
 
   it("excludes a conversation already covered by the stored no_corpus finding", async () => {
@@ -302,20 +356,33 @@ describe("No Rule listing: ungrounded generated drafts", () => {
     expect(calls[1]!.text).toContain(
       "SELECT 1 FROM cst_app.conversation_rule_analysis ra WHERE ra.conversation_id = c.id",
     );
+    // No candidates, so the corpus is never loaded and no third query runs.
+    expect(calls).toHaveLength(2);
   });
 
   it("classifies the case from the conversation's own messages, not a stored value", async () => {
-    const { calls, client } = fake([[], [ungroundedRow()], [messageRow()]]);
-    const [item] = await listNoRuleConversations(client, { marketplace: "ebay" });
+    const { calls, client } = fake([[], [ungroundedRow()], [], [messageRow()]]);
+    const [item] = await listNoRuleConversations(client, {
+      marketplace: "ebay",
+      loadRules: loadRulesWith([]),
+    });
     // The message-fetch query for the classification, keyed to this conversation.
-    expect(calls[2]!.text).toContain("FROM cst_app.conversation_messages");
-    expect(calls[2]!.values).toEqual(["1"]);
+    expect(calls[3]!.text).toContain("FROM cst_app.conversation_messages");
+    expect(calls[3]!.values).toEqual(["1"]);
     expect(item?.caseType).toBe("Customer requesting a return or refund");
   });
 
   it("tags it as no_citation, using the revision's own timestamp", async () => {
-    const { client } = fake([[], [ungroundedRow({ analysed_at: "2026-08-23 08:15:00" })], [messageRow()]]);
-    const [item] = await listNoRuleConversations(client, { marketplace: "ebay" });
+    const { client } = fake([
+      [],
+      [ungroundedRow({ analysed_at: "2026-08-23 08:15:00" })],
+      [],
+      [messageRow()],
+    ]);
+    const [item] = await listNoRuleConversations(client, {
+      marketplace: "ebay",
+      loadRules: loadRulesWith([]),
+    });
     expect(item?.reason).toBe("no_citation");
     expect(item?.analysedAt).toBe("2026-08-23 08:15:00");
   });
@@ -324,11 +391,85 @@ describe("No Rule listing: ungrounded generated drafts", () => {
     const { client } = fake([
       [noRuleRow({ id: "1", analysed_at: "2026-08-20 09:00:00" })],
       [ungroundedRow({ id: "2", analysed_at: "2026-08-23 08:15:00" })],
+      [],
       [messageRow()],
     ]);
-    const items = await listNoRuleConversations(client, { marketplace: "ebay" });
+    const items = await listNoRuleConversations(client, {
+      marketplace: "ebay",
+      loadRules: loadRulesWith([]),
+    });
     expect(items.map((item) => item.id)).toEqual(["2", "1"]);
     expect(items.map((item) => item.reason)).toEqual(["no_citation", "no_corpus"]);
+  });
+
+  /**
+   * THE FIX ITSELF. A stored `cst_document` row used to be enough on its own
+   * to exclude a conversation from this list, whatever the ref inside it
+   * said. These two tests are the guard against that regressing.
+   */
+  describe("citation resolution, not just presence", () => {
+    it("excludes a conversation whose citation resolves to a real rule", async () => {
+      const { client } = fake([
+        [],
+        [ungroundedRow({ id: "3" })],
+        [citedRefRow({ source_ref: "RETREF-1-1" })],
+      ]);
+      const items = await listNoRuleConversations(client, {
+        marketplace: "ebay",
+        loadRules: loadRulesWith([RESOLVABLE_RULE]),
+      });
+      expect(items.map((item) => item.id)).not.toContain("3");
+    });
+
+    it("includes a conversation whose citation does not resolve against the current corpus", async () => {
+      const { calls, client } = fake([
+        [],
+        [ungroundedRow({ id: "4" })],
+        // The corpus has rules, but none matches this stored ref -- the
+        // documents moved on since this draft was generated.
+        [citedRefRow({ source_ref: "RETREF-DELETED-9" })],
+        [messageRow()],
+      ]);
+      const items = await listNoRuleConversations(client, {
+        marketplace: "ebay",
+        loadRules: loadRulesWith([RESOLVABLE_RULE]),
+      });
+      expect(items.map((item) => item.id)).toContain("4");
+      expect(calls[2]!.values).toEqual([["50"]]);
+    });
+
+    it("includes a conversation when the corpus itself is not configured", async () => {
+      const { client } = fake([
+        [],
+        [ungroundedRow({ id: "5" })],
+        [citedRefRow({ source_ref: "RETREF-1-1" })],
+        [messageRow()],
+      ]);
+      const items = await listNoRuleConversations(client, {
+        marketplace: "ebay",
+        loadRules: () => ({
+          knowledge: { state: "not_configured", reason: "test: unreadable corpus" },
+          corpus: undefined,
+        }),
+      });
+      expect(items.map((item) => item.id)).toContain("5");
+    });
+
+    it("works the same way for every marketplace, not only eBay", async () => {
+      const { calls, client } = fake([
+        [],
+        [ungroundedRow({ id: "6", marketplace: "amazon" })],
+        [citedRefRow({ source_ref: "RETREF-DELETED-9" })],
+        [messageRow()],
+      ]);
+      const items = await listNoRuleConversations(client, {
+        marketplace: "amazon",
+        loadRules: loadRulesWith([RESOLVABLE_RULE]),
+      });
+      expect(calls[0]!.values![0]).toBe("amazon");
+      expect(calls[1]!.values).toEqual(["amazon"]);
+      expect(items.map((item) => item.id)).toContain("6");
+    });
   });
 });
 

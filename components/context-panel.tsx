@@ -5,9 +5,10 @@ import {
   CONTEXT_NOT_LOADED_TEXT,
   type InboxItem,
   formatSourceTimestamp,
-  workflowLabel,
 } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
+
+import { StatusBadge } from "./status-badge";
 
 /**
  * Context summary.
@@ -30,7 +31,7 @@ export function ContextPanel({
   capability: MarketplaceCapability;
 }) {
   if (conversation === null) {
-    return <p className="p-5 text-sm opacity-55">No conversation selected.</p>;
+    return <p className="p-5 text-sm opacity-70">No conversation selected.</p>;
   }
 
   const first = formatSourceTimestamp(conversation.firstSourceTimestamp);
@@ -39,9 +40,11 @@ export function ContextPanel({
   return (
     <div className="flex flex-col gap-5 p-5">
       <section className="flex flex-col gap-2">
-        <h2 className="text-xs font-medium tracking-wide uppercase opacity-55">Status</h2>
-        <dl className="flex flex-col gap-1 text-sm">
-          <Row label="Status" value={workflowLabel(conversation.workflowState)} />
+        <h2 className="text-xs font-medium tracking-wide uppercase opacity-70">
+          Human action needed
+        </h2>
+        <StatusBadge state={conversation.workflowState} />
+        <dl className="mt-1 flex flex-col gap-1 text-sm">
           <Row label="Messages" value={String(conversation.messageCount)} />
           <Row label="First" value={`${first.date} ${first.time}`} />
           <Row label="Latest" value={`${last.date} ${last.time}`} />
@@ -49,7 +52,7 @@ export function ContextPanel({
       </section>
 
       <section className="flex flex-col gap-2">
-        <h2 className="text-xs font-medium tracking-wide uppercase opacity-55">Context</h2>
+        <h2 className="text-xs font-medium tracking-wide uppercase opacity-70">Context</h2>
         {conversation.listingItemRef !== null && (
           <Row label="Item reference" value={conversation.listingItemRef} />
         )}
@@ -66,7 +69,7 @@ export function ContextPanel({
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <dt className="shrink-0 text-xs opacity-55">{label}</dt>
+      <dt className="shrink-0 text-xs opacity-70">{label}</dt>
       <dd className="truncate text-right text-sm">{value}</dd>
     </div>
   );

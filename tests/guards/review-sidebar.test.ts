@@ -71,15 +71,18 @@ describe("every marketplace gets the same sidebar", () => {
     expect(aside).not.toMatch(/marketplace\s*===/);
   });
 
-  it("orders the sections Status, Context, AI usage, Matched CST rules", () => {
-    // Status and Context come from the context pane, in that order...
-    expect(context.indexOf(">Status<")).toBeGreaterThan(-1);
-    expect(context.indexOf(">Status<")).toBeLessThan(context.indexOf(">Context<"));
+  it("orders the sections Human action needed, Context, AI Usage, CST Rules Used", () => {
+    // Human action needed and Context come from the context pane, in that
+    // order. Wording changed (was "Status") to say what a non-technical
+    // reviewer should do, not the raw workflow state name; the guarantee this
+    // test protects — one order, every marketplace — is unchanged.
+    expect(context.indexOf("Human action needed")).toBeGreaterThan(-1);
+    expect(context.indexOf("Human action needed")).toBeLessThan(context.indexOf(">Context<"));
     // ...and the evidence pane follows it, AI usage before the rules.
     expect(workspace.indexOf("<ContextPanel")).toBeLessThan(
       workspace.indexOf("<DraftEvidencePanel"),
     );
-    expect(evidence.indexOf("AI usage")).toBeLessThan(evidence.indexOf("Matched CST rules"));
+    expect(evidence.indexOf("AI Usage")).toBeLessThan(evidence.indexOf("CST Rules Used"));
   });
 });
 

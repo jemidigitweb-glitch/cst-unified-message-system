@@ -26,6 +26,41 @@ body {
 }
 
 /*
+ * THIN, BRAND-COLORED SCROLLBARS, EVERYWHERE. The workspace is built from
+ * many independently-scrolling regions (the inbox list, the message thread,
+ * the details panel, the drawers below desktop width) — a default,
+ * platform-styled scrollbar on each of those reads as separate, unrelated
+ * widgets. One thin pastel-green thumb ties them back together — soft enough
+ * not to compete with the CST-reply bubble it echoes the hue of.
+ *
+ * `scrollbar-width`/`scrollbar-color` cover Firefox; the `::-webkit-*`
+ * pseudo-elements cover Chromium and Safari. Applied globally rather than
+ * per-component so a newly added scrolling region never needs its own rule.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #e8f4ea transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #e8f4ea;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #cfe9d4;
+}
+
+/*
  * Entrance used by the draft panel when a state appears (the generating card,
  * each step label, the finished draft). Short and small — it marks that
  * something changed without making the reviewer wait to read it.

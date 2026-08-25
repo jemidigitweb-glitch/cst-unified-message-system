@@ -13,6 +13,7 @@ import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilitie
 import type { WorkflowState } from "@/lib/domain/workflow";
 
 import { DraftPanel } from "./draft-panel";
+import { PanelIcon } from "./icons";
 
 /** Floor on the draft panel's height: short enough to never be pointless, tall enough that a drag can't hide the action buttons under it. */
 const MIN_DRAFT_HEIGHT = 160;
@@ -43,6 +44,8 @@ export function ConversationView({
   loading,
   capability,
   onDraftGenerated,
+  detailsOpen,
+  onToggleDetails,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
@@ -50,6 +53,14 @@ export function ConversationView({
   capability: MarketplaceCapability;
   /** Passed through to the draft panel so the sidebar can refresh itself. */
   onDraftGenerated?: () => void;
+  /**
+   * Whether the Context / AI Usage / CST Rules Used panel is showing, below
+   * desktop width where it is a column that opens and closes rather than a
+   * permanent one. Both are optional so this component still works wherever
+   * it is used without that panel (there is none for an unresolved message).
+   */
+  detailsOpen?: boolean;
+  onToggleDetails?: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -162,14 +173,37 @@ export function ConversationView({
 
   return (
     <div ref={container} className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-black/10 px-5 py-3 dark:border-white/15">
-        {/* Never the bare stored reference: for most sources it is an order
-            reference, and printing it where a name belongs presents it as one. */}
-        <p className="text-sm font-medium">{conversationTitle(conversation, capability)}</p>
-        <p className="text-xs opacity-55">
-          {conversation.messageCount} message{conversation.messageCount === 1 ? "" : "s"} ·{" "}
-          {conversation.inboundCount} from customer
-        </p>
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-black/10 px-5 py-3 dark:border-white/15">
+        <div>
+          {/* Never the bare stored reference: for most sources it is an order
+              reference, and printing it where a name belongs presents it as one. */}
+          <p className="text-sm font-medium">{conversationTitle(conversation, capability)}</p>
+          <p className="text-xs opacity-55">
+            {conversation.messageCount} message{conversation.messageCount === 1 ? "" : "s"} ·{" "}
+            {conversation.inboundCount} from customer
+          </p>
+        </div>
+        {/* Opens the Context / AI Usage / CST Rules Used panel — open by
+            default for a newly selected conversation (see
+            `Workspace.select`), and offered from here rather than the app
+            header because it describes THIS conversation, not the app as a
+            whole. Shown only while the panel is closed: once open, its own
+            Close button is the way back, and showing both would be two
+            controls for the same one thing. Only exists where the caller
+            wired it up (there is no details panel for an unresolved
+            message). Shown at every width — the panel is toggleable on
+            desktop too, not only below `xl`. */}
+        {onToggleDetails && !detailsOpen && (
+          <button
+            type="button"
+            onClick={onToggleDetails}
+            aria-label="Show conversation details"
+            aria-expanded={false}
+            className="shrink-0 rounded-full border border-black/15 p-2 dark:border-white/20"
+          >
+            <PanelIcon />
+          </button>
+        )}
       </div>
 
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">

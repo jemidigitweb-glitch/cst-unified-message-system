@@ -3,6 +3,8 @@
 import { type NoRuleConversationItem, conversationTitle, formatSourceTimestamp } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
 
+import { StatusBadge } from "./status-badge";
+
 /**
  * The No Rule list: this marketplace's conversations the CST knowledge base
  * could not ground a reply for.
@@ -43,7 +45,7 @@ export function NoRuleList({
 
   return (
     <>
-      <h2 className="px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase opacity-55">
+      <h2 className="px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase opacity-70">
         No Rule · {items.length}
       </h2>
       {items.length === 0 ? (
@@ -73,7 +75,7 @@ export function NoRuleList({
                     <span className="truncate text-sm font-medium">
                       {conversationTitle(item, capability)}
                     </span>
-                    <span className="shrink-0 text-[11px] tabular-nums opacity-55">
+                    <span className="shrink-0 text-[11px] tabular-nums opacity-70">
                       {stamp.date} {stamp.time}
                     </span>
                   </span>
@@ -82,7 +84,7 @@ export function NoRuleList({
                     <span className="rounded bg-black/[0.07] px-1.5 py-0.5 opacity-80 dark:bg-white/[0.12]">
                       {capability.label}
                     </span>
-                    <span className="opacity-55">
+                    <span className="opacity-70">
                       {item.messageCount} message{item.messageCount === 1 ? "" : "s"}
                     </span>
                     {/*
@@ -103,10 +105,13 @@ export function NoRuleList({
                         the conversation is open. Omitted when the classifier
                         declined to name one, rather than showing a blank chip. */}
                     {item.caseType !== null && (
-                      <span className="ml-auto rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
                         {item.caseType}
                       </span>
                     )}
+                    <span className="ml-auto">
+                      <StatusBadge state={item.workflowState} />
+                    </span>
                   </span>
                 </button>
               </li>

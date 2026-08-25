@@ -26,7 +26,16 @@ export function MarketplaceTabs({
   onSelect: (marketplace: Marketplace) => void;
 }) {
   return (
-    <nav aria-label="Marketplace" className="flex min-w-0 gap-1 overflow-x-auto px-4">
+    // overflow-y-hidden alongside overflow-x-auto: this strip only ever
+    // scrolls sideways. Without it, the border-bottom padding on each tab
+    // occasionally rounds a pixel taller than the row, and — visible now
+    // that scrollbars are styled instead of the platform's near-invisible
+    // default — a needless vertical scrollbar appeared for one pixel of
+    // content nobody was ever meant to scroll to.
+    <nav
+      aria-label="Marketplace"
+      className="flex min-w-0 gap-1 overflow-x-auto overflow-y-hidden px-4"
+    >
       {MARKETPLACE_TAB_ORDER.map((marketplace) => {
         const capability = capabilityOf(marketplace);
         const active = marketplace === selected;
@@ -39,7 +48,7 @@ export function MarketplaceTabs({
             data-marketplace={marketplace}
             data-mode={capability.mode}
             onClick={() => onSelect(marketplace)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
+            className={`-mb-px shrink-0 border-b-2 px-3 py-2.5 text-sm whitespace-nowrap transition-colors ${
               active
                 ? "border-emerald-600 font-medium dark:border-emerald-400"
                 : "border-transparent hover:border-black/20 dark:hover:border-white/25"
