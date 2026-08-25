@@ -64,7 +64,9 @@ export function counterpartyOf(row: {
 /**
  * A platform notice rather than a customer conversation: no message type AND no
  * body reference. Verified structurally — 29,468 such rows, always from the eBay
- * system sender, never carrying a reply. These never become customer messages.
+ * system sender, never carrying a reply. Still surfaced as a message for human
+ * review (CST hides nothing read from the source) — this flag is for counting
+ * and labelling, not exclusion.
  */
 export function isSystemNotice(row: {
   messageType: string | null;

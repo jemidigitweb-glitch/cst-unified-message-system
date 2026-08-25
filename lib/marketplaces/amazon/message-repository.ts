@@ -18,12 +18,13 @@ import {
  * STRICTLY READ-ONLY — every statement is a SELECT. The pool supplied by the
  * caller additionally pins `default_transaction_read_only=on`.
  *
- * Rows leave here in one of three states, and the counts are reported so a
- * bootstrap can be reconciled against the source rather than trusted:
+ * Every row that can be honestly normalized becomes a message — including
+ * Amazon's own platform notices, which are tagged and counted
+ * (`platformNoticeCount`) but not excluded. CST is a human-verification
+ * system: nothing read from the source is hidden from the reviewer.
  *
- *   messages            a customer message or a CST reply
- *   platformNotice      Amazon's own notice traffic; neither side
- *   unusable            an unmapped sender, or no account attribution
+ *   messages       a customer message, a CST reply, or a platform notice
+ *   unusable       an unmapped sender, or no account attribution
  *
  * Nothing is silently discarded.
  */
@@ -60,17 +61,14 @@ export function buildQuery(options: FetchOptions): { text: string; values: unkno
   return buildFetchQuery(AMAZON_SOURCE, SELECT_COLUMNS, options);
 }
 
-/** Splits rows three ways, counting every one that does not become a message. */
+/** Normalizes every row into a message, tagging platform notices and counting the unmapped. */
 export function classifyRows(rows: readonly AmazonSourceRow[]): AmazonFetchResult {
   const messages: SourceMessage[] = [];
   let platformNoticeCount = 0;
   let unusableCount = 0;
 
   for (const row of rows) {
-    if (isPlatformNotice(row)) {
-      platformNoticeCount += 1;
-      continue;
-    }
+    if (isPlatformNotice(row)) platformNoticeCount += 1;
     const normalized = normalizeRow(row);
     if (normalized === null) unusableCount += 1;
     else messages.push(normalized);

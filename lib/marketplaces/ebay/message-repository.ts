@@ -148,9 +148,12 @@ export function buildFetchQuery(options: FetchOptions): {
 /**
  * Fetches the next batch of eBay messages for the requested window.
  *
- * System notices are excluded from the returned messages and counted instead —
- * they are not customer conversations and must never become one. Rows that
- * cannot be normalized honestly are likewise counted, not coerced.
+ * CST is a human-verification system: nothing read from the source is hidden
+ * from the reviewer. System notices are still counted (for operator visibility
+ * into how much of the feed is platform noise) but are no longer dropped — a
+ * human, not this adapter, decides whether a notice needed a look. Rows that
+ * cannot be normalized honestly are still excluded and counted, since those
+ * are not a judgement call: there is no honest message to show.
  */
 export async function fetchMessages(
   client: Queryable,
@@ -160,17 +163,14 @@ export async function fetchMessages(
   return classifyRows(rows as EbaySourceRow[]);
 }
 
-/** Splits raw rows into usable messages, system notices, and unusable rows. */
+/** Splits raw rows into usable messages and unusable rows, tagging system notices along the way. */
 export function classifyRows(rows: readonly EbaySourceRow[]): FetchResult {
   const messages: SourceMessage[] = [];
   let systemNoticeCount = 0;
   let unusableCount = 0;
 
   for (const row of rows) {
-    if (rowIsSystemNotice(row)) {
-      systemNoticeCount += 1;
-      continue;
-    }
+    if (rowIsSystemNotice(row)) systemNoticeCount += 1;
     const normalized = normalizeRow(row);
     if (normalized === null) {
       unusableCount += 1;

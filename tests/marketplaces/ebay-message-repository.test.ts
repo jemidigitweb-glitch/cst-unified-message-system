@@ -182,12 +182,12 @@ describe("row classification", () => {
     });
   });
 
-  it("excludes system notices and counts them", () => {
+  it("still surfaces system notices as messages, but counts them", () => {
     const result = classifyRows([
       row(),
       row({ id: "2", message_type: null, ext_message_id: null, body_raw: null }),
     ]);
-    expect(result.messages).toHaveLength(1);
+    expect(result.messages).toHaveLength(2);
     expect(result.systemNoticeCount).toBe(1);
     expect(result.rowsExamined).toBe(2);
   });
@@ -273,7 +273,7 @@ describe("fetchMessages", () => {
       },
     };
     const result = await fetchMessages(client, { window: BOOTSTRAP, limit: 10 });
-    expect(result.messages).toHaveLength(1);
+    expect(result.messages).toHaveLength(2);
     expect(result.systemNoticeCount).toBe(1);
     expect(calls).toHaveLength(1);
   });

@@ -104,7 +104,7 @@ describe("nothing outside the rule is assigned a side", () => {
   });
 });
 
-describe("platform notices are separated, not shown as a conversation", () => {
+describe("platform notices are tagged and shown, not hidden", () => {
   const notice = row({
     from_msg: "no-reply@amazon.com",
     from_name: "Amazon Seller Central Notifications (Do Not Reply)",
@@ -116,13 +116,18 @@ describe("platform notices are separated, not shown as a conversation", () => {
     expect(isPlatformNotice(cstReply())).toBe(false);
   });
 
-  it("keeps notices out of the messages, and counts them", () => {
+  it("gives a platform notice an inbound side rather than rejecting it", () => {
+    expect(directionFromSender(notice)).toBe("inbound");
+    expect(normalizeRow(notice)!.direction).toBe("inbound");
+  });
+
+  it("keeps notices in the messages, and counts them separately", () => {
     const result = classifyRows([row({ id: "1" }), cstReply({ id: "2" }), { ...notice, id: "3" }]);
     expect(result.rowsExamined).toBe(3);
-    expect(result.messages).toHaveLength(2);
+    expect(result.messages).toHaveLength(3);
     expect(result.platformNoticeCount).toBe(1);
     expect(result.unusableCount).toBe(0);
-    expect(result.messages.map((m) => m.sourcePk)).toEqual(["1", "2"]);
+    expect(result.messages.map((m) => m.sourcePk)).toEqual(["1", "2", "3"]);
   });
 
   it("counts an unmapped row separately from a notice", () => {
@@ -132,7 +137,7 @@ describe("platform notices are separated, not shown as a conversation", () => {
     ]);
     expect(result.platformNoticeCount).toBe(1);
     expect(result.unusableCount).toBe(1);
-    expect(result.messages).toHaveLength(0);
+    expect(result.messages).toHaveLength(1);
   });
 });
 

@@ -88,9 +88,10 @@ export function senderDomainOf(fromMsg: string | null): string | null {
 /**
  * Amazon's own notice traffic — order updates, policy alerts, and the like.
  *
- * Not a customer message and not a reply, so it is neither shown as a
- * conversation nor counted as one. It is excluded at the repository boundary
- * and reported, never silently dropped.
+ * Not a customer message and not a CST reply. CST is a human-verification
+ * system, so this is a label for stats and review, not an exclusion rule —
+ * `directionFromSender` below still gives these a side so they reach a human
+ * like any other row.
  */
 export function isPlatformNotice(row: {
   from_msg: string | null;
@@ -106,7 +107,9 @@ export function isPlatformNotice(row: {
  * Maps the sender fields to a neutral direction.
  *
  * Returns null for a sender combination the rule does not cover, so the caller
- * rejects the row instead of defaulting it to a side.
+ * rejects the row instead of defaulting it to a side. Amazon's own platform
+ * notices arrive into our mailbox the same way a customer message does, so
+ * they are treated as inbound rather than rejected.
  */
 export function directionFromSender(row: {
   from_msg: string | null;
@@ -117,6 +120,7 @@ export function directionFromSender(row: {
   if (domain === PLATFORM_DOMAIN && (row.from_name ?? "").trim().toLowerCase() === SELLER_RELAY_NAME) {
     return "outbound";
   }
+  if (isPlatformNotice(row)) return "inbound";
   return null;
 }
 

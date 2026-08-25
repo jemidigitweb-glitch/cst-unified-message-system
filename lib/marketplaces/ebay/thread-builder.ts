@@ -108,7 +108,9 @@ export function buildConversations(messages: readonly SourceMessage[]): ThreadBu
 
   return {
     conversations,
-    // System notices are excluded upstream in the repository, which counts them.
+    // System notices are no longer excluded upstream — the repository only
+    // counts them for visibility. Every row that normalizes reaches this
+    // builder and can form (or join) a conversation like any other message.
     excludedSystemNoticeCount: 0,
     excludedUnusableCount,
   };
