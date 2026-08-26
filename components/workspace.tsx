@@ -632,6 +632,13 @@ export function Workspace() {
               loading={loadingDetail}
               capability={capability}
               onDraftGenerated={() => setDraftGeneration((n) => n + 1)}
+              onWorkflowStateChange={(conversationId, state) =>
+                setInbox((current) =>
+                  current?.map((item) =>
+                    item.id === conversationId ? { ...item, workflowState: state } : item,
+                  ) ?? current,
+                )
+              }
               detailsOpen={detailsVisible}
               onToggleDetails={() => setDetailsOpen((open) => !open)}
             />

@@ -44,6 +44,7 @@ export function ConversationView({
   loading,
   capability,
   onDraftGenerated,
+  onWorkflowStateChange,
   detailsOpen,
   onToggleDetails,
 }: {
@@ -53,6 +54,15 @@ export function ConversationView({
   capability: MarketplaceCapability;
   /** Passed through to the draft panel so the sidebar can refresh itself. */
   onDraftGenerated?: () => void;
+  /**
+   * Fired whenever this conversation's workflow state actually changes —
+   * generating a draft, or a reviewer moving it on. Held locally as
+   * `workflowState` too (so the draft panel's own transitions show
+   * immediately), but a list row showing this same conversation has no way
+   * to know unless it is told: without this, "Draft ready" / "Reviewed"
+   * only appeared in the list after a full reload re-fetched it.
+   */
+  onWorkflowStateChange?: (conversationId: string, state: WorkflowState) => void;
   /**
    * Whether the Context / AI Usage / CST Rules Used panel is showing, below
    * desktop width where it is a column that opens and closes rather than a
@@ -373,7 +383,10 @@ export function ConversationView({
           conversationId={conversation.id}
           detail={detail}
           workflowState={workflowState}
-          onWorkflowChange={setWorkflowState}
+          onWorkflowChange={(state) => {
+            setWorkflowState(state);
+            onWorkflowStateChange?.(conversation.id, state);
+          }}
           onGenerated={onDraftGenerated}
         />
       </div>
