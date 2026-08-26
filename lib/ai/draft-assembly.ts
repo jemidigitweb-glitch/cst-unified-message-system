@@ -18,18 +18,32 @@ import { DraftGenerationUnavailable, type DraftRequest } from "./provider";
  * PURE. No network, no files, no clock.
  */
 
+const RETURN_FACT_NAMES = new Set(["return_status", "return_reason", "return_evidence_available"]);
+
 /**
  * Order and product context, stating plainly when there is none.
  *
  * The empty case is spelled out rather than omitted. A blank section invites
  * the model to fill it; a sentence saying "no order has been resolved and
  * verified, you therefore know NO order number" does not.
+ *
+ * RETURN is different on purpose: it is OMITTED, not spelled out, when empty.
+ * Unlike order/product — relevant to essentially every reply — a return case
+ * is the exception, not the rule, and a block insisting "no return exists"
+ * on every single draft would be noise the model has to read past on every
+ * call for no benefit. Present only via `resolveEbayReturnContext`, which
+ * itself never fabricates a return record — see that module for the "only
+ * after a verified single order, matched by order_id, never item_id alone"
+ * contract this block assumes but does not enforce.
  */
 export function contextBlocks(request: DraftRequest): string {
   const orderFacts = request.facts.filter((fact) =>
     /order|refund|tracking|delivery/i.test(fact.name),
   );
-  const productFacts = request.facts.filter((fact) => !orderFacts.includes(fact));
+  const returnFacts = request.facts.filter((fact) => RETURN_FACT_NAMES.has(fact.name));
+  const productFacts = request.facts.filter(
+    (fact) => !orderFacts.includes(fact) && !returnFacts.includes(fact),
+  );
 
   const order =
     orderFacts.length === 0
@@ -43,11 +57,22 @@ export function contextBlocks(request: DraftRequest): string {
     ...productFacts.map((fact) => `- ${fact.name}: ${fact.value}`),
   ].filter(Boolean);
 
-  return `VERIFIED CONTEXT — ORDER:\n${order}\n\nVERIFIED CONTEXT — PRODUCT/SKU:\n${
-    product.length === 0
-      ? "(no product or SKU has been resolved and verified — you therefore know NO product name, specification or price)"
-      : product.join("\n")
-  }`;
+  const blocks = [
+    `VERIFIED CONTEXT — ORDER:\n${order}`,
+    `VERIFIED CONTEXT — PRODUCT/SKU:\n${
+      product.length === 0
+        ? "(no product or SKU has been resolved and verified — you therefore know NO product name, specification or price)"
+        : product.join("\n")
+    }`,
+  ];
+
+  if (returnFacts.length > 0) {
+    blocks.push(
+      `VERIFIED CONTEXT — RETURN:\n${returnFacts.map((fact) => `- ${fact.name}: ${fact.value}`).join("\n")}\n(this tells you a return record exists and its status/reason — it does NOT mean you have seen any photo; never describe what an image shows)`,
+    );
+  }
+
+  return blocks.join("\n\n");
 }
 
 /** The thread, oldest first, with each side labelled. */

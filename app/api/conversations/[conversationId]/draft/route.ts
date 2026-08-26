@@ -6,8 +6,11 @@ import {
   DraftServiceNotConfigured,
   DraftServiceUnavailable,
 } from "@/lib/ai/provider";
-import { getAppPool } from "@/lib/db/pools";
+import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
+import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
+import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { VerifiedFact } from "@/lib/domain/draft";
+import type { ConversationDetail } from "@/lib/domain/inbox";
 import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
 import { NO_APPLICABLE_RULE_CODE, coverageFor } from "@/lib/knowledge/rule-coverage";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
@@ -45,12 +48,44 @@ export const dynamic = "force-dynamic";
 /**
  * Verified backend facts for grounding.
  *
- * Empty for now: order and product resolution is not built. That is a
+ * eBay conversations are resolved against `order_management` via
+ * `resolveEbayOrderContext` — item_id + buyer, matched to at most one order,
+ * never guessed. Every other marketplace still gets an empty list; that is a
  * deliberate empty list, not a placeholder to fill with guesses — the generator
  * is told there is no resolved context and flags the draft accordingly.
+ *
+ * `resolveEbayReturnContext` adds return_status/return_reason/
+ * return_evidence_available — TEXT ONLY, never the photo itself — and only
+ * once the order call above has already produced a verified single order.
+ * Called second, deliberately: it reads the very snapshot the order call
+ * either just wrote or already found, so it never resolves a return against
+ * an order this request has not itself already verified.
+ *
+ * Resolution failure (a source-DB hiccup, an unexpected row shape) must not
+ * fail the draft over a context lookup — logged and treated as no context,
+ * the same "never fails the caller" discipline as the rule-analysis and
+ * usage writers this route already calls. Each call is guarded separately so
+ * a return-lookup failure cannot discard order facts that already resolved.
  */
-function verifiedFactsFor(): VerifiedFact[] {
-  return [];
+async function verifiedFactsFor(conversation: ConversationDetail["conversation"]): Promise<VerifiedFact[]> {
+  const sourcePool = getSourcePool();
+  const appPool = getAppPool();
+
+  let orderFacts: VerifiedFact[] = [];
+  try {
+    orderFacts = await resolveEbayOrderContext(sourcePool, appPool, conversation);
+  } catch (cause) {
+    console.error("[draft] order context resolution failed", cause);
+  }
+
+  let returnFacts: VerifiedFact[] = [];
+  try {
+    returnFacts = await resolveEbayReturnContext(sourcePool, appPool, conversation);
+  } catch (cause) {
+    console.error("[draft] return context resolution failed", cause);
+  }
+
+  return [...orderFacts, ...returnFacts];
 }
 
 export async function GET(
@@ -219,7 +254,7 @@ export async function POST(
     // changes when the provider does.
     const generated = await provider.generate({
       messages: detail.messages,
-      facts: verifiedFactsFor(),
+      facts: await verifiedFactsFor(detail.conversation),
       // Both come from the stored conversation, which was written from the
       // marketplace source — neither is inferred from the message text.
       marketplace: detail.conversation.marketplace,
