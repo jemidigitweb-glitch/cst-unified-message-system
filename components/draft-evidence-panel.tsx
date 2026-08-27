@@ -7,6 +7,7 @@ import type { ConversationDetail } from "@/lib/domain/inbox";
 import { matchReasonOf } from "@/lib/knowledge/rule-evidence";
 
 import { ConversationExportButton } from "./conversation-export-button";
+import { SECTION_HEADING_CLASS } from "./context-panel";
 import { NoRuleFlag } from "./no-rule-flag";
 
 /**
@@ -81,9 +82,14 @@ const number = (value: number | null) =>
   value === null ? "not recorded" : value.toLocaleString("en-GB");
 
 /** Shared so the loading state and the loaded state cannot drift apart. */
+/** The same one colour every sidebar heading uses — see `SECTION_HEADING_CLASS`. */
 function Heading({ children }: { children: string }) {
   return (
-    <p className="mb-1.5 text-[11px] font-medium tracking-wide uppercase opacity-55">{children}</p>
+    <p
+      className={`mb-1.5 text-[11px] font-medium tracking-wide uppercase ${SECTION_HEADING_CLASS}`}
+    >
+      {children}
+    </p>
   );
 }
 

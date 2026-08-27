@@ -12,7 +12,7 @@ import type { Marketplace } from "@/lib/domain/marketplace";
 import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import type { UnresolvedFeed } from "@/lib/domain/unresolved-messages";
 
-import { ContextPanel } from "./context-panel";
+import { ContextPanel, SECTION_HEADING_CLASS } from "./context-panel";
 import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
@@ -484,8 +484,8 @@ export function Workspace() {
               }}
               className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors ${
                 view === "no_rule"
-                  ? "border-emerald-600 font-medium dark:border-emerald-400"
-                  : "border-transparent opacity-70 hover:border-black/20 hover:opacity-100 dark:hover:border-white/25"
+                  ? `border-emerald-600 font-medium dark:border-emerald-400 ${SECTION_HEADING_CLASS}`
+                  : `border-transparent opacity-70 hover:border-black/20 hover:opacity-100 dark:hover:border-white/25 ${SECTION_HEADING_CLASS}`
               }`}
             >
               No Rule
@@ -505,8 +505,8 @@ export function Workspace() {
               onClick={() => setView(view === "status" ? "inbox" : "status")}
               className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors ${
                 view === "status"
-                  ? "border-emerald-600 font-medium dark:border-emerald-400"
-                  : "border-transparent opacity-70 hover:border-black/20 hover:opacity-100 dark:hover:border-white/25"
+                  ? `border-emerald-600 font-medium dark:border-emerald-400 ${SECTION_HEADING_CLASS}`
+                  : `border-transparent opacity-70 hover:border-black/20 hover:opacity-100 dark:hover:border-white/25 ${SECTION_HEADING_CLASS}`
               }`}
             >
               AI Usage

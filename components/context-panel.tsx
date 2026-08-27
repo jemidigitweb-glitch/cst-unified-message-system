@@ -176,7 +176,7 @@ function OrderContextFacts({
 
   return (
     <div className="flex flex-col gap-2">
-      <SectionHeading tone="order">Order context</SectionHeading>
+      <SectionHeading>Order context</SectionHeading>
       {/* Said once, above the list: the choice is over the set, not per order. */}
       {selectable && <p className="text-xs opacity-70">{MULTIPLE_ORDERS_TEXT}</p>}
       <ul className="flex flex-col gap-2">
@@ -333,7 +333,7 @@ function CustomerProductData({ messages }: { messages: readonly CustomerMessage[
 
   return (
     <section className="flex flex-col gap-2">
-      <SectionHeading tone="customer">{CUSTOMER_PRODUCT_DATA_HEADING}</SectionHeading>
+      <SectionHeading>{CUSTOMER_PRODUCT_DATA_HEADING}</SectionHeading>
       <dl className="flex flex-col gap-0.5 text-sm">
         {details.map((detail) => (
           <Row key={`${detail.label}:${detail.value}`} label={detail.label} value={detail.value} />
@@ -398,9 +398,7 @@ export function ContextPanel({
   return (
     <div className="flex flex-col gap-5 p-5">
       <section className="flex flex-col gap-2">
-        <h2 className="text-xs font-medium tracking-wide uppercase opacity-70">
-          Human action needed
-        </h2>
+        <SectionHeading>Human action needed</SectionHeading>
         <StatusBadge state={conversation.workflowState} />
         <dl className="mt-1 flex flex-col gap-1 text-sm">
           <Row label="Messages" value={String(conversation.messageCount)} />
@@ -410,7 +408,7 @@ export function ContextPanel({
       </section>
 
       <section className="flex flex-col gap-2">
-        <SectionHeading tone="context">Context</SectionHeading>
+        <SectionHeading>Context</SectionHeading>
         {conversation.listingItemRef !== null && (
           <Row label="Item reference" value={conversation.listingItemRef} />
         )}
@@ -442,33 +440,24 @@ export function ContextPanel({
 }
 
 /**
- * A sidebar section heading, tinted so each section is its own.
+ * A sidebar section heading.
+ *
+ * ONE COLOUR FOR EVERY SECTION. Per-section tints were tried and read as
+ * meaning — a reviewer looks for why Context is one colour and Order context
+ * another, and there is no answer. A single muted green says "this is a
+ * heading" and nothing more, which is all a heading should say.
  *
  * TEXT COLOUR ONLY — no background, no pill, no radius. The sidebar already
- * carries status pills and category chips; giving the headings a filled
- * background too would put three more boxes on a panel whose job is to be
- * read straight down, and would compete with the badges that are the thing
- * actually worth noticing.
- *
- * ONE TABLE, THREE TONES, so a reviewer scrolling past several short lists
- * of label/value rows can see where one section ends and the next begins
- * without reading the words.
+ * carries status pills and category chips; boxed headings would compete with
+ * the badges that are the thing actually worth noticing.
  */
-const SECTION_TONE = {
-  context: "text-indigo-700 dark:text-indigo-300",
-  order: "text-teal-700 dark:text-teal-300",
-  customer: "text-amber-700 dark:text-amber-300",
-} as const;
+export const SECTION_HEADING_CLASS = "text-teal-800 dark:text-teal-300";
 
-function SectionHeading({
-  tone,
-  children,
-}: {
-  tone: keyof typeof SECTION_TONE;
-  children: string;
-}) {
+function SectionHeading({ children }: { children: string }) {
   return (
-    <h2 className={`text-[11px] font-medium tracking-wide uppercase ${SECTION_TONE[tone]}`}>
+    <h2
+      className={`text-[11px] font-medium tracking-wide uppercase ${SECTION_HEADING_CLASS}`}
+    >
       {children}
     </h2>
   );
