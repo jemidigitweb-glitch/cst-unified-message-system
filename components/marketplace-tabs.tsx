@@ -50,8 +50,8 @@ export function MarketplaceTabs({
             onClick={() => onSelect(marketplace)}
             className={`-mb-px shrink-0 border-b-2 px-3 py-2.5 text-sm whitespace-nowrap transition-colors ${
               active
-                ? "border-emerald-600 font-medium dark:border-emerald-400"
-                : "border-transparent hover:border-black/20 dark:hover:border-white/25"
+                ? "border-emerald-600 font-medium text-emerald-700 dark:border-emerald-400 dark:text-emerald-300"
+                : "border-transparent text-slate-600 hover:border-black/20 hover:text-slate-900 dark:text-slate-400 dark:hover:border-white/25 dark:hover:text-slate-100"
             }`}
           >
             {capability.label}
