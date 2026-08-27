@@ -353,3 +353,86 @@ describe("no unverified order claims can be generated", () => {
     expect(settled.requiresReview).toBe(true);
   });
 });
+
+/**
+ * The sidebar now shows an ambiguous conversation's candidate orders. The
+ * prompt still shows the model nothing.
+ *
+ * This is the whole risk the display change carries: three real order numbers
+ * now exist in the application, one HTTP hop from the draft pipeline, and a
+ * model handed any of them would state it as though the backend had confirmed
+ * it. These tests assert the separation at the point it matters -- what
+ * `contextBlocks` actually renders.
+ */
+describe("displaying candidates changes nothing the model sees", () => {
+  it("tells the prompt no order was resolved, and names none of the candidates", async () => {
+    const orderFacts = await resolveEbayOrderContext(
+      fakeSourceClient([
+        candidateRow({ order_row_id: "501", order_number: "ORD-1001" }),
+        candidateRow({ order_row_id: "502", order_number: "ORD-1002" }),
+        candidateRow({ order_row_id: "503", order_number: "ORD-1003" }),
+      ]),
+      fakeAppClient(),
+      {
+        id: "32103",
+        marketplace: "ebay",
+        subSourceId: 1,
+        counterpartyRef: "kraskir24",
+        listingItemRef: "166239358700",
+      },
+    );
+
+    expect(orderFacts).toEqual([]);
+
+    const request: DraftRequest = {
+      messages: [],
+      marketplace: "ebay",
+      listingItemRef: "166239358700",
+      facts: orderFacts,
+    };
+    const blocks = contextBlocks(request);
+
+    // The ORDER block still renders -- saying plainly that nothing was
+    // resolved, which is the same thing it said before candidates were
+    // displayed anywhere.
+    expect(blocks).toContain("no order has been resolved and verified for this conversation");
+    for (const candidateOrderNumber of ["ORD-1001", "ORD-1002", "ORD-1003"]) {
+      expect(blocks, `${candidateOrderNumber} must never reach the prompt`).not.toContain(
+        candidateOrderNumber,
+      );
+    }
+    // Nor the product and shipment detail the source returned for those
+    // candidates and the resolver deliberately discarded.
+    for (const discarded of ["REAL-SKU-1", "Synthetic Widget", "TRK-1", "Test Street"]) {
+      expect(blocks).not.toContain(discarded);
+    }
+  });
+
+  it("still forces review for a draft that names an order when the match was ambiguous", async () => {
+    const orderFacts = await resolveEbayOrderContext(
+      fakeSourceClient([
+        candidateRow({ order_row_id: "501", order_number: "ORD-1001" }),
+        candidateRow({ order_row_id: "502", order_number: "ORD-1002" }),
+      ]),
+      fakeAppClient(),
+      {
+        id: "32103",
+        marketplace: "ebay",
+        subSourceId: 1,
+        counterpartyRef: "kraskir24",
+        listingItemRef: "166239358700",
+      },
+    );
+
+    const result: DraftResult = {
+      draft_reply: "Your tracking number is: TRK-1 for order ORD-1001.",
+      sources_used: [],
+      missing_information: [],
+      requires_review: false,
+    };
+
+    const settled = settleReviewRequirement(result, orderFacts);
+    expect(settled.requiresReview).toBe(true);
+    expect(ungroundedClaims(result.draft_reply, orderFacts)).toContain("tracking number");
+  });
+});

@@ -8,6 +8,7 @@ import {
 } from "@/lib/ai/provider";
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
 import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
+import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { VerifiedFact } from "@/lib/domain/draft";
 import type { ConversationDetail } from "@/lib/domain/inbox";
@@ -67,7 +68,10 @@ export const dynamic = "force-dynamic";
  * usage writers this route already calls. Each call is guarded separately so
  * a return-lookup failure cannot discard order facts that already resolved.
  */
-async function verifiedFactsFor(conversation: ConversationDetail["conversation"]): Promise<VerifiedFact[]> {
+async function verifiedFactsFor(
+  conversation: ConversationDetail["conversation"],
+  selectedOrderNumber: string | null,
+): Promise<VerifiedFact[]> {
   const sourcePool = getSourcePool();
   const appPool = getAppPool();
 
@@ -76,6 +80,34 @@ async function verifiedFactsFor(conversation: ConversationDetail["conversation"]
     orderFacts = await resolveEbayOrderContext(sourcePool, appPool, conversation);
   } catch (cause) {
     console.error("[draft] order context resolution failed", cause);
+  }
+
+  /**
+   * The reviewer's choice, and only where the resolver itself found nothing.
+   *
+   * ORDER OF PRECEDENCE, NOT A MERGE. The resolver speaks first. When it
+   * produced facts the conversation resolved to a single order on its own
+   * evidence, and a selection cannot override, replace or extend that — the
+   * check below is `orderFacts.length === 0`, so the deterministic answer wins
+   * whenever there is one and these two sources can never both contribute to
+   * the same draft.
+   *
+   * This is what a reviewer picking one of several matching orders in the
+   * sidebar does: it grounds THIS generation in that order's own eight facts,
+   * the same eight the resolver would have produced had the match been
+   * unambiguous. Not stored, not confirmed, not a resolution — the next
+   * generation asks again.
+   *
+   * `resolveSelectedOrderContext` re-checks the number against the orders this
+   * conversation actually matched, so a request naming any other order gets
+   * nothing back.
+   */
+  if (orderFacts.length === 0 && selectedOrderNumber !== null) {
+    try {
+      orderFacts = await resolveSelectedOrderContext(sourcePool, conversation, selectedOrderNumber);
+    } catch (cause) {
+      console.error("[draft] selected order context resolution failed", cause);
+    }
   }
 
   let returnFacts: VerifiedFact[] = [];
@@ -178,7 +210,19 @@ export async function POST(
      * Regeneration stays possible and stays explicit; only the accidental
      * repeat is stopped.
      */
-    const force = new URL(request.url).searchParams.get("force") === "1";
+    const requestUrl = new URL(request.url);
+    const force = requestUrl.searchParams.get("force") === "1";
+    /**
+     * The order a reviewer picked in the sidebar, when several matched.
+     *
+     * A query parameter and not a stored field: this helper has no save step
+     * by design, so the choice travels with the one generation it grounds and
+     * is validated server-side against the orders this conversation actually
+     * matched. Absent on every conversation that resolved to a single order,
+     * and absent whenever the reviewer picked nothing -- both of which leave
+     * the existing behaviour exactly as it was.
+     */
+    const selectedOrderNumber = requestUrl.searchParams.get("selectedOrder");
     if (!force) {
       const existing = await getDraft(pool, id).catch(() => null);
       const latestGenerated = existing?.revisions.find((r) => r.origin === "generated");
@@ -254,7 +298,7 @@ export async function POST(
     // changes when the provider does.
     const generated = await provider.generate({
       messages: detail.messages,
-      facts: await verifiedFactsFor(detail.conversation),
+      facts: await verifiedFactsFor(detail.conversation, selectedOrderNumber),
       // Both come from the stored conversation, which was written from the
       // marketplace source — neither is inferred from the message text.
       marketplace: detail.conversation.marketplace,

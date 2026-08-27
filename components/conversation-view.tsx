@@ -47,11 +47,21 @@ export function ConversationView({
   onWorkflowStateChange,
   detailsOpen,
   onToggleDetails,
+  selectedOrderNumber,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
   loading: boolean;
   capability: MarketplaceCapability;
+  /**
+   * Passed straight through to the draft panel; this view never reads it.
+   *
+   * REQUIRED, not optional. It was optional once, and a caller that forgot to
+   * pass it compiled cleanly and silently sent null -- the selection reached
+   * the sidebar and never reached the model. A required prop turns that same
+   * omission into a type error.
+   */
+  selectedOrderNumber: string | null;
   /** Passed through to the draft panel so the sidebar can refresh itself. */
   onDraftGenerated?: () => void;
   /**
@@ -388,6 +398,7 @@ export function ConversationView({
             onWorkflowStateChange?.(conversation.id, state);
           }}
           onGenerated={onDraftGenerated}
+          selectedOrderNumber={selectedOrderNumber}
         />
       </div>
 

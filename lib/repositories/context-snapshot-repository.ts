@@ -17,6 +17,8 @@ import "server-only";
  * logs, and returns rather than throwing.
  */
 
+import type { OrderCandidate } from "@/lib/domain/order";
+
 export type Writable = {
   query: (config: { text: string; values?: unknown[] }) => Promise<{ rows: unknown[] }>;
 };
@@ -74,6 +76,64 @@ export async function getContextItems(
 ): Promise<ContextItemRow[]> {
   const { rows } = await client.query({ text: GET_ITEMS, values: [snapshotId] });
   return rows as ContextItemRow[];
+}
+
+type OrderCandidateRow = {
+  order_number: string;
+  order_date: string | null;
+  order_status_summary: string | null;
+  listing_item_ref: string | null;
+};
+
+/**
+ * The four display columns, and no others.
+ *
+ * `source_order_row_ids` is traceability data, `item_count` is written as a
+ * literal 1 by `saveAmbiguousSnapshot` rather than counted from the order, and
+ * `discovered_at` is a resolution timestamp — none of the three is a verified
+ * statement about the purchase, so none of them is read here where a reviewer
+ * would read it as one.
+ *
+ * `NULLS LAST` puts an undated candidate at the bottom instead of the top, and
+ * `order_number` breaks the tie when two candidates share a date, so the list
+ * a reviewer sees is the same on every load.
+ */
+const GET_ORDER_CANDIDATES = `
+SELECT order_number,
+       order_date::text AS order_date,
+       order_status_summary,
+       listing_item_ref
+FROM cst_app.context_order_candidates
+WHERE conversation_id = $1::bigint
+ORDER BY order_date DESC NULLS LAST, order_number`;
+
+/**
+ * The stored candidate orders for an ambiguous conversation, for display only.
+ *
+ * READ-ONLY, and the only reader this table has ever had: `saveAmbiguousSnapshot`
+ * has been writing candidates since the resolver was built, and nothing has
+ * read them back until now. This adds a SELECT and nothing else — it resolves
+ * nothing, ranks nothing, and marks nothing chosen. The schema has no
+ * `selected` column by design (see migration 0001), and this function gives no
+ * caller a way to behave as though it did.
+ *
+ * Empty for every conversation that is not ambiguous, because no other
+ * resolution writes a row here.
+ */
+export async function getOrderCandidates(
+  client: Writable,
+  conversationId: string,
+): Promise<OrderCandidate[]> {
+  const { rows } = await client.query({
+    text: GET_ORDER_CANDIDATES,
+    values: [conversationId],
+  });
+  return (rows as OrderCandidateRow[]).map((row) => ({
+    orderNumber: row.order_number,
+    orderDate: row.order_date,
+    orderStatus: row.order_status_summary,
+    listingItemRef: row.listing_item_ref,
+  }));
 }
 
 const UPSERT_SINGLE_ORDER_SNAPSHOT = `

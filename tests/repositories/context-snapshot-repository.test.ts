@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import type { OrderCandidate } from "@/lib/domain/order";
 import {
   type Writable,
   getContextItems,
   getContextSnapshot,
+  getOrderCandidates,
   saveAmbiguousSnapshot,
   saveNoOrderSnapshot,
   saveSingleOrderSnapshot,
@@ -221,5 +223,122 @@ describe("saveNoOrderSnapshot", () => {
   it("never throws: a write failure is caught and reported as not saved", async () => {
     const result = await saveNoOrderSnapshot(failingClient(), "32104");
     expect(result).toEqual({ saved: false });
+  });
+});
+
+/**
+ * The candidates table finally has a reader.
+ *
+ * `saveAmbiguousSnapshot` has written to `context_order_candidates` since the
+ * resolver was built and nothing has ever read it back, so these tests are the
+ * first statement of what a read of it is allowed to do: four columns, one
+ * SELECT, no write, and no way to express a choice.
+ */
+describe("getOrderCandidates", () => {
+  const storedRow = {
+    order_number: "ORD-1001",
+    order_date: "2026-08-01 10:00:00",
+    order_status_summary: "Dispatched",
+    listing_item_ref: "266102089152",
+  };
+
+  it("reads the candidates recorded for the conversation", async () => {
+    const { calls, client } = fake([[storedRow]]);
+
+    const candidates = await getOrderCandidates(client, "9999");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain("FROM cst_app.context_order_candidates");
+    expect(calls[0]!.text).toContain("WHERE conversation_id = $1::bigint");
+    expect(calls[0]!.values).toEqual(["9999"]);
+    expect(candidates).toEqual<OrderCandidate[]>([
+      {
+        orderNumber: "ORD-1001",
+        orderDate: "2026-08-01 10:00:00",
+        orderStatus: "Dispatched",
+        listingItemRef: "266102089152",
+      },
+    ]);
+  });
+
+  it("selects only the four display columns", async () => {
+    const { calls, client } = fake([[]]);
+    await getOrderCandidates(client, "9999");
+    const sql = calls[0]!.text;
+
+    for (const column of [
+      "order_number",
+      "order_date",
+      "order_status_summary",
+      "listing_item_ref",
+    ]) {
+      expect(sql).toContain(column);
+    }
+    // Traceability and bookkeeping columns are not verified statements about
+    // the purchase. `item_count` in particular is written as a literal 1, so
+    // reading it would put an invented count in front of a reviewer.
+    for (const column of ["source_order_row_ids", "item_count", "discovered_at", "listing_url"]) {
+      expect(sql, `${column} must not be read`).not.toContain(column);
+    }
+  });
+
+  it("issues one read and never a write", async () => {
+    const { calls, client } = fake([[storedRow]]);
+    await getOrderCandidates(client, "9999");
+
+    expect(calls).toHaveLength(1);
+    const sql = calls[0]!.text.toUpperCase();
+    expect(sql).toContain("SELECT");
+    for (const statement of ["INSERT", "UPDATE", "DELETE", "ON CONFLICT"]) {
+      expect(sql).not.toContain(statement);
+    }
+  });
+
+  /**
+   * Migration 0001 omits a `selected` column deliberately, so no process can
+   * mark a candidate chosen by being newest, oldest or closest. A reader that
+   * ordered by "most likely" would reintroduce exactly that, in SQL instead of
+   * a column.
+   */
+  it("orders for a stable display, and expresses no preference", async () => {
+    const { calls, client } = fake([[]]);
+    await getOrderCandidates(client, "9999");
+
+    expect(calls[0]!.text).toContain("ORDER BY order_date DESC NULLS LAST, order_number");
+    expect(calls[0]!.text.toLowerCase()).not.toContain("selected");
+    expect(calls[0]!.text.toLowerCase()).not.toContain("limit");
+  });
+
+  it("returns an empty list for a conversation with no candidates", async () => {
+    const { client } = fake([[]]);
+    expect(await getOrderCandidates(client, "32104")).toEqual([]);
+  });
+
+  it("carries a missing date or status through as null rather than a placeholder", async () => {
+    const { client } = fake([
+      [{ ...storedRow, order_date: null, order_status_summary: null, listing_item_ref: null }],
+    ]);
+
+    expect(await getOrderCandidates(client, "9999")).toEqual<OrderCandidate[]>([
+      {
+        orderNumber: "ORD-1001",
+        orderDate: null,
+        orderStatus: null,
+        listingItemRef: null,
+      },
+    ]);
+  });
+
+  /**
+   * The structural half of "candidates are never facts": a candidate has no
+   * name/value pair for anything to mistake for a `VerifiedFact`.
+   */
+  it("returns candidates that are not shaped like a verified fact", async () => {
+    const { client } = fake([[storedRow]]);
+    const [candidate] = await getOrderCandidates(client, "9999");
+
+    expect(candidate).toBeDefined();
+    expect(candidate).not.toHaveProperty("name");
+    expect(candidate).not.toHaveProperty("value");
   });
 });

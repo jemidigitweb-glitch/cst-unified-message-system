@@ -128,6 +128,23 @@ export function Workspace() {
    * paths room to disagree.
    */
   const [draftGeneration, setDraftGeneration] = useState(0);
+
+  /**
+   * The order a reviewer picked when a conversation matched several.
+   *
+   * Held here because the two panels that need it are siblings: the context
+   * panel in the aside sets it, the draft panel inside the conversation view
+   * sends it. Deliberately not persisted -- there is no save step and no
+   * confirmation, so the choice lasts as long as the reviewer is looking at
+   * the conversation and grounds the generations they run while there.
+   *
+   * Cleared whenever the selected conversation changes, so a choice made on
+   * one conversation can never be sent with another's draft request.
+   */
+  const [selectedOrderNumber, setSelectedOrderNumber] = useState<string | null>(null);
+  useEffect(() => {
+    setSelectedOrderNumber(null);
+  }, [selectedId]);
   /**
    * Whether the marketplace-and-conversations drawer is open, below desktop
    * width (anything under `xl`, 1280px — a small laptop as much as a phone).
@@ -641,6 +658,10 @@ export function Workspace() {
               }
               detailsOpen={detailsVisible}
               onToggleDetails={() => setDetailsOpen((open) => !open)}
+              /* The order a reviewer picked in the context panel. It has to
+                 travel down this branch too: the panel that SETS it is in the
+                 aside, and the panel that SENDS it is inside this view. */
+              selectedOrderNumber={selectedOrderNumber}
             />
           )}
         </main>
@@ -685,7 +706,12 @@ export function Workspace() {
           </div>
           {selectedKind !== "message" && (
             <>
-              <ContextPanel conversation={detail?.conversation ?? null} capability={capability} />
+              <ContextPanel
+                conversation={detail?.conversation ?? null}
+                capability={capability}
+                selectedOrderNumber={selectedOrderNumber}
+                onSelectOrder={setSelectedOrderNumber}
+              />
               {/* After the context, because both answer "can I trust this
                   draft?" -- one from the conversation's side, one from the
                   model's. Renders nothing when there is no draft. */}

@@ -201,6 +201,18 @@ export const CONTEXT_NOT_LOADED_TEXT = "Order and product details not loaded yet
 export const NEEDS_CONTEXT_LABEL = "No order linked";
 
 /**
+ * Plain-English copy for a conversation that matched several genuine orders.
+ *
+ * Says what happened and what to do, in the reviewer's own terms. It
+ * deliberately names no internal concept — not the resolution value, not the
+ * verification state, not the fact vocabulary — because none of those is
+ * something a CST agent can act on, and a sentence about them reads as a
+ * system problem rather than a two-second task.
+ */
+export const MULTIPLE_ORDERS_TEXT =
+  "Multiple orders found. Please select the order related to this conversation.";
+
+/**
  * How a conversation is titled in the interface.
  *
  * The priority is what a CST agent can act on, in order:

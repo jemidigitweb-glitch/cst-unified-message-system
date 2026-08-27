@@ -140,12 +140,29 @@ function GeneratingIndicator({ step }: { step: number }) {
   );
 }
 
+/**
+ * The generate request's query string.
+ *
+ * Built in one place so the two parameters cannot disagree about separators,
+ * and so a null selection provably contributes nothing: with no pick and no
+ * force this returns the empty string, exactly the URL used before selection
+ * existed.
+ */
+function generateQuery(force: boolean, selectedOrderNumber: string | null): string {
+  const params = new URLSearchParams();
+  if (force) params.set("force", "1");
+  if (selectedOrderNumber !== null) params.set("selectedOrder", selectedOrderNumber);
+  const query = params.toString();
+  return query === "" ? "" : `?${query}`;
+}
+
 export function DraftPanel({
   conversationId,
   detail,
   workflowState,
   onWorkflowChange,
   onGenerated,
+  selectedOrderNumber,
 }: {
   conversationId: string;
   /**
@@ -166,6 +183,15 @@ export function DraftPanel({
    * never have to reload to see what the draft they are looking at cost.
    */
   onGenerated?: () => void;
+  /**
+   * The order a reviewer picked in the sidebar when several matched.
+   *
+   * Sent with the generate request and nowhere else: it grounds that one
+   * generation and is re-validated server-side against the orders this
+   * conversation actually matched. Null -- no pick, or only one order matched
+   * -- sends nothing and leaves the request byte-identical to before.
+   */
+  selectedOrderNumber: string | null;
 }) {
   const [revisions, setRevisions] = useState<DraftRevision[] | null>(null);
   const [bodyText, setBodyText] = useState("");
@@ -380,7 +406,7 @@ export function DraftPanel({
       );
       try {
         const response = await fetch(
-          `/api/conversations/${conversationId}/draft${force ? "?force=1" : ""}`,
+          `/api/conversations/${conversationId}/draft${generateQuery(force, selectedOrderNumber)}`,
           { method: "POST" },
         );
         /**
@@ -416,7 +442,7 @@ export function DraftPanel({
         setBusy(null);
       }
     },
-    [conversationId, load, onGenerated, onWorkflowChange],
+    [conversationId, load, onGenerated, onWorkflowChange, selectedOrderNumber],
   );
 
   const save = useCallback(async () => {
