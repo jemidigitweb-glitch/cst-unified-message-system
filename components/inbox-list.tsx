@@ -11,8 +11,9 @@ import {
   readStateOf,
 } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
-import { MESSAGE_CATEGORIES, type MessageCategory } from "@/lib/knowledge/message-category";
+import type { MessageCategory } from "@/lib/knowledge/message-category";
 
+import { CategoryTag } from "./category-tag";
 import { StatusBadge } from "./status-badge";
 
 /** The dropdown's "no filter" option — never a value `InboxItem.category` itself holds. */
@@ -51,7 +52,6 @@ export function InboxList({
   readFilter,
   onReadFilterChange,
   categoryFilter,
-  onCategoryFilterChange,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -66,10 +66,10 @@ export function InboxList({
   /**
    * Client-side, same as `readFilter` — `category` is already on every loaded
    * `InboxItem`, so narrowing by it changes nothing about what was fetched or
-   * when the next page is asked for.
+   * when the next page is asked for. The control itself lives in the header
+   * beside the No Rule tab; this list only applies the choice.
    */
   categoryFilter: CategoryFilter;
-  onCategoryFilterChange: (next: CategoryFilter) => void;
   /** Whether an older page than what is in `items` still exists server-side. */
   hasMore: boolean;
   loadingMore: boolean;
@@ -113,19 +113,6 @@ export function InboxList({
           Inbox · {filtered.length}
         </h2>
         <div className="flex items-center gap-2">
-          <select
-            aria-label="Filter by category"
-            value={categoryFilter}
-            onChange={(event) => onCategoryFilterChange(event.target.value as CategoryFilter)}
-            className="rounded border border-black/10 bg-transparent px-1.5 py-1 text-[11px] font-medium dark:border-white/15"
-          >
-            <option value={ALL_CATEGORIES}>All categories</option>
-            {MESSAGE_CATEGORIES.map((category) => (
-              <option key={category} value={category}>
-                {category}
-              </option>
-            ))}
-          </select>
           <div className="flex gap-1" role="tablist" aria-label="Read state">
             {READ_STATES.map((state) => (
               <button
@@ -196,11 +183,7 @@ export function InboxList({
                       one visual language for "what kind of request is this"
                       wherever it appears. Omitted, not shown as a placeholder,
                       when the phrase table found nothing or found a tie. */}
-                  {item.category !== null && (
-                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
-                      {item.category}
-                    </span>
-                  )}
+                  <CategoryTag category={item.category} />
                   <span className="ml-auto">
                     <StatusBadge state={item.workflowState} />
                   </span>

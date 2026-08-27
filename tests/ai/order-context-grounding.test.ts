@@ -436,3 +436,117 @@ describe("displaying candidates changes nothing the model sees", () => {
     expect(ungroundedClaims(result.draft_reply, orderFacts)).toContain("tracking number");
   });
 });
+
+/**
+ * Customer-stated product details reach the prompt as their own block, beside
+ * the verified ones and never inside them.
+ */
+describe("customer product data in the live prompt", () => {
+  function inboundMessage(bodyText: string) {
+    return {
+      id: "1",
+      direction: "inbound" as const,
+      sourceTimestamp: "2026-08-15 09:00:00",
+      bodyText,
+      bodyDecodeStatus: "decoded" as const,
+      attachments: [],
+    };
+  }
+
+  function outboundMessage(bodyText: string) {
+    return { ...inboundMessage(bodyText), id: "2", direction: "outbound" as const };
+  }
+
+  it("adds a clearly-unverified block when the customer stated product details", () => {
+    const request: DraftRequest = {
+      messages: [inboundMessage("Can I get this in black? I need a 40cm shade.")],
+      marketplace: "ebay",
+      listingItemRef: "166239358700",
+      facts: [],
+    };
+
+    const blocks = contextBlocks(request);
+
+    expect(blocks).toContain("CUSTOMER PRODUCT DATA");
+    expect(blocks).toContain("- Requested colour: black");
+    expect(blocks).toContain("- Requested measurement: 40cm");
+    expect(blocks).toContain("NOT verified");
+  });
+
+  /**
+   * The separation that matters: a colour the customer asked for must not sit
+   * inside a block headed VERIFIED.
+   */
+  it("keeps it out of every verified block", () => {
+    const request: DraftRequest = {
+      messages: [inboundMessage("Do you have it in white?")],
+      marketplace: "ebay",
+      listingItemRef: "166239358700",
+      facts: [{ name: "order_number", value: "12-34567-89012" }],
+    };
+
+    const blocks = contextBlocks(request);
+    const customerBlockStart = blocks.indexOf("CUSTOMER PRODUCT DATA");
+    const verified = blocks.slice(0, customerBlockStart);
+
+    expect(customerBlockStart).toBeGreaterThan(-1);
+    expect(verified).toContain("VERIFIED CONTEXT — ORDER");
+    expect(verified).not.toContain("white");
+  });
+
+  it("omits the block entirely when the customer stated nothing", () => {
+    const request: DraftRequest = {
+      messages: [inboundMessage("Hi, any update on my order please?")],
+      marketplace: "ebay",
+      listingItemRef: "166239358700",
+      facts: [],
+    };
+
+    expect(contextBlocks(request)).not.toContain("CUSTOMER PRODUCT DATA");
+  });
+
+  it("never takes product details from a previous CST reply", () => {
+    const request: DraftRequest = {
+      messages: [
+        inboundMessage("Any update?"),
+        outboundMessage("We stock it in black, 40cm wide."),
+      ],
+      marketplace: "ebay",
+      listingItemRef: "166239358700",
+      facts: [],
+    };
+
+    expect(contextBlocks(request)).not.toContain("CUSTOMER PRODUCT DATA");
+  });
+
+  /**
+   * Both kinds of context reach one prompt without merging: the selected
+   * order's verified facts, and separately what the customer asked for.
+   */
+  it("carries a selected order's verified facts and the customer's words together", async () => {
+    const orderFacts = await resolveEbayOrderContext(
+      fakeSourceClient([candidateRow()]),
+      fakeAppClient(),
+      {
+        id: "32103",
+        marketplace: "ebay",
+        subSourceId: 1,
+        counterpartyRef: "kraskir24",
+        listingItemRef: "166239358700",
+      },
+    );
+
+    const request: DraftRequest = {
+      messages: [inboundMessage("Can I get this in black?")],
+      marketplace: "ebay",
+      listingItemRef: "166239358700",
+      facts: orderFacts,
+    };
+    const blocks = contextBlocks(request);
+
+    expect(blocks).toContain("VERIFIED CONTEXT — ORDER");
+    expect(blocks).toContain("order_number: ORD-1001");
+    expect(blocks).toContain("CUSTOMER PRODUCT DATA");
+    expect(blocks).toContain("- Requested colour: black");
+  });
+});

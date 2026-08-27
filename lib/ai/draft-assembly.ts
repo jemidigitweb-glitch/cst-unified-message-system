@@ -1,4 +1,8 @@
 import {
+  customerProductDataBlock,
+  extractCustomerProductData,
+} from "@/lib/domain/customer-product-data";
+import {
   type DraftResult,
   draftResultSchema,
   settleReviewRequirement,
@@ -71,6 +75,22 @@ export function contextBlocks(request: DraftRequest): string {
       `VERIFIED CONTEXT — RETURN:\n${returnFacts.map((fact) => `- ${fact.name}: ${fact.value}`).join("\n")}\n(this tells you a return record exists and its status/reason — it does NOT mean you have seen any photo; never describe what an image shows)`,
     );
   }
+
+  /**
+   * What the CUSTOMER said about the product, kept apart from everything above.
+   *
+   * Deliberately the LAST block and deliberately not headed "VERIFIED": every
+   * block before it was established against the source database, and this one
+   * was asserted by a member of the public. Same separation the sidebar makes
+   * on screen, for the same reason — a colour the customer asked for and a SKU
+   * the backend confirmed must not read as the same class of thing.
+   *
+   * Extracted from `request.messages`, which this already has, so nothing new
+   * is fetched, computed elsewhere or stored. Omitted entirely when the
+   * customer stated nothing.
+   */
+  const customerBlock = customerProductDataBlock(extractCustomerProductData(request.messages));
+  if (customerBlock !== null) blocks.push(customerBlock);
 
   return blocks.join("\n\n");
 }

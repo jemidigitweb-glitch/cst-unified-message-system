@@ -17,6 +17,7 @@ import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
 import { ALL_CATEGORIES, type CategoryFilter, InboxList } from "./inbox-list";
+import { MESSAGE_CATEGORIES } from "@/lib/knowledge/message-category";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
@@ -433,7 +434,34 @@ export function Workspace() {
             <HamburgerIcon />
             {capabilityOf(marketplace).label}
           </button>
-          <div className="flex shrink-0 gap-1">
+          <div className="flex shrink-0 items-center gap-1">
+            {/*
+              * Sits immediately left of No Rule, with the other view-level
+              * controls, rather than inside the list header — it narrows the
+              * same list those tabs switch between, so it belongs beside them.
+              *
+              * Shown only on the inbox view: it filters the conversation list,
+              * and on No Rule or AI Usage there is no such list to narrow, so a
+              * control that appeared to do nothing would be worse than none.
+              *
+              * Purely client-side over the page already loaded — changing it
+              * fetches nothing.
+              */}
+            {view === "inbox" && (
+              <select
+                aria-label="Filter by category"
+                value={categoryFilter}
+                onChange={(event) => setCategoryFilter(event.target.value as CategoryFilter)}
+                className="mr-1 max-w-[11rem] shrink-0 truncate rounded-md border border-black/10 bg-transparent px-1.5 py-1 text-xs font-medium dark:border-white/15"
+              >
+                <option value={ALL_CATEGORIES}>All categories</option>
+                {MESSAGE_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            )}
             {/*
               * Marketplace-scoped, unlike Status: this reads the currently
               * selected marketplace tab's No Rule conversations, so switching
@@ -601,7 +629,6 @@ export function Workspace() {
                 readFilter={readFilter}
                 onReadFilterChange={setReadFilter}
                 categoryFilter={categoryFilter}
-                onCategoryFilterChange={setCategoryFilter}
                 hasMore={inboxHasMore}
                 loadingMore={inboxLoadingMore}
                 onLoadMore={() => void loadMoreInbox()}
@@ -713,6 +740,9 @@ export function Workspace() {
               <ContextPanel
                 conversation={detail?.conversation ?? null}
                 capability={capability}
+                /* The thread this view already holds — no second request just
+                   to read what the customer said about the product. */
+                messages={detail?.messages ?? []}
                 selectedOrderNumber={selectedOrderNumber}
                 onSelectOrder={setSelectedOrderNumber}
               />

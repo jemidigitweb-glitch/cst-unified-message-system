@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { isUnresolvedReference } from "@/lib/domain/conversation-reference";
+import {
+  CUSTOMER_PRODUCT_DATA_HEADING,
+  type CustomerMessage,
+  extractCustomerProductData,
+  panelCustomerProductData,
+} from "@/lib/domain/customer-product-data";
 import {
   CONTEXT_NOT_LOADED_TEXT,
   MULTIPLE_ORDERS_TEXT,
@@ -170,7 +176,7 @@ function OrderContextFacts({
 
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-[11px] font-medium tracking-wide uppercase opacity-55">Order context</h3>
+      <SectionHeading tone="order">Order context</SectionHeading>
       {/* Said once, above the list: the choice is over the set, not per order. */}
       {selectable && <p className="text-xs opacity-70">{MULTIPLE_ORDERS_TEXT}</p>}
       <ul className="flex flex-col gap-2">
@@ -301,14 +307,57 @@ function MatchEvidence({ reasons }: { reasons: readonly string[] }) {
   );
 }
 
+/**
+ * What the customer said about the product, in their own words.
+ *
+ * A SEPARATE SECTION FROM ORDER CONTEXT, deliberately. Everything above was
+ * verified against the source database; this was asserted by a member of the
+ * public. Putting a colour the customer asked for in the same list as a SKU
+ * the backend confirmed would make the two read as one kind of thing, and the
+ * reviewer's whole job here is telling them apart.
+ *
+ * ABSENT, NOT EMPTY. Most conversations mention no dimensions or colours at
+ * all. An empty box headed "Customer product data" would suggest the customer
+ * gave none when in fact none was looked for, so the section simply does not
+ * render.
+ *
+ * Values are slices of the customer's own messages — nothing here paraphrases,
+ * normalises or converts, so every row can be checked by reading the thread.
+ */
+function CustomerProductData({ messages }: { messages: readonly CustomerMessage[] }) {
+  const details = useMemo(
+    () => panelCustomerProductData(extractCustomerProductData(messages)),
+    [messages],
+  );
+  if (details.length === 0) return null;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <SectionHeading tone="customer">{CUSTOMER_PRODUCT_DATA_HEADING}</SectionHeading>
+      <dl className="flex flex-col gap-0.5 text-sm">
+        {details.map((detail) => (
+          <Row key={`${detail.label}:${detail.value}`} label={detail.label} value={detail.value} />
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 export function ContextPanel({
   conversation,
   capability,
+  messages,
   selectedOrderNumber,
   onSelectOrder,
 }: {
   conversation: InboxItem | null;
   capability: MarketplaceCapability;
+  /**
+   * The thread, already loaded by the view above — read ONLY to surface what
+   * the customer said about the product. Nothing here fetches it again, and
+   * nothing derived from it is stored.
+   */
+  messages: readonly CustomerMessage[];
   /**
    * The order a reviewer picked, held by the workspace rather than here so the
    * draft panel -- a sibling, not a child -- can send it with the next
@@ -361,7 +410,7 @@ export function ContextPanel({
       </section>
 
       <section className="flex flex-col gap-2">
-        <h2 className="text-xs font-medium tracking-wide uppercase opacity-70">Context</h2>
+        <SectionHeading tone="context">Context</SectionHeading>
         {conversation.listingItemRef !== null && (
           <Row label="Item reference" value={conversation.listingItemRef} />
         )}
@@ -377,12 +426,55 @@ export function ContextPanel({
           onSelectOrder={onSelectOrder}
         />
       </section>
+
+      {/*
+        Its own section, a sibling of Context rather than nested inside it.
+        Nested, its heading sat at the same indent as the order-context heading
+        directly above and read as a second heading for the same block. It is
+        conversation-level anyway — what the customer asked for is true of the
+        thread whichever order a reviewer picks — so a section of its own is
+        also the more honest placement. Renders nothing at all when the
+        customer stated no product details.
+      */}
+      <CustomerProductData messages={messages} />
     </div>
   );
 }
 
-function Row({ label, value }: { label: string; value: string | null }) {
+/**
+ * A sidebar section heading, tinted so each section is its own.
+ *
+ * TEXT COLOUR ONLY — no background, no pill, no radius. The sidebar already
+ * carries status pills and category chips; giving the headings a filled
+ * background too would put three more boxes on a panel whose job is to be
+ * read straight down, and would compete with the badges that are the thing
+ * actually worth noticing.
+ *
+ * ONE TABLE, THREE TONES, so a reviewer scrolling past several short lists
+ * of label/value rows can see where one section ends and the next begins
+ * without reading the words.
+ */
+const SECTION_TONE = {
+  context: "text-indigo-700 dark:text-indigo-300",
+  order: "text-teal-700 dark:text-teal-300",
+  customer: "text-amber-700 dark:text-amber-300",
+} as const;
+
+function SectionHeading({
+  tone,
+  children,
+}: {
+  tone: keyof typeof SECTION_TONE;
+  children: string;
+}) {
   return (
+    <h2 className={`text-[11px] font-medium tracking-wide uppercase ${SECTION_TONE[tone]}`}>
+      {children}
+    </h2>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string | null }) {  return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="shrink-0 text-xs opacity-70">{label}</dt>
       <dd className="truncate text-right text-sm">{value ?? ""}</dd>

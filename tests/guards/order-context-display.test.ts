@@ -432,3 +432,79 @@ describe("a selection survives a page refresh", () => {
     expect(panel).not.toMatch(/>\s*(Save|Confirm|Apply|Remember)\b/);
   });
 });
+
+/**
+ * Customer product data is the customer's claims, kept visibly apart from the
+ * verified order context above it.
+ *
+ * The failure to guard against is provenance blur: a colour the customer asked
+ * for rendered as though the backend confirmed it, or drawn from a catalogue
+ * rather than from what they actually typed.
+ */
+describe("customer product data", () => {
+  const extractor = read("lib", "domain", "customer-product-data.ts");
+  const assembly = read("lib", "ai", "draft-assembly.ts");
+
+  it("is its own section, below the order context and never inside it", () => {
+    expect(panel).toContain("CUSTOMER_PRODUCT_DATA_HEADING");
+    expect(panel).toContain("<CustomerProductData messages={messages} />");
+    expect(panel.indexOf("<OrderContextFacts")).toBeLessThan(
+      panel.indexOf("<CustomerProductData"),
+    );
+    // Not folded into the verified block's field list.
+    expect(panel).not.toMatch(/ORDER_DETAIL_FIELDS[\s\S]{0,200}customerProduct/i);
+  });
+
+  it("hides itself rather than showing an empty box", () => {
+    const section = panel.slice(panel.indexOf("function CustomerProductData"));
+    expect(section).toContain("if (details.length === 0) return null");
+  });
+
+  it("reads the thread the view already holds, fetching nothing", () => {
+    const section = panel.slice(
+      panel.indexOf("function CustomerProductData"),
+      panel.indexOf("export function ContextPanel"),
+    );
+    expect(section).not.toMatch(/fetch\(|useEffect/);
+    expect(workspace).toContain("messages={detail?.messages ?? []}");
+  });
+
+  it("takes only customer messages, and only readable ones", () => {
+    expect(extractor).toContain('message.direction === "inbound"');
+    expect(extractor).toContain('message.bodyDecodeStatus === "decoded"');
+  });
+
+  /**
+   * It is handed messages and nothing else, so it cannot consult an order, a
+   * SKU or a catalogue even by accident.
+   */
+  it("consults no order, catalogue or SKU", () => {
+    for (const forbidden of [
+      "SourceOrderDetail",
+      "VerifiedFact",
+      "order-context-repository",
+      "order-display-repository",
+      "OrderDetail",
+      "fetch(",
+    ]) {
+      expect(extractor, `${forbidden} is not a customer statement`).not.toContain(forbidden);
+    }
+  });
+
+  it("stores nothing and needs no schema", () => {
+    expect(extractor).not.toMatch(/localStorage|sessionStorage|cst_app|INSERT|UPDATE|DELETE/i);
+    expect(extractor).not.toContain("server-only");
+  });
+
+  it("reaches the prompt as its own block, after every verified one", () => {
+    expect(assembly).toContain("customerProductDataBlock(extractCustomerProductData(request.messages))");
+    // Ordering asserted inside the builder, not across the whole file — the
+    // import at the top would otherwise sort before every block.
+    const builder = assembly.slice(assembly.indexOf("export function contextBlocks"));
+    expect(builder.indexOf("VERIFIED CONTEXT — ORDER")).toBeLessThan(
+      builder.indexOf("customerProductDataBlock"),
+    );
+    // Pushed as a separate block, never merged into the verified fact list.
+    expect(assembly).not.toMatch(/facts\s*:\s*\[[^\]]*customerProduct/);
+  });
+});
