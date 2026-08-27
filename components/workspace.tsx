@@ -16,7 +16,7 @@ import { ContextPanel } from "./context-panel";
 import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
-import { InboxList } from "./inbox-list";
+import { ALL_CATEGORIES, type CategoryFilter, InboxList } from "./inbox-list";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
@@ -82,6 +82,8 @@ export function Workspace() {
    * the ones worth triaging first.
    */
   const [readFilter, setReadFilter] = useState<ReadState>("unread");
+  /** Client-side over the same loaded `items` as `readFilter` — see InboxList. */
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(ALL_CATEGORIES);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /**
    * Which list the selection came from.
@@ -598,6 +600,8 @@ export function Workspace() {
                 capability={capability}
                 readFilter={readFilter}
                 onReadFilterChange={setReadFilter}
+                categoryFilter={categoryFilter}
+                onCategoryFilterChange={setCategoryFilter}
                 hasMore={inboxHasMore}
                 loadingMore={inboxLoadingMore}
                 onLoadMore={() => void loadMoreInbox()}

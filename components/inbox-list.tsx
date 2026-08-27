@@ -11,8 +11,13 @@ import {
   readStateOf,
 } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
+import { MESSAGE_CATEGORIES, type MessageCategory } from "@/lib/knowledge/message-category";
 
 import { StatusBadge } from "./status-badge";
+
+/** The dropdown's "no filter" option — never a value `InboxItem.category` itself holds. */
+export const ALL_CATEGORIES = "all" as const;
+export type CategoryFilter = MessageCategory | typeof ALL_CATEGORIES;
 
 /**
  * The customer-reply inbox.
@@ -45,6 +50,8 @@ export function InboxList({
   capability,
   readFilter,
   onReadFilterChange,
+  categoryFilter,
+  onCategoryFilterChange,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -56,6 +63,13 @@ export function InboxList({
   capability: MarketplaceCapability;
   readFilter: ReadState;
   onReadFilterChange: (next: ReadState) => void;
+  /**
+   * Client-side, same as `readFilter` — `category` is already on every loaded
+   * `InboxItem`, so narrowing by it changes nothing about what was fetched or
+   * when the next page is asked for.
+   */
+  categoryFilter: CategoryFilter;
+  onCategoryFilterChange: (next: CategoryFilter) => void;
   /** Whether an older page than what is in `items` still exists server-side. */
   hasMore: boolean;
   loadingMore: boolean;
@@ -88,32 +102,48 @@ export function InboxList({
 
   const filtered = items
     .filter((item) => !isEbayPlatformNotice(item))
-    .filter((item) => readStateOf(item) === readFilter);
+    .filter((item) => readStateOf(item) === readFilter)
+    .filter((item) => categoryFilter === ALL_CATEGORIES || item.category === categoryFilter);
   const everyItemNeedsContext = filtered.every((item) => item.needsContext);
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2 px-4 pt-4 pb-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 pb-2">
         <h2 className="text-xs font-medium tracking-wide uppercase opacity-70">
           Inbox · {filtered.length}
         </h2>
-        <div className="flex gap-1" role="tablist" aria-label="Read state">
-          {READ_STATES.map((state) => (
-            <button
-              key={state}
-              type="button"
-              role="tab"
-              aria-selected={readFilter === state}
-              onClick={() => onReadFilterChange(state)}
-              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                readFilter === state
-                  ? "bg-black/[0.09] dark:bg-white/[0.16]"
-                  : "opacity-70 hover:opacity-100"
-              }`}
-            >
-              {readStateLabel(state)}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <select
+            aria-label="Filter by category"
+            value={categoryFilter}
+            onChange={(event) => onCategoryFilterChange(event.target.value as CategoryFilter)}
+            className="rounded border border-black/10 bg-transparent px-1.5 py-1 text-[11px] font-medium dark:border-white/15"
+          >
+            <option value={ALL_CATEGORIES}>All categories</option>
+            {MESSAGE_CATEGORIES.map((category) => (
+              <option key={category} value={category}>
+                {category}
+              </option>
+            ))}
+          </select>
+          <div className="flex gap-1" role="tablist" aria-label="Read state">
+            {READ_STATES.map((state) => (
+              <button
+                key={state}
+                type="button"
+                role="tab"
+                aria-selected={readFilter === state}
+                onClick={() => onReadFilterChange(state)}
+                className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                  readFilter === state
+                    ? "bg-black/[0.09] dark:bg-white/[0.16]"
+                    : "opacity-70 hover:opacity-100"
+                }`}
+              >
+                {readStateLabel(state)}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {filtered.length === 0 ? (
@@ -160,6 +190,15 @@ export function InboxList({
                   {item.needsContext && !everyItemNeedsContext && (
                     <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
                       {NEEDS_CONTEXT_LABEL}
+                    </span>
+                  )}
+                  {/* Same pill styling as the case-type chip in NoRuleList —
+                      one visual language for "what kind of request is this"
+                      wherever it appears. Omitted, not shown as a placeholder,
+                      when the phrase table found nothing or found a tie. */}
+                  {item.category !== null && (
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                      {item.category}
                     </span>
                   )}
                   <span className="ml-auto">

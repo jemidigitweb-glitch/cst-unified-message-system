@@ -39,6 +39,7 @@ function conversation(overrides: Partial<InboxItem> = {}): InboxItem {
     messageCount: 3,
     inboundCount: 2,
     lastDirection: "outbound",
+    category: null,
     ...overrides,
   };
 }
