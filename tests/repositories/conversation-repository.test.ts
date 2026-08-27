@@ -157,7 +157,55 @@ describe("inbox listing", () => {
       messageCount: 2,
       inboundCount: 1,
       lastDirection: "outbound",
+      category: null,
     });
+  });
+
+  it("computes category from the row's aggregated inbound text", async () => {
+    const { calls, client } = fake([[conversationRow({ inbound_text: "My item arrived damaged." })]]);
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
+    expect(item?.category).toBe("Damage queries");
+    expect(calls[0]!.text).toContain("AS inbound_text");
+    expect(calls[0]!.text).toContain("cm.direction = 'inbound'");
+  });
+
+  it("reports category null when no inbound text was aggregated", async () => {
+    const { client } = fake([[conversationRow({ inbound_text: null })]]);
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
+    expect(item?.category).toBeNull();
+  });
+
+  it("still classifies eBay and Amazon conversations", async () => {
+    const ebay = fake([[conversationRow({ marketplace: "ebay", inbound_text: "Der Artikel ist defekt." })]]);
+    const [ebayItem] = (await listConversations(ebay.client, { marketplace: "ebay" })).items;
+    expect(ebayItem?.category).toBe("Defective items");
+
+    const amazon = fake([
+      [conversationRow({ marketplace: "amazon", inbound_text: "This item is faulty and stopped working." })],
+    ]);
+    const [amazonItem] = (await listConversations(amazon.client, { marketplace: "amazon" })).items;
+    expect(amazonItem?.category).toBe("Defective items");
+  });
+
+  it("suppresses category for B&Q and Temu, even when the text would otherwise classify", async () => {
+    const bandq = fake([
+      [conversationRow({ marketplace: "bandq", inbound_text: "The item arrived damaged and broken." })],
+    ]);
+    const [bandqItem] = (await listConversations(bandq.client, { marketplace: "bandq" })).items;
+    expect(bandqItem?.category).toBeNull();
+
+    const temu = fake([
+      [conversationRow({ marketplace: "temu", inbound_text: "I would like a refund for this order." })],
+    ]);
+    const [temuItem] = (await listConversations(temu.client, { marketplace: "temu" })).items;
+    expect(temuItem?.category).toBeNull();
+  });
+
+  it("leaves inbox_visibility filtering untouched by the category suppression", async () => {
+    const { calls, client } = fake([[]]);
+    await listConversations(client, { marketplace: "bandq", placement: "reply_inbox" });
+    expect(calls[0]!.text).toContain("c.inbox_visibility = $2::text");
+    expect(calls[0]!.values![1]).toBe("reply_inbox");
   });
 
   it("exposes no source table or connection metadata to callers", async () => {
@@ -246,6 +294,7 @@ describe("No Rule listing", () => {
       messageCount: 2,
       inboundCount: 1,
       lastDirection: "outbound",
+      category: null,
       caseType: "Damaged item",
       analysedAt: "2026-08-20 09:00:00",
       reason: "no_corpus",

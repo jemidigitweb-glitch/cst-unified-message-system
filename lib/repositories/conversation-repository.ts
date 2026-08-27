@@ -10,6 +10,7 @@ import type {
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
 import { type LoadedRules, loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
+import { classifyMessageCategory } from "@/lib/knowledge/message-category";
 import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
 
 /**
@@ -62,6 +63,21 @@ const LAST_DIRECTION = `(
   LIMIT 1
 )`;
 
+/**
+ * Every inbound message's text, concatenated, for `classifyMessageCategory`.
+ *
+ * Same correlated-subquery shape as `LAST_DIRECTION` above, bounded by the
+ * same page size — not a per-row round trip, one query. Read once here rather
+ * than fetching each conversation's full message list back into the
+ * application just to rebuild the same string `customerText()` already knows
+ * how to assemble.
+ */
+const INBOUND_TEXT = `(
+  SELECT string_agg(cm.body_text, ' ')
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'inbound'
+)`;
+
 const LIST_CONVERSATIONS = `
 SELECT c.id::text                  AS id,
        c.marketplace,
@@ -75,7 +91,8 @@ SELECT c.id::text                  AS id,
        c.last_source_ts::text      AS last_source_ts,
        c.message_count,
        c.inbound_count,
-       ${LAST_DIRECTION}           AS last_direction
+       ${LAST_DIRECTION}           AS last_direction,
+       ${INBOUND_TEXT}             AS inbound_text
 FROM cst_app.conversations c
 WHERE c.marketplace = $1
   AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
@@ -243,6 +260,8 @@ type ConversationRow = {
   message_count: number;
   inbound_count: number;
   last_direction: string | null;
+  /** Absent (not merely null) wherever a query does not select it — `LIST_CONVERSATIONS` is the only one that does. */
+  inbound_text?: string | null;
 };
 
 type NoRuleConversationRow = ConversationRow & {
@@ -267,6 +286,15 @@ type MessageRow = {
   attachments: unknown;
 };
 
+/**
+ * Marketplaces whose stored `body_text` is known to carry unfiltered
+ * non-customer content (raw email transport headers, corporate boilerplate)
+ * with no structural filter yet in place to remove it — see the Phase 1
+ * ingestion-quality investigation. Category output for these would be noise
+ * dressed up as a finding, so it is suppressed rather than shown wrong.
+ */
+const CATEGORY_SUPPRESSED_MARKETPLACES = new Set(["bandq", "temu"]);
+
 function toInboxItem(row: ConversationRow): InboxItem {
   return {
     id: row.id,
@@ -285,6 +313,9 @@ function toInboxItem(row: ConversationRow): InboxItem {
     messageCount: Number(row.message_count),
     inboundCount: Number(row.inbound_count),
     lastDirection: row.last_direction as InboxItem["lastDirection"],
+    category: CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)
+      ? null
+      : classifyMessageCategory(row.inbound_text ?? null),
   };
 }
 

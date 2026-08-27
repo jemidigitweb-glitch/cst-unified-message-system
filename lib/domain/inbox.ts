@@ -7,6 +7,7 @@ import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilitie
 import { messageDirectionSchema } from "@/lib/domain/message";
 import { bodyDecodeStatuses } from "@/lib/domain/source-message";
 import { workflowStateSchema } from "@/lib/domain/workflow";
+import { MESSAGE_CATEGORIES } from "@/lib/knowledge/message-category";
 
 /**
  * Marketplace-NEUTRAL view contracts for the workspace.
@@ -48,6 +49,14 @@ export const inboxItemSchema = z.object({
    * representable rather than lying with a guessed direction.
    */
   lastDirection: messageDirectionSchema.nullable(),
+  /**
+   * Which of the eleven CST case areas this conversation's customer messages
+   * fall under, from `classifyMessageCategory` — computed at list-fetch time
+   * from text the query already reads, never stored. Null when the phrase
+   * table found nothing, or found two areas equally strongly: an inbox filter
+   * showing the wrong category is worse than one honestly showing none.
+   */
+  category: z.enum(MESSAGE_CATEGORIES).nullable(),
 });
 
 export type InboxItem = z.infer<typeof inboxItemSchema>;
