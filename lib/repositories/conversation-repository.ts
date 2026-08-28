@@ -10,7 +10,10 @@ import type {
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
 import { type LoadedRules, loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
-import { classifyMessageCategory } from "@/lib/knowledge/message-category";
+import {
+  classifyConversationCategory,
+  classifyMessageCategoryWithFallback,
+} from "@/lib/knowledge/message-category";
 import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
 
 /**
@@ -78,6 +81,26 @@ const INBOUND_TEXT = `(
   WHERE cm.conversation_id = c.id AND cm.direction = 'inbound'
 )`;
 
+/**
+ * The same messages, kept SEPARATE and IN ORDER, for `classifyConversationCategory`.
+ *
+ * WHY BOTH. `INBOUND_TEXT` above concatenates, and concatenation loses two
+ * things the classifier wants. It merges signals that were never in the same
+ * message — a missing part in the first and a damaged box in the third read as
+ * one sentence containing both — and `string_agg` has no ordering, so there was
+ * no way to tell which problem the customer arrived with. Reading the messages
+ * separately and in order is what lets a closing "found it, all sorted" leave
+ * the original category alone.
+ *
+ * `body_text IS NOT NULL` because an attachment-only message contributes an
+ * empty element the classifier would only have to filter out again.
+ */
+const INBOUND_TEXTS = `(
+  SELECT array_agg(cm.body_text ORDER BY cm.source_ts, cm.source_pk::bigint)
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'inbound' AND cm.body_text IS NOT NULL
+)`;
+
 const LIST_CONVERSATIONS = `
 SELECT c.id::text                  AS id,
        c.marketplace,
@@ -92,7 +115,8 @@ SELECT c.id::text                  AS id,
        c.message_count,
        c.inbound_count,
        ${LAST_DIRECTION}           AS last_direction,
-       ${INBOUND_TEXT}             AS inbound_text
+       ${INBOUND_TEXT}             AS inbound_text,
+       ${INBOUND_TEXTS}            AS inbound_texts
 FROM cst_app.conversations c
 WHERE c.marketplace = $1
   AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
@@ -262,6 +286,7 @@ type ConversationRow = {
   last_direction: string | null;
   /** Absent (not merely null) wherever a query does not select it — `LIST_CONVERSATIONS` is the only one that does. */
   inbound_text?: string | null;
+  inbound_texts?: (string | null)[] | null;
 };
 
 type NoRuleConversationRow = ConversationRow & {
@@ -313,9 +338,22 @@ function toInboxItem(row: ConversationRow): InboxItem {
     messageCount: Number(row.message_count),
     inboundCount: Number(row.inbound_count),
     lastDirection: row.last_direction as InboxItem["lastDirection"],
+    // The strict phrase table first, then the intent fallback behind it, so a
+    // conversation the table cannot name still reaches the inbox with a tag
+    // rather than as a blank. Suppressed marketplaces short-circuit before
+    // either: their stored text is known to carry non-customer content, and a
+    // fallback that never returns null would turn that noise into findings.
+    //
+    // The per-message array is preferred where the projection supplies it,
+    // because reading the thread in order is what keeps a closing "found it,
+    // all sorted" from costing the conversation the category its opening
+    // message earned. The concatenated column remains the fallback for any
+    // caller or older projection that does not select the array.
     category: CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)
       ? null
-      : classifyMessageCategory(row.inbound_text ?? null),
+      : row.inbound_texts != null
+        ? classifyConversationCategory(row.inbound_texts)
+        : classifyMessageCategoryWithFallback(row.inbound_text ?? null),
   };
 }
 
