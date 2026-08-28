@@ -207,3 +207,105 @@ export function resetConfigCacheForTests(): void {
   appCache = undefined;
   knowledgeCache = undefined;
 }
+
+export const ROYAL_MAIL_CLIENT_ID_VAR = "ROYAL_MAIL_CLIENT_ID";
+export const ROYAL_MAIL_CLIENT_SECRET_VAR = "ROYAL_MAIL_CLIENT_SECRET";
+export const ROYAL_MAIL_API_KEY_VAR = "ROYAL_MAIL_API_KEY";
+
+/**
+ * Royal Mail tracking credentials.
+ *
+ * ALL THREE OR NOTHING. Royal Mail's tracking API needs a client id and secret
+ * to obtain a token and an api key on each call, so a partially configured
+ * environment cannot make a single successful request. Returning `undefined`
+ * for "two of three set" means the provider reports itself unconfigured with a
+ * message naming what is missing, rather than failing at the first call with a
+ * 401 that reads like a revoked credential — the exact confusion that cost two
+ * debugging sessions on the Gemini side.
+ *
+ * NOT CACHED, for the same reason as `openAiConfig`: a rotated credential takes
+ * effect on the next request, not the next restart.
+ *
+ * NO CREDENTIAL IS STORED. This reads `process.env` and hands the values to the
+ * caller; nothing here writes them to disk, a database, or a log.
+ */
+export type RoyalMailConfig = {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  /**
+   * A token endpoint, ONLY when this deployment needs one.
+   *
+   * Undefined is the normal case and means header authentication — see
+   * `authenticate` in the provider for why that is the default.
+   */
+  readonly tokenUrl: string | undefined;
+  readonly trackingUrl: string;
+};
+
+/** A configured value, or undefined when absent or left at the placeholder. */
+function readVar(name: string): string | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return apiKeySchema.safeParse(raw).success ? raw.trim() : undefined;
+}
+
+/**
+ * Which credentials are missing, for a message that names them.
+ *
+ * TWO ARE REQUIRED, NOT THREE. The Tracking API authenticates with the client
+ * id and client secret issued when an application is registered on Royal
+ * Mail's developer portal, and those go on every request as `X-IBM-Client-Id`
+ * and `X-IBM-Client-Secret`.
+ *
+ * `ROYAL_MAIL_API_KEY` is kept and is OPTIONAL. Parts of the portal call the
+ * client id an "API key", so an operator may reasonably have set it under that
+ * name; when the client id is absent and this is present, it is used as the
+ * client id rather than failing on what is most likely the same value under a
+ * different label.
+ */
+export function royalMailMissingVars(): string[] {
+  const missing: string[] = [];
+  if (readVar(ROYAL_MAIL_CLIENT_ID_VAR) === undefined && readVar(ROYAL_MAIL_API_KEY_VAR) === undefined) {
+    missing.push(ROYAL_MAIL_CLIENT_ID_VAR);
+  }
+  if (readVar(ROYAL_MAIL_CLIENT_SECRET_VAR) === undefined) {
+    missing.push(ROYAL_MAIL_CLIENT_SECRET_VAR);
+  }
+  return missing;
+}
+
+export const ROYAL_MAIL_TOKEN_URL_VAR = "ROYAL_MAIL_TOKEN_URL";
+export const ROYAL_MAIL_TRACKING_URL_VAR = "ROYAL_MAIL_TRACKING_URL";
+
+/**
+ * Where Royal Mail's Tracking API lives.
+ *
+ * `https://api.royalmail.net/mailpieces/v2`, with `/{mailPieceId}/events`
+ * beneath it. Confirmed against a working third-party client for this exact
+ * product rather than assumed.
+ *
+ * THERE IS DELIBERATELY NO DEFAULT TOKEN URL, and that is the fix for a real
+ * failure. An earlier version of this file guessed `https://api.royalmail.net/
+ * token` and every lookup died with `royal_mail auth 404` — that endpoint does
+ * not exist on this product. The Tracking API authenticates by header; the
+ * `/login/v1/tokens` endpoint that does exist belongs to Royal Mail's CONSUMER
+ * mobile API, which is a different product with a different audience.
+ *
+ * `ROYAL_MAIL_TOKEN_URL` therefore stays available but UNSET by default. A
+ * deployment that genuinely needs a token exchange can turn it on without a
+ * code change; nobody gets one they did not ask for.
+ */
+export const DEFAULT_ROYAL_MAIL_TRACKING_URL = "https://api.royalmail.net/mailpieces/v2";
+
+export function royalMailConfig(): RoyalMailConfig | undefined {
+  if (royalMailMissingVars().length > 0) return undefined;
+  return {
+    // The api key is accepted as an alias: parts of the portal call the client
+    // id an "API key", and failing on the same value under another label would
+    // be a configuration puzzle with no useful answer.
+    clientId: (readVar(ROYAL_MAIL_CLIENT_ID_VAR) ?? readVar(ROYAL_MAIL_API_KEY_VAR))!,
+    clientSecret: readVar(ROYAL_MAIL_CLIENT_SECRET_VAR)!,
+    tokenUrl: readVar(ROYAL_MAIL_TOKEN_URL_VAR),
+    trackingUrl: readVar(ROYAL_MAIL_TRACKING_URL_VAR) ?? DEFAULT_ROYAL_MAIL_TRACKING_URL,
+  };
+}

@@ -130,19 +130,26 @@ describe("no send capability anywhere in the draft feature", () => {
   });
 
   /**
-   * TWO permitted hosts, and both are model providers.
+   * THREE permitted hosts: two model providers and one carrier.
    *
-   * `api.openai.com` is the primary path (Responses API + File Search);
+   * `api.openai.com` is the primary draft path (Responses API + File Search);
    * `generativelanguage.googleapis.com` is the Gemini fallback.
    * `sheets.googleapis.com` was removed with the Google Sheet rule reader — an
    * allowlist that keeps entries for deleted features stops being an
    * allowlist, because the next thing to call that host passes silently.
    *
-   * Nothing else may be reachable from the draft feature. In particular there
-   * is no marketplace, email or messaging host here, which is what makes
-   * "this cannot contact a customer" checkable rather than asserted.
+   * `api.royalmail.net` was added with the carrier tracking provider, and it is
+   * worth being explicit about why it does not weaken what this guard protects.
+   * The claim here is "this cannot contact a customer", not "this makes no
+   * calls". Royal Mail's tracking API is a READ of a consignment's own scan
+   * history: it takes a tracking reference and returns events. It carries no
+   * recipient, no message body and no send operation, so it cannot deliver
+   * anything to anybody — which is the same reason a model provider is allowed.
+   *
+   * What must never appear is a marketplace, email or messaging host. Those are
+   * the ones that could put text in front of a customer, and none is here.
    */
-  it("reaches only the model providers over the network", () => {
+  it("reaches only the model providers and the carrier over the network", () => {
     const hosts = new Set<string>();
     for (const file of sources) {
       for (const [, host] of readFileSync(file, "utf8").matchAll(/https:\/\/([a-z0-9.-]+)/gi)) {
@@ -151,7 +158,7 @@ describe("no send capability anywhere in the draft feature", () => {
     }
     for (const host of hosts) {
       expect(
-        ["api.openai.com", "generativelanguage.googleapis.com"],
+        ["api.openai.com", "generativelanguage.googleapis.com", "api.royalmail.net"],
         `unexpected outbound host: ${host}`,
       ).toContain(host);
     }
