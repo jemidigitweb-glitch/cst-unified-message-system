@@ -9,12 +9,14 @@ import {
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
 import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
 import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
+import { resolveTrackingContext } from "@/lib/context/resolve-tracking-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { VerifiedFact } from "@/lib/domain/draft";
 import type { ConversationDetail } from "@/lib/domain/inbox";
 import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
 import { NO_APPLICABLE_RULE_CODE, coverageFor } from "@/lib/knowledge/rule-coverage";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
+import { classifyConversationCategory } from "@/lib/knowledge/message-category";
 import { getDraft, isDraftStoreMissing } from "@/lib/repositories/draft-repository";
 import { getConversation, parseConversationId } from "@/lib/repositories/conversation-repository";
 import { recordUsage } from "@/lib/sync/ai-usage-writer";
@@ -296,13 +298,41 @@ export async function POST(
     // Gemini is handed the rendered corpus. Both are asked for the same
     // behaviour and both return the same validated shape, so nothing here
     // changes when the provider does.
+    const facts = await verifiedFactsFor(detail.conversation, selectedOrderNumber);
+
+    /**
+     * Carrier tracking, for delivery queries only.
+     *
+     * GATED TWICE, and both gates are in `resolveTrackingContext`: the
+     * conversation has to be a delivery query, and the order has to have
+     * already resolved to a verified tracking number and a carrier we support.
+     * Neither is ever taken from the customer's message.
+     *
+     * NEVER FAILS THE DRAFT. It returns a result or null, and null is the
+     * ordinary case — an unsupported carrier, an unreachable API, a refused
+     * credential and a stale cache all produce null, and the draft is written
+     * exactly as it was before this existed. That is why there is no try/catch
+     * here: there is nothing for it to catch.
+     */
+    const category = classifyConversationCategory(
+      detail.messages
+        .filter((message) => message.direction === "inbound")
+        .map((message) => message.bodyText),
+    );
+    const trackingContext = await resolveTrackingContext({ category, facts });
+    if (trackingContext.tracking === null) {
+      // The reason, never the reference or the customer's words.
+      console.info(`[tracking] no tracking for ${id}: ${trackingContext.reason}`);
+    }
+
     const generated = await provider.generate({
       messages: detail.messages,
-      facts: await verifiedFactsFor(detail.conversation, selectedOrderNumber),
+      facts,
       // Both come from the stored conversation, which was written from the
       // marketplace source — neither is inferred from the message text.
       marketplace: detail.conversation.marketplace,
       listingItemRef: detail.conversation.listingItemRef,
+      tracking: trackingContext.tracking,
     });
 
     /*

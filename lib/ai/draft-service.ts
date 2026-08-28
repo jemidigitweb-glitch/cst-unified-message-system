@@ -3,6 +3,7 @@ import "server-only";
 import { getGeminiProvider } from "./gemini-provider";
 import { getOpenAiProvider } from "./openai-client";
 import { type DraftProvider, DraftServiceNotConfigured, type ProviderName } from "./provider";
+import { withDraftValidation } from "./validated-draft-provider";
 
 /**
  * Which provider answers a draft request.
@@ -56,9 +57,24 @@ function requested(): ProviderName | undefined {
  */
 export function getDraftProvider(): DraftProvider | undefined {
   const preference = requested();
-  if (preference === "openai") return getOpenAiProvider();
-  if (preference === "gemini") return getGeminiProvider();
-  return getOpenAiProvider() ?? getGeminiProvider();
+  const chosen =
+    preference === "openai"
+      ? getOpenAiProvider()
+      : preference === "gemini"
+        ? getGeminiProvider()
+        : (getOpenAiProvider() ?? getGeminiProvider());
+
+  /**
+   * THE ACCURACY GATE IS NOT OPTIONAL, and it is applied here rather than in
+   * the route.
+   *
+   * Every caller asking for "the draft provider" gets a gated one, so there is
+   * no path that reaches a model without the check — adding a provider later
+   * does not mean remembering to gate it. The wrapper reports the same `name`
+   * and `model` as what it wraps, so selection, status and usage accounting are
+   * unaffected; see `lib/ai/validated-draft-provider.ts`.
+   */
+  return chosen === undefined ? undefined : withDraftValidation(chosen);
 }
 
 /**

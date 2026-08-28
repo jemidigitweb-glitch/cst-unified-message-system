@@ -1,5 +1,6 @@
 import type { DraftResult, VerifiedFact } from "@/lib/domain/draft";
 import type { ConversationMessageView } from "@/lib/domain/inbox";
+import type { TrackingResult } from "@/lib/tracking/provider";
 
 /**
  * The AI draft layer, stated independently of any vendor.
@@ -33,6 +34,35 @@ export type DraftRequest = {
   readonly listingItemRef: string | null;
   /** Backend facts established outside the model. Empty is normal today. */
   readonly facts: readonly VerifiedFact[];
+  /**
+   * Corrections from an accuracy check that rejected a previous attempt.
+   *
+   * Absent on every first attempt, which is why it is optional: a request
+   * carrying no corrections produces byte-identical input to what this layer
+   * built before the check existed. Present only on a regeneration, where each
+   * entry names one thing the last draft got wrong — see
+   * `lib/ai/draft-validation.ts` for what can appear here and why.
+   */
+  readonly corrections?: readonly string[];
+  /**
+   * The reply those corrections were raised against.
+   *
+   * Travels with them so the regeneration can mend its own text rather than
+   * write a new one from nothing. Cheap — a reply is a few hundred tokens — and
+   * it is what turns a retry from "write this again, avoiding these mistakes"
+   * into "change these parts".
+   */
+  readonly rejectedDraft?: string;
+  /**
+   * Carrier tracking, when this conversation warranted a lookup and one worked.
+   *
+   * OPTIONAL AND USUALLY ABSENT. Only a delivery query whose order already
+   * resolved to a verified tracking number and a supported carrier gets one —
+   * see `lib/context/resolve-tracking-context.ts` for the gate. Absent means
+   * "not established", never "nothing to report", and the prompt block is
+   * omitted entirely rather than stating an empty one.
+   */
+  readonly tracking?: TrackingResult | null;
 };
 
 /**

@@ -53,8 +53,38 @@ const REQUEST_TIMEOUT_MS = 120_000;
  * instruction explicitly tells the model to combine them. Retrieving too few
  * would make that instruction impossible to follow, and the failure would look
  * like a reasoning problem rather than a retrieval budget.
+ *
+ * THIS IS THE DOMINANT COST OF A DRAFT, AND IT IS WORTH SAYING SO IN NUMBERS.
+ * Everything this application composes and sends — the full system instruction,
+ * the marketplace clause, the conversation, the verified context — measures
+ * about 1,300 tokens. A recorded generation on this path used 71,911 input
+ * tokens. The remaining ~98% is retrieved chunks and the File Search tool loop,
+ * neither of which any code here writes.
+ *
+ * SO IT IS CONFIGURABLE, AND THE DEFAULT IS UNCHANGED. `DRAFT_MAX_SEARCH_RESULTS`
+ * makes the one lever that actually moves the bill adjustable without a deploy.
+ * It is NOT lowered here: how few chunks still answer a multi-area case is an
+ * accuracy question, and answering it needs a measured comparison against real
+ * conversations rather than a guess in a comment. Anyone running that
+ * comparison can now do it by changing an environment variable.
  */
-const MAX_SEARCH_RESULTS = 20;
+const DEFAULT_MAX_SEARCH_RESULTS = 20;
+
+export const MAX_SEARCH_RESULTS_VAR = "DRAFT_MAX_SEARCH_RESULTS";
+
+/** The configured retrieval budget, or the default. Bounded to what the API accepts. */
+export function maxSearchResults(): number {
+  const raw = process.env[MAX_SEARCH_RESULTS_VAR]?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_MAX_SEARCH_RESULTS;
+  const parsed = Number.parseInt(raw, 10);
+  // An unusable value falls back rather than failing the draft: a typo in an
+  // optimisation knob must not take draft generation down.
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 50) {
+    console.warn(`[draft] ignoring unusable ${MAX_SEARCH_RESULTS_VAR}; using ${DEFAULT_MAX_SEARCH_RESULTS}`);
+    return DEFAULT_MAX_SEARCH_RESULTS;
+  }
+  return parsed;
+}
 
 /**
  * Hard ceiling on what one draft may generate.
@@ -185,7 +215,7 @@ export function getOpenAiProvider(): DraftProvider | undefined {
                 {
                   type: "file_search",
                   vector_store_ids: [config.vectorStoreId],
-                  max_num_results: MAX_SEARCH_RESULTS,
+                  max_num_results: maxSearchResults(),
                 },
               ],
             }

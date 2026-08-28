@@ -8,7 +8,10 @@ import {
   settleReviewRequirement,
 } from "@/lib/domain/draft";
 import { normaliseRef } from "@/lib/knowledge/rule-evidence";
+import { CARRIER_LABELS } from "@/lib/tracking/carrier";
+import { TRACKING_STATUS_LABELS, type TrackingResult } from "@/lib/tracking/provider";
 
+import { correctionBlock } from "./draft-validation";
 import { DraftGenerationUnavailable, type DraftRequest } from "./provider";
 
 /**
@@ -92,7 +95,55 @@ export function contextBlocks(request: DraftRequest): string {
   const customerBlock = customerProductDataBlock(extractCustomerProductData(request.messages));
   if (customerBlock !== null) blocks.push(customerBlock);
 
+  const trackingBlock = verifiedTrackingBlock(request.tracking);
+  if (trackingBlock !== null) blocks.push(trackingBlock);
+
   return blocks.join("\n\n");
+}
+
+/**
+ * What the carrier says about the parcel, when we asked and got an answer.
+ *
+ * OMITTED ENTIRELY WHEN ABSENT, unlike the order and product blocks above.
+ * Those are spelled out when empty because they apply to essentially every
+ * reply, and a blank section invites the model to fill it in. A tracking lookup
+ * is the exception rather than the rule — only a delivery query with a resolved
+ * carrier gets one — so a paragraph insisting "no tracking was retrieved" on
+ * every other draft would be noise the model reads past on every call.
+ *
+ * THE INSTRUCTION TRAVELS WITH THE DATA. It is stated here rather than added to
+ * the standing system instruction for the same reason: a rule about tracking
+ * belongs in front of the model on the drafts that have tracking, and telling
+ * every draft not to guess at a delivery status it was never given is a
+ * sentence spent on nothing.
+ *
+ * `retrieval` IS SHOWN, and it matters. "Delivered, checked a moment ago" and
+ * "Delivered, checked a quarter of an hour ago" are different claims, and only
+ * one of them should be written to a customer as the present state of affairs.
+ */
+export function verifiedTrackingBlock(tracking: TrackingResult | null | undefined): string | null {
+  if (tracking === null || tracking === undefined) return null;
+
+  const latest = tracking.trackingEvents.at(-1);
+
+  return [
+    "VERIFIED TRACKING INFORMATION:",
+    `- Carrier: ${CARRIER_LABELS[tracking.carrier]}`,
+    `- Tracking number: ${tracking.trackingNumber}`,
+    `- Current status: ${TRACKING_STATUS_LABELS[tracking.currentStatus]}`,
+    `- Last updated: ${tracking.lastUpdated ?? "(the carrier has reported nothing yet)"}`,
+    latest === undefined
+      ? "- Latest scan: (none recorded)"
+      : `- Latest scan: ${latest.description}${latest.location === null ? "" : ` at ${latest.location}`}`,
+    `- Source: ${tracking.source.retrieval === "live" ? "Live" : "Cached"}`,
+    "",
+    "USE ONLY THIS VERIFIED TRACKING INFORMATION. Do not guess the delivery status, do not estimate when it will arrive, and do not describe any movement not listed above. If the status is unknown, say that we are checking with the carrier — do not fill the gap.",
+    tracking.source.retrieval === "cached"
+      ? "This was retrieved a short time ago rather than this moment. Do not present it as the position right now — say what the carrier last recorded."
+      : null,
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
 }
 
 /** The thread, oldest first, with each side labelled. */
@@ -122,6 +173,18 @@ export function buildDraftInput(request: DraftRequest, knowledge?: string): stri
     knowledge === undefined
       ? `CST KNOWLEDGE: search the knowledge base for every rule area this conversation touches before you write.`
       : `CST RULES (the team's complete rule set — read all of it and use every part that applies):\n${knowledge}`,
+    /*
+     * LAST, and only on a regeneration.
+     *
+     * Last because it is the most specific thing in the request and has to be
+     * read against everything above it, not before. Absent on a first attempt,
+     * so the input is unchanged from what it was before the accuracy check
+     * existed — a correction block on every draft would make the model
+     * defensive about a mistake it has not made.
+     */
+    ...(request.corrections !== undefined && request.corrections.length > 0
+      ? [correctionBlock(request.corrections, request.rejectedDraft)]
+      : []),
   ].join("\n\n");
 }
 
