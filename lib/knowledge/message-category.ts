@@ -48,6 +48,32 @@ export const MESSAGE_CATEGORIES = [
 export type MessageCategory = (typeof MESSAGE_CATEGORIES)[number];
 
 /**
+ * The category for a conversation whose customer messages cannot be read.
+ *
+ * WHAT THIS COVERS. 167 inbound messages carry `body_decode_status = 'empty'`
+ * and a null body — the customer wrote, the source recorded the message, and
+ * the text did not survive. The interface renders those as "Message content
+ * unavailable", and until now the conversation reached the inbox with no
+ * category at all, which is the one state a reviewer cannot filter, sort or
+ * triage on.
+ *
+ * WHY ADMIN AND NOT A GUESS FROM CONTEXT. The obvious idea is to read OUR OWN
+ * replies instead and take the category from those. It was measured on the
+ * 1,495 conversations where both sides are readable, so the customer's own
+ * category acts as the check, and it does not work: our replies agree with the
+ * customer's category 50.8% of the time, and PRECISION per predicted category
+ * runs 20% (Wrong description) to 61% (Damage). Only "Admin related issues"
+ * reaches 65%, and that is the fallback anyway. Tagging a thousand
+ * conversations from a coin flip would put a confident wrong label where a
+ * blank used to be — worse than the blank, because a wrong category misroutes
+ * work while a blank merely fails to route it.
+ *
+ * So this states the one thing that IS true: a customer wrote to us, and
+ * somebody has to open it. That is an admin case.
+ */
+export const UNREADABLE_CONTENT_CATEGORY: MessageCategory = "Admin related issues";
+
+/**
  * The phrase table, exported so a test can check its shape rather than a
  * reviewer having to eyeball it.
  *
@@ -1046,15 +1072,106 @@ const REALITY_DIFFERS =
 const WANTS_A_REPLACEMENT =
   /\b(?:replac\w*|send\s+(?:me\s+)?(?:a\s+|the\s+)?(?:new|correct|right)|the\s+correct\s+one|the\s+right\s+one|exchang\w*|swap|ersatz\w*|nachliefer\w*|austausch\w*|umtausch\w*)\b/i;
 
-/** The customer chose wrongly themselves and wants a different choice. */
-const OWN_SELECTION = /\b(?:ordered|order|bought|purchased|selected|chose|picked|bestellt|ausgew(?:ä|ae)hlt|gekauft)\b/i;
-
-const WANTS_SOMETHING_ELSE =
-  /\b(?:another|a\s+different|change|amend|swap|instead|ander(?:e|es|en|er|em)|(?:ä|ae)ndern|umtauschen|stattdessen)\b/i;
+/**
+ * The customer ASKING US to change or cancel the order.
+ *
+ * WHY THIS REPLACED A PAIR OF WORD-LISTS. This intent used to be "the customer
+ * mentioned ordering" AND "the customer mentioned something else" — two generic
+ * lists, either of which matches by accident. Since the intent sits second in
+ * the ownership order, an accidental match outranks almost every real problem,
+ * and it did:
+ *
+ *   "my order arrived DAMAGED, please send another"     -> was Order change
+ *   "my order arrived but a part is MISSING, send another"-> was Order change
+ *   "the bulb is FAULTY, please send another"            -> was Order change
+ *   "order arrived but the cable is wider than ADVERTISED
+ *    ... does the width CHANGE because it's hemp"        -> was Order change
+ *
+ * Every one of those is a problem report where the strict table already had the
+ * right answer. The bare noun "order" appears in 20,663 live messages, and
+ * "another" is how anyone asks for a replacement of anything.
+ *
+ * WHAT IT MATCHES NOW: a change or cancellation applied to SOMETHING. The verb
+ * must take an object, which is exactly what separates "can I change my order",
+ * "change it for a braided cable" and "change colour of order" — all real, all
+ * kept — from "does the width change", where nothing is being changed at the
+ * customer's request. Read against the 85 live messages carrying both of the
+ * old loose tokens, which are otherwise almost all genuine order changes.
+ *
+ * The customer's own mis-order ("I ordered the wrong colour by mistake",
+ * "Falsches Design bestellt") is deliberately NOT here. That wording is already
+ * measured, and it arrives through the phrase table and the strict shape rule —
+ * duplicating it in a looser form here is what caused the damage above.
+ */
+const AMENDMENT_REQUEST = new RegExp(
+  [
+    // A change applied to an object, either immediately... "over" is
+    // deliberately absent: "will the brightness change over time" is a question
+    // about the product, and it was the one false positive this list produced.
+    "\\b(?:chang(?:e|ed|ing)|amend(?:ed|ing)?|swap(?:ped|ping)?|switch(?:ed|ing)?)\\s+(?:it|them|this|these|that|to|for)\\b",
+    // ...or to a named thing within a couple of words: "change my order",
+    // "change the delivery address", "change colour of order".
+    "\\b(?:chang(?:e|ed|ing)|amend(?:ed|ing)?|swap(?:ped|ping)?|exchang(?:e|ed|ing)|switch(?:ed|ing)?)\\s+(?:\\w+\\s+){0,2}?(?:order|orders|address|item|items|delivery|design|model|variant|option)\\b",
+    // Cancelling is unambiguous on its own.
+    "\\bcancel\\w*\\b",
+    // German
+    "\\b(?:bestellung|adresse|artikel)\\s+(?:\\w+\\s+){0,2}?(?:(?:ä|ae)ndern|umtauschen|tauschen|wechseln)\\b",
+    "\\b(?:storni\\w*|kaufabbruch)\\b",
+  ].join("|"),
+  "i",
+);
 
 /** Asking when it will come, or asking for it sooner. */
 const DELIVERY_TIMING =
   /\b(?:when\s+(?:will|is|does|can|do)|how\s+long|arrive|arriving|arrival|this\s+week|next\s+week|by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|asap|as\s+soon\s+as|urgent\w*|wann|diese\s+woche)\b/i;
+
+/**
+ * The consignment itself, as a customer names it when chasing one.
+ *
+ * Nouns only, and deliberately ordinary ones. On its own this word list means
+ * nothing — "order", "item" and "package" appear in most messages in the
+ * inbox, whatever they are about — which is exactly why it is never tested
+ * alone. It supplies the OBJECT half of the combinations below.
+ */
+const CONSIGNMENT =
+  "orders?|parcels?|packages?|items?|deliver(?:y|ies)|shipments?|goods|post|sendung|paket|bestellung|lieferung|ware";
+
+/**
+ * CHASING A CONSIGNMENT: asking where it is, or saying it has not turned up.
+ *
+ * WHY A COMBINATION AND NOT PHRASES. "Where is my parcel" and "waiting for
+ * delivery" both fell through to the admin fallback, and the tempting fix is to
+ * add each wording to the table. That does not survive the next customer, who
+ * writes "where's the package" or "still waiting on my order". What these all
+ * share is a shape: a question about WHEREABOUTS, aimed at the CONSIGNMENT.
+ * Both halves are required and neither means anything alone.
+ *
+ * "WHERE IS", NOT "WHERE DO". The verb is what keeps this honest. "Where do I
+ * return the item" and "where can I find the size guide" are a returns question
+ * and a pre-sales question that both contain "where" and a consignment noun;
+ * restricting the verb to the copular forms — is / are / 's / has / have —
+ * asks after the thing's LOCATION rather than after a procedure.
+ *
+ * The 25-character window keeps the two halves in the same clause, and stopping
+ * at sentence punctuation prevents a "where is" in one sentence pairing with an
+ * "order" in the next.
+ *
+ * NOTHING HERE CAN COST ANOTHER CATEGORY ITS MESSAGE. `delivery_request` sits
+ * eighth in `INTENT_OWNERSHIP`, below wrong item, missing parts, damage and
+ * defective, so a message that carries one of those is decided before this is
+ * ever consulted. "Box arrived damaged" is damage no matter what this matches.
+ */
+const CHASING_A_CONSIGNMENT = new RegExp(
+  [
+    // "where is my item", "where's the parcel", "where are my orders"
+    `\\bwhere\\s*(?:'s|is|are|has|have)\\b[^.!?]{0,25}?\\b(?:${CONSIGNMENT})\\b`,
+    // "waiting for delivery", "still waiting on my parcel"
+    `\\b(?:still\\s+)?wait(?:ing)?\\s+(?:for|on)\\b[^.!?]{0,25}?\\b(?:${CONSIGNMENT})\\b`,
+    // "any news on my order", "any sign of the package"
+    `\\bany\\s+(?:news|sign|word)\\b[^.!?]{0,25}?\\b(?:${CONSIGNMENT})\\b`,
+  ].join("|"),
+  "i",
+);
 
 const ADMIN_MATTER =
   /\b(?:invoice|receipt|vat|business\s+account|payment|paid|order\s+number|statement|rechnung|beleg|quittung|zahlung)\b/i;
@@ -1142,7 +1259,7 @@ export function detectIntents(customerText: string | null): MessageIntent[] {
 
   add("wants_refund", wantsMoneyBack(text));
   add("wants_replacement", WANTS_A_REPLACEMENT.test(text));
-  add("wants_order_change", OWN_SELECTION.test(text) && WANTS_SOMETHING_ELSE.test(text));
+  add("wants_order_change", AMENDMENT_REQUEST.test(text));
   add("received_wrong_item", HAS_THE_GOODS.test(text) && A_MISMATCH.test(text));
   add("missing_component", SOMETHING_ABSENT.test(text) || looksLikeShortfall(text));
   add("wrong_description", LISTING_REFERENCE.test(text) && REALITY_DIFFERS.test(text));
@@ -1150,9 +1267,20 @@ export function detectIntents(customerText: string | null): MessageIntent[] {
   add("defective_product", IS_DEFECTIVE.test(text));
   add(
     "delivery_request",
-    DELIVERY_NOUN.test(text)
-      ? DELIVERY_TIMING.test(text) || DELIVERY_REQUESTED_SOON.test(text)
-      : DELIVERY_TIMING.test(text) && HAS_THE_GOODS.test(text) === false,
+    /*
+     * Chasing the consignment is checked FIRST and on its own terms.
+     *
+     * It deliberately does not carry the `HAS_THE_GOODS` guard the timing
+     * branch below needs. That guard exists so "arrive" in "it arrived fine"
+     * cannot read as a delivery question — but "where is my parcel, it still
+     * hasn't arrived" contains "arrived" too, and guarding this branch would
+     * throw away the clearest delivery message a customer can write. Asking
+     * where a thing IS already says they do not have it.
+     */
+    CHASING_A_CONSIGNMENT.test(text) ||
+      (DELIVERY_NOUN.test(text)
+        ? DELIVERY_TIMING.test(text) || DELIVERY_REQUESTED_SOON.test(text)
+        : DELIVERY_TIMING.test(text) && HAS_THE_GOODS.test(text) === false),
   );
   add(
     "pre_sale_question",

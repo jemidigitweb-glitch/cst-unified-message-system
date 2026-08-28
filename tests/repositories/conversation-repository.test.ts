@@ -157,7 +157,7 @@ describe("inbox listing", () => {
       messageCount: 2,
       inboundCount: 1,
       lastDirection: "outbound",
-      category: null,
+      category: "Admin related issues",
     });
   });
 
@@ -169,8 +169,37 @@ describe("inbox listing", () => {
     expect(calls[0]!.text).toContain("cm.direction = 'inbound'");
   });
 
-  it("reports category null when no inbound text was aggregated", async () => {
-    const { client } = fake([[conversationRow({ inbound_text: null })]]);
+  /**
+   * A customer wrote and the text did not survive — every inbound body arrived
+   * empty, which is what the interface shows as "Message content unavailable".
+   * The conversation is real and still needs handling, so it is tagged rather
+   * than left blank, which is the one state no filter can reach.
+   */
+  it("falls back to the admin tag when the customer's text could not be read", async () => {
+    const { client } = fake([[conversationRow({ inbound_text: null, inbound_count: 1 })]]);
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
+    expect(item?.category).toBe("Admin related issues");
+  });
+
+  /**
+   * Nobody wrote to us. There is no customer request to categorise, and
+   * inventing one would be a claim about a message that does not exist.
+   */
+  it("reports category null when the conversation has no inbound message at all", async () => {
+    const { client } = fake([[conversationRow({ inbound_text: null, inbound_count: 0 })]]);
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
+    expect(item?.category).toBeNull();
+  });
+
+  /**
+   * The deliberate null the conversation-history work put there: a thread that
+   * is only the customer saying it is sorted needs no tag. Readable text is
+   * never overridden by the unreadable fallback.
+   */
+  it("leaves a resolved thread untagged even though the customer wrote", async () => {
+    const { client } = fake([
+      [conversationRow({ inbound_text: "Found it, all sorted, thanks!", inbound_count: 1 })],
+    ]);
     const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
     expect(item?.category).toBeNull();
   });
@@ -294,7 +323,7 @@ describe("No Rule listing", () => {
       messageCount: 2,
       inboundCount: 1,
       lastDirection: "outbound",
-      category: null,
+      category: "Admin related issues",
       caseType: "Damaged item",
       analysedAt: "2026-08-20 09:00:00",
       reason: "no_corpus",

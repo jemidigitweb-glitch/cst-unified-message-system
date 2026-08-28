@@ -416,30 +416,49 @@ export function Workspace() {
               for a whole tab row beside the No Rule / AI Usage buttons on a
               small screen, and a horizontally-scrolling strip there was hard
               to use with a thumb. */}
-          <div className={`hidden min-w-0 flex-1 xl:block ${view === "status" ? "opacity-45" : ""}`}>
-            <MarketplaceTabs selected={marketplace} onSelect={selectMarketplace} />
-          </div>
-          {/* Opens the marketplace-and-conversations drawer from the left.
-              Exists only below `xl`, replacing the tab strip above. Plain,
-              not a pill: it sits directly beside the tab strip it replaces,
-              and a bordered button there read as a second, competing control
-              rather than a stand-in for the row behind it. */}
-          <button
-            type="button"
-            onClick={() => setMobilePanel(mobilePanel === "list" ? null : "list")}
-            aria-label="Open marketplaces and conversations"
-            aria-expanded={mobilePanel === "list"}
-            className="flex shrink-0 items-center gap-2 px-1 py-1.5 text-sm xl:hidden"
-          >
-            <HamburgerIcon />
-            {capabilityOf(marketplace).label}
-          </button>
-          <div className="flex shrink-0 items-center gap-1">
+          {/*
+            * THE MARKETPLACE CONTROL AND THE FILTER, TOGETHER.
+            *
+            * The filter used to sit at the far right of the header beside No
+            * Rule. It reads as a view-level control there, but it is not one:
+            * it narrows the conversations WITHIN the selected marketplace, so
+            * it belongs against the control that picks the marketplace, and
+            * the two are now read as one group.
+            *
+            * `min-w-0` so the tab strip can still shrink below its natural
+            * width and scroll inside its own `overflow-x-auto` rather than
+            * forcing the header wider than the viewport. The tab strip shrinks;
+            * the filter does not.
+            */}
+          <div className="flex min-w-0 flex-1 items-end gap-2">
+            {/* Hidden below `xl`, where the tab strip moves into the
+                hamburger-triggered drawer instead — there is no room for a
+                whole tab row beside the No Rule / AI Usage buttons on a small
+                screen, and a horizontally-scrolling strip there was hard to
+                use with a thumb. */}
+            <div className={`hidden min-w-0 xl:block ${view === "status" ? "opacity-45" : ""}`}>
+              <MarketplaceTabs selected={marketplace} onSelect={selectMarketplace} />
+            </div>
+            {/* Opens the marketplace-and-conversations drawer from the left.
+                Exists only below `xl`, replacing the tab strip above. Plain,
+                not a pill: it sits directly beside the tab strip it replaces,
+                and a bordered button there read as a second, competing control
+                rather than a stand-in for the row behind it.
+
+                It is the marketplace control at that width, so the filter sits
+                beside IT below `xl` — the grouping holds at every size rather
+                than the filter stranding itself when the tabs fold away. */}
+            <button
+              type="button"
+              onClick={() => setMobilePanel(mobilePanel === "list" ? null : "list")}
+              aria-label="Open marketplaces and conversations"
+              aria-expanded={mobilePanel === "list"}
+              className="flex shrink-0 items-center gap-2 px-1 py-1.5 text-sm xl:hidden"
+            >
+              <HamburgerIcon />
+              {capabilityOf(marketplace).label}
+            </button>
             {/*
-              * Sits immediately left of No Rule, with the other view-level
-              * controls, rather than inside the list header — it narrows the
-              * same list those tabs switch between, so it belongs beside them.
-              *
               * Shown only on the inbox view: it filters the conversation list,
               * and on No Rule or AI Usage there is no such list to narrow, so a
               * control that appeared to do nothing would be worse than none.
@@ -452,7 +471,7 @@ export function Workspace() {
                 aria-label="Filter by category"
                 value={categoryFilter}
                 onChange={(event) => setCategoryFilter(event.target.value as CategoryFilter)}
-                className="mr-1 max-w-[11rem] shrink-0 truncate rounded-md border border-black/10 bg-transparent px-1.5 py-1 text-xs font-medium dark:border-white/15"
+                className="mb-1.5 max-w-[11rem] shrink-0 truncate rounded-md border border-black/10 bg-transparent px-1.5 py-1 text-xs font-medium dark:border-white/15"
               >
                 <option value={ALL_CATEGORIES}>All categories</option>
                 {MESSAGE_CATEGORIES.map((category) => (
@@ -462,6 +481,8 @@ export function Workspace() {
                 ))}
               </select>
             )}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
             {/*
               * Marketplace-scoped, unlike Status: this reads the currently
               * selected marketplace tab's No Rule conversations, so switching

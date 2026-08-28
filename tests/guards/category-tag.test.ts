@@ -92,16 +92,49 @@ describe("every category has its own pastel colour", () => {
   });
 });
 
-describe("the category filter sits with the view controls", () => {
-  it("renders immediately to the left of the No Rule tab", () => {
+describe("the category filter sits beside the marketplace tabs", () => {
+  /**
+   * MOVED, deliberately, from the far right of the header.
+   *
+   * Beside No Rule it read as a view-level control, and it is not one — it
+   * narrows the conversations within the SELECTED MARKETPLACE, so it belongs
+   * against the control that picks the marketplace.
+   */
+  it("renders after the marketplace tabs and before the No Rule tab", () => {
+    const tabsAt = workspace.indexOf("<MarketplaceTabs");
     const filterAt = workspace.indexOf('aria-label="Filter by category"');
     const noRuleAt = workspace.indexOf('aria-selected={view === "no_rule"}');
+    expect(tabsAt).toBeGreaterThan(-1);
     expect(filterAt).toBeGreaterThan(-1);
     expect(noRuleAt).toBeGreaterThan(-1);
+    expect(tabsAt).toBeLessThan(filterAt);
     expect(filterAt).toBeLessThan(noRuleAt);
-    // ...and in the same row, not merely earlier in the file.
-    const between = workspace.slice(filterAt, noRuleAt);
-    expect(between).not.toContain("</div>\n        </div>");
+  });
+
+  /**
+   * In the SAME flex row as the marketplace control, not merely earlier in the
+   * file — that is the whole point of the move, and file order alone would
+   * still pass if the two ended up in different containers.
+   */
+  it("shares one container with the marketplace control", () => {
+    const group = workspace.slice(
+      workspace.indexOf("<div className=\"flex min-w-0 flex-1 items-end gap-2\">"),
+      workspace.indexOf('<div className="flex shrink-0 items-center gap-1">'),
+    );
+    expect(group).toContain("<MarketplaceTabs");
+    expect(group).toContain('aria-label="Filter by category"');
+    // The hamburger is the marketplace control below `xl`, so the filter must
+    // sit beside that too rather than stranding itself when the tabs fold away.
+    expect(group).toContain('aria-label="Open marketplaces and conversations"');
+  });
+
+  /** The tabs must still be able to shrink and scroll rather than widen the header. */
+  it("leaves the tab strip shrinkable and the filter fixed", () => {
+    const group = workspace.slice(
+      workspace.indexOf("<div className=\"flex min-w-0 flex-1 items-end gap-2\">"),
+      workspace.indexOf('<div className="flex shrink-0 items-center gap-1">'),
+    );
+    expect(group).toMatch(/hidden min-w-0 xl:block/);
   });
 
   it("no longer renders the control inside the list header", () => {

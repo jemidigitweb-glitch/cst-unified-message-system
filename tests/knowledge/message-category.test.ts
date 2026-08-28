@@ -1892,6 +1892,108 @@ describe("a shortfall stated in numbers", () => {
 });
 
 /**
+ * An order change is a REQUEST TO CHANGE THE ORDER, not two ordinary words
+ * landing in the same message.
+ *
+ * This intent sits second in the ownership order, so anything it matches by
+ * accident outranks almost every real problem report. It used to be "mentions
+ * ordering" AND "mentions something else", and both halves matched by accident
+ * constantly — the bare noun "order" is in 20,663 live messages and "another"
+ * is how anyone asks for a replacement of anything.
+ */
+describe("an order change has to be an actual amendment request", () => {
+  /**
+   * THE REPORTED REGRESSION. The customer received what they ordered and says
+   * the cable is thicker than the listing claims — a specification mismatch.
+   * It was named an order change because "order arrived" matched the ordering
+   * list and "does the width change" matched the something-else list. Neither
+   * has anything to do with amending an order.
+   */
+  it("names a specification mismatch against the listing, not an order change", () => {
+    const text =
+      "Hi order arrived but the cable is wider than advertised! Your cables are advertised at 6mm but mine is 8.85mm... does the width change because it's hemp.";
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Wrong description issues");
+    expect(detectIntents(text)).not.toContain("wants_order_change");
+  });
+
+  /** The same message as it actually arrived, typos and all. */
+  it("names the live version of that message the same way", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Hia order arrived but the cable is wider than advertised ! Your cables are advertised at 6mm but mine is 8.85mm has there been a mistake I am wanting to hang three celling lights and was hoping it was 6mm wide, does the width change because it's hemp",
+      ),
+    ).toBe("Wrong description issues");
+  });
+
+  /**
+   * The same defect on three other categories, found while fixing the report.
+   * In every one the strict table was already right and the intent layer was
+   * overriding it — "my order arrived" plus "send another" is a problem report,
+   * not an amendment.
+   */
+  it("leaves a problem report alone when a replacement is asked for", () => {
+    expect(classifyMessageCategoryWithFallback("my order arrived damaged, please send another")).toBe(
+      "Damage queries",
+    );
+    expect(
+      classifyMessageCategoryWithFallback("My order arrived but a part is missing, can you send another"),
+    ).toBe("Parts missing queries");
+    expect(
+      classifyMessageCategoryWithFallback("my order came and the bulb is faulty, please send another"),
+    ).toBe("Defective items");
+  });
+
+  /**
+   * The genuine amendment requests this must keep. All are live messages that
+   * carried both of the old loose tokens, and all still resolve — several of
+   * them reach the category only through this intent.
+   */
+  it("still names a real request to change the order", () => {
+    for (const text of [
+      "Hi can i change colour of order to the gold colour thankyou simon",
+      "hi put my old address for both orders need to change to 14 peakdean lane",
+      "Hi,can I change my order to one continuous length of 3 metres",
+      "Can I please change the delivery address of my order to 5 Blackhorse Close",
+      "Have you received my message,can you change the order to 3 metres please.",
+      "Hi I have mansged to order thr wrong cable. Coukd I change it for a braided cable.",
+      "I need to cancel my order before it ships",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe(
+        "Order change, before shipping queries",
+      );
+    }
+  });
+
+  /**
+   * The customer's own mis-order is deliberately NOT in this intent. That
+   * wording is already measured, and it arrives through the phrase table and
+   * the strict shape rule — restating it loosely here is what caused the
+   * damage above. These still work, by that other route.
+   */
+  it("still names the customer's own mis-order, through the measured route", () => {
+    expect(classifyMessageCategoryWithFallback("I ordered the wrong colour by mistake")).toBe(
+      "Order change, before shipping queries",
+    );
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Falsches Design bestellt Frau ist unzufrieden will ein anderes Design von euch haben",
+      ),
+    ).toBe("Order change, before shipping queries");
+  });
+
+  /** The verb has to take an object. Nothing is being changed at anyone's request. */
+  it("does not fire on 'change' used about a property of the product", () => {
+    for (const text of [
+      "does the width change because it's hemp",
+      "Do the colours change when it warms up?",
+      "Will the brightness change over time",
+    ]) {
+      expect(detectIntents(text), text).not.toContain("wants_order_change");
+    }
+  });
+});
+
+/**
  * Where a fixed ownership order would overrule something that was MEASURED,
  * the measurement wins. Both of these were investigated precisely because a
  * global precedence got them wrong, so neither is left to the priority list.
@@ -1952,5 +2054,85 @@ describe("measured results survive the intent ordering", () => {
     expect(
       classifyMessageCategoryWithFallback("Laut Beschreibung müsste das Netzteil 300W haben."),
     ).toBe("Wrong description issues");
+  });
+});
+
+/**
+ * Chasing a parcel is a delivery question, whatever words the customer picks.
+ *
+ * The reported message — "Hello can you tell me where is the item please still
+ * hasn't arrived" — already reached Delivery queries through "hasn't arrived"
+ * in the table, and is pinned here so it stays that way. The genuine gaps the
+ * same investigation found were "where is my parcel" and "waiting for
+ * delivery", which had no path to the delivery intent at all: `DELIVERY_NOUN`
+ * is German-only, so the English nouns never reached it.
+ */
+describe("asking where the consignment is", () => {
+  it("names the reported message Delivery queries", () => {
+    expect(
+      classifyConversationCategory([
+        "Hello can you tell me where is the item please still hasn't arrived",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("names a whereabouts question Delivery queries", () => {
+    for (const text of [
+      "Where is my item? Still hasn't arrived",
+      "My parcel has not arrived yet",
+      "where is my order",
+      "where is my parcel",
+      "where's the package",
+      "waiting for delivery",
+      "still waiting on my order",
+      "when will it arrive",
+      "not arrived yet",
+      "any news on my parcel",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Delivery queries");
+    }
+  });
+
+  /**
+   * The word "arrived" on its own is not a delivery question — it is how a
+   * customer opens a message about anything that happened after the parcel
+   * turned up. Requiring the whereabouts half is what keeps these out.
+   */
+  it("does not read a message that merely mentions arrival as a delivery query", () => {
+    for (const text of [
+      "Thank you, order arrived",
+      "The order arrived this morning, thank you",
+      "My order arrived and it is perfect",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Delivery queries");
+    }
+  });
+
+  /**
+   * `delivery_request` sits eighth in the ownership order, below every one of
+   * these, so a message carrying a real problem is decided before the delivery
+   * signal is consulted — even when it also names a consignment.
+   */
+  it("leaves damage, missing parts and wrong item alone", () => {
+    expect(classifyMessageCategoryWithFallback("Box arrived damaged")).toBe("Damage queries");
+    expect(classifyMessageCategoryWithFallback("Missing part from package")).toBe(
+      "Parts missing queries",
+    );
+    expect(
+      classifyMessageCategoryWithFallback("Where is my order, you sent me the wrong item"),
+    ).toBe("Wrong item sent messages");
+    expect(
+      classifyMessageCategoryWithFallback("Still waiting for my parcel and a part is missing"),
+    ).toBe("Parts missing queries");
+  });
+
+  /**
+   * "Where do I..." asks after a PROCEDURE, not a location. Restricting the
+   * verb to the copular forms is what separates the two.
+   */
+  it("does not fire on 'where' used to ask how to do something", () => {
+    expect(
+      classifyMessageCategoryWithFallback("Where do I return the item please"),
+    ).not.toBe("Delivery queries");
   });
 });

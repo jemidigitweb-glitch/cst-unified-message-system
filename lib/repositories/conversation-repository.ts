@@ -11,6 +11,8 @@ import type { Marketplace } from "@/lib/domain/marketplace";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
 import { type LoadedRules, loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
 import {
+  type MessageCategory,
+  UNREADABLE_CONTENT_CATEGORY,
   classifyConversationCategory,
   classifyMessageCategoryWithFallback,
 } from "@/lib/knowledge/message-category";
@@ -320,6 +322,55 @@ type MessageRow = {
  */
 const CATEGORY_SUPPRESSED_MARKETPLACES = new Set(["bandq", "temu"]);
 
+/**
+ * The category shown beside a conversation.
+ *
+ * FOUR OUTCOMES, and the order matters:
+ *
+ *   1. A SUPPRESSED MARKETPLACE gets nothing. Their stored text is known to
+ *      carry non-customer content, and any fallback would turn that noise into
+ *      findings.
+ *   2. READABLE CUSTOMER TEXT is classified, and whatever that returns stands —
+ *      INCLUDING null. The classifier returns null on purpose for a thread that
+ *      is only the customer saying it is sorted, and overriding that here would
+ *      undo the conversation-history work that put it there.
+ *   3. NO READABLE TEXT BUT THE CUSTOMER DID WRITE — every inbound body arrived
+ *      empty, which is what the interface shows as "Message content
+ *      unavailable". The conversation is real and needs handling, so it gets
+ *      `UNREADABLE_CONTENT_CATEGORY` rather than a blank. 97 conversations,
+ *      87 of them in the reply inbox.
+ *   4. NO INBOUND MESSAGE AT ALL stays blank. These are the 981 threads the
+ *      ingestion layer already marks `outbound_only`: nobody wrote to us, so
+ *      there is no customer request to categorise and inventing one would be a
+ *      claim about a message that does not exist.
+ *
+ * Steps 3 and 4 are told apart by `inbound_count`, which is trustworthy —
+ * it matches the actual inbound row count on 9,696 of 9,700 conversations.
+ */
+function categoryFor(row: ConversationRow): MessageCategory | null {
+  if (CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)) return null;
+
+  // The per-message array is preferred where the projection supplies it,
+  // because reading the thread in order is what keeps a closing "found it, all
+  // sorted" from costing the conversation the category its opening message
+  // earned. The concatenated column remains the fallback for any caller or
+  // older projection that does not select the array.
+  const readable =
+    row.inbound_texts != null
+      ? row.inbound_texts.filter((text) => (text ?? "").trim() !== "")
+      : (row.inbound_text ?? "").trim() === ""
+        ? []
+        : [row.inbound_text!];
+
+  if (readable.length > 0) {
+    return row.inbound_texts != null
+      ? classifyConversationCategory(readable)
+      : classifyMessageCategoryWithFallback(readable[0]!);
+  }
+
+  return Number(row.inbound_count) > 0 ? UNREADABLE_CONTENT_CATEGORY : null;
+}
+
 function toInboxItem(row: ConversationRow): InboxItem {
   return {
     id: row.id,
@@ -349,11 +400,7 @@ function toInboxItem(row: ConversationRow): InboxItem {
     // all sorted" from costing the conversation the category its opening
     // message earned. The concatenated column remains the fallback for any
     // caller or older projection that does not select the array.
-    category: CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)
-      ? null
-      : row.inbound_texts != null
-        ? classifyConversationCategory(row.inbound_texts)
-        : classifyMessageCategoryWithFallback(row.inbound_text ?? null),
+    category: categoryFor(row),
   };
 }
 
