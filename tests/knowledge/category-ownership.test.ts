@@ -122,6 +122,36 @@ describe("an absent component and a supplied-but-wrong one are different cases",
   });
 });
 
+describe("a customer who has already connected it is not a prospect", () => {
+  /**
+   * spitfire01963. "Connected to 12v led light and it is pulsing - what say
+   * you?" named no arrival at all, so the journey read as prospective, "12v"
+   * reached the attribute list, and a fault report was filed as a pre-sales
+   * enquiry. You cannot connect something you have not received.
+   */
+  it("reads a pulsing light after installation as a defect", () => {
+    expect(
+      classifyConversationCategory([
+        "Connected to 12v led light and it is pulsing - what say you?",
+        "I need constant current, yours is constant voltage which is probably causing the led to pulse on off per sec.",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  const CASES: readonly (readonly [string, MessageCategory])[] = [
+    ["I have wired it in and the bulbs flash on and off constantly.", "Defective items"],
+    ["Fitted it yesterday and it strobes when dimmed.", "Defective items"],
+    // The infinitive and the passive are still questions about a purchase
+    // nobody has made — INT-PS19 and sheet Z, ASSEMBLY AND WIRING.
+    ["How do I connect this to a 12v supply?", "Pre sales queries"],
+    ["Can it be wired to a dimmer switch?", "Pre sales queries"],
+  ];
+
+  it.each(CASES)("reads %j correctly", (text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+});
+
 describe("a pre-sales question survives the vocabulary it shares", () => {
   const PRE_SALES: readonly string[] = [
     "Does this transformer have two galvanically isolated windings?",

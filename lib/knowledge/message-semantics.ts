@@ -131,11 +131,17 @@ export function clauseAt(text: string, index: number): Clause {
  *
  * That is a customer telling us what is wrong with a thing they own. Requiring
  * the wh-word to START the clause, or to sit inside an embedded-question frame
- * ("I wondered WHICH", "let me know WHAT"), keeps the questions and loses the
+ * ("let me know WHAT", "confirm WHETHER"), keeps the questions and loses the
  * relatives. An explicit question mark still counts on its own.
+ *
+ * "WONDERING IF" IS DELIBERATELY NOT A FRAME. "I'm just wondering if something
+ * is missing?" is a hedged REPORT — the customer believes a part is absent and
+ * is being polite about it — and INT-MP07 lists the same shape ("I think
+ * something is missing") as a missing-parts trigger. Reading the hedge as a
+ * question threw the claim away.
  */
 const INTERROGATIVE_FRAME =
-  /\?|\b(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|wonder(?:ed|ing)?|advise|clarify|ask(?:ing)?|sure|idea)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/iu;
+  /\?|\b(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|advise|clarify)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/iu;
 
 /**
  * A clause that says the message is NOT about something.
