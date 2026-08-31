@@ -81,7 +81,7 @@ export type ClaimStatus =
  * into an enquiry.
  */
 const CLAUSE_BOUNDARY =
-  /[.!?;]+|\n+|,\s*(?:and|or|so|then|plus)\b|,\s*(?=(?:can|could|would|will|shall|may|please|do|does|is|are|any)\b)|\b(?:but|however|although|though|whereas|except\s+that|aber|jedoch|allerdings)\b/gi;
+  /[.!?;]+|\n+|\s[-–—]+\s|,\s*(?:and|or|so|then|plus)\b|,\s*(?=(?:can|could|would|will|shall|may|please|do|does|is|are|any)\b)|\b(?:but|however|although|though|whereas|except\s+that|aber|jedoch|allerdings)\b/gi;
 
 /** The message split into clauses, with their offsets in the original text. */
 export type Clause = { readonly text: string; readonly start: number; readonly end: number };
@@ -121,8 +121,21 @@ export function clauseAt(text: string, index: number): Clause {
  * and the same count; only the frame separates a specification question from a
  * report of an absent part.
  */
+/**
+ * A WH-WORD IS ONLY A QUESTION WHERE IT OPENS ONE.
+ *
+ * "which", "what" and "how" are relative pronouns at least as often as they are
+ * interrogatives, and a bare match on them read a diagnosis as an enquiry:
+ *
+ *   "yours is constant voltage WHICH is probably causing the led to pulse"
+ *
+ * That is a customer telling us what is wrong with a thing they own. Requiring
+ * the wh-word to START the clause, or to sit inside an embedded-question frame
+ * ("I wondered WHICH", "let me know WHAT"), keeps the questions and loses the
+ * relatives. An explicit question mark still counts on its own.
+ */
 const INTERROGATIVE_FRAME =
-  /\?|\b(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|\b(?:what|which|how|when|where|why|whether)\b|\b(?:let\s+me\s+know|tell\s+me|confirm)\s+(?:if|whether|what|how)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/i;
+  /\?|\b(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|wonder(?:ed|ing)?|advise|clarify|ask(?:ing)?|sure|idea)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/iu;
 
 /**
  * A clause that says the message is NOT about something.

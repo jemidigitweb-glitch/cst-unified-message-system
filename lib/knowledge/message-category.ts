@@ -1501,8 +1501,27 @@ export type MessageIntent =
   | "admin_issue";
 
 /** Any sign the goods are already with the customer. Broader than `ALREADY_PURCHASED`. */
-const HAS_THE_GOODS =
-  /\b(?:received|receive|arrived|delivered|came|sent|got|turned\s+up|opened|unpacked|erhalten|bekommen|geliefert|angekommen|ausgepackt)\b/i;
+/**
+ * YOU CANNOT CONNECT SOMETHING YOU HAVE NOT RECEIVED.
+ *
+ * The receipt verbs miss the customer who never mentions the parcel because
+ * they are already using the thing: "Connected to 12v led light and it is
+ * pulsing - what say you?" reached no arrival signal at all, so the journey read
+ * as PROSPECTIVE, "12v" reached the attribute list, and a fault report was filed
+ * as a pre-sales enquiry.
+ *
+ * THE PAST TENSE IS THE WHOLE OF IT. "Connected", "wired", "fitted" say it has
+ * happened; "how do I connect this", "can it be wired to a dimmer" ask whether
+ * it could, and those are INT-PS19 and sheet Z — genuine pre-sales. The
+ * lookbehinds keep the infinitive and the passive out.
+ */
+const ALREADY_IN_USE =
+  /(?<!\bto\s)(?<!\bbe\s)(?<!\bbeing\s)(?<!\bget\s)(?<!\bgets\s)\b(?:connected|wired|fitted|installed|mounted|assembled|hooked\s+up|plugged\s+in|angeschlossen|montiert|installiert)\b/i;
+
+const HAS_THE_GOODS = new RegExp(
+  `\\b(?:received|receive|arrived|delivered|came|sent|got|turned\\s+up|opened|unpacked|erhalten|bekommen|geliefert|angekommen|ausgepackt)\\b|${ALREADY_IN_USE.source}`,
+  "i",
+);
 
 /**
  * The goods are not the ones ordered.
@@ -1971,7 +1990,7 @@ const IS_DAMAGED =
  * all.
  */
 const IS_DEFECTIVE =
-  /\b(?:faulty|defect\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
+  /\b(?:faulty|defect\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
 
 /**
  * WHAT ARRIVED IS THE WRONG SIZE — the other half of "wrong item sent".
