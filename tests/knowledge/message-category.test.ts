@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   MESSAGE_CATEGORIES,
+  type MessageCategory,
+  type MessageIntent,
   SIGNALS,
+  type ShortfallReason,
   classifyConversationCategory,
   classifyMessageCategory,
   classifyMessageCategoryWithFallback,
   detectIntents,
+  quantityShortfallEvidence,
 } from "@/lib/knowledge/message-category";
 
 describe("classifyMessageCategory", () => {
@@ -1476,8 +1480,12 @@ describe("the intent fallback names what the table could not", () => {
 
 /**
  * The guarantee that matters most, stated as a property rather than a list of
- * examples: this layer reaches "Return and refunds" through exactly one intent,
- * and that intent is the money.
+ * examples: this layer reaches "Return and refunds" through exactly two
+ * intents. One is the money. The other is `wants_post_delivery_return`, which
+ * needs the goods to have arrived AND a return or swap to be asked for AND
+ * nothing to be wrong with what we sent — see "a return or swap AFTER delivery
+ * is not an order change" below. Every example here fails at least one of those
+ * three, which is why they are unaffected by it.
  */
 describe("the fallback cannot invent a return or refund", () => {
   it("never names Return and refunds without refund intent", () => {
@@ -1830,7 +1838,10 @@ describe("intent decides, with the phrase table as a supporting signal", () => {
   /** Intent resolves conflicts the phrase table could only refuse. */
   it("names conversations the strict table declined as ties", () => {
     for (const [text, expected] of [
-      ["It arrived damaged and I would like a refund.", "Return and refunds"],
+      // THE PROBLEM, NOT THE REMEDY. CST files a refund asked for about
+      // damage under Damage: the guide decides whether the answer is a
+      // discount, a replacement or the money, and that decision is its own.
+      ["It arrived damaged and I would like a refund.", "Damage queries"],
       ["Wrong item sent, and it is faulty too.", "Wrong item sent messages"],
     ] as const) {
       expect(classifyMessageCategory(text), text).toBeNull();
@@ -1862,11 +1873,14 @@ describe("a shortfall stated in numbers", () => {
     expect(classifyMessageCategoryWithFallback("Only two lampshades arrived but should be three")).toBe(
       "Parts missing queries",
     );
+    // SIX LAMPS ORDERED, ONE ARRIVED. The count is measured against the order,
+    // so this is the quantity case, not the parts case its neighbours above
+    // are — see "a shortfall against the order is a quantity error".
     expect(
       classifyMessageCategoryWithFallback(
         "Ich habe 6 Lampen bestellt. Es ist nur eine Lampe angekommen.",
       ),
-    ).toBe("Parts missing queries");
+    ).toBe("Wrong quantity sent issues");
   });
 
   /**
@@ -2114,7 +2128,20 @@ describe("asking where the consignment is", () => {
    * signal is consulted — even when it also names a consignment.
    */
   it("leaves damage, missing parts and wrong item alone", () => {
-    expect(classifyMessageCategoryWithFallback("Box arrived damaged")).toBe("Damage queries");
+    // CORRECTED AGAINST CST, not a regression. "Box arrived damaged" was
+    // asserted to be a Damage query on the strength of the word "damaged"
+    // alone. It is the first phrase of the trigger row on
+    // `Delivery_Master_Rules final.xlsx` › "💥 9 – Damaged in Transit", whose
+    // stated condition is "Outer box damaged — customer says contents appear
+    // OK" — a courier packaging complaint, with no claim about the goods. The
+    // Damage guide's nine product sheets describe only the goods.
+    //
+    // The line the test was written to protect is unchanged and still tested
+    // below: name the GOODS as damaged and Damage takes it back.
+    expect(classifyMessageCategoryWithFallback("Box arrived damaged")).toBe("Delivery queries");
+    expect(classifyMessageCategoryWithFallback("Box arrived damaged and the shade is smashed")).toBe(
+      "Damage queries",
+    );
     expect(classifyMessageCategoryWithFallback("Missing part from package")).toBe(
       "Parts missing queries",
     );
@@ -2134,5 +2161,1386 @@ describe("asking where the consignment is", () => {
     expect(
       classifyMessageCategoryWithFallback("Where do I return the item please"),
     ).not.toBe("Delivery queries");
+  });
+});
+
+/* ========================================================================= *
+ * WHERE THE ORDER IS IN ITS LIFE
+ *
+ * Three reported misclassifications, and one cause behind two of them: the
+ * classifier knew what the customer was ASKING for and not whether the parcel
+ * had already turned up. A swap before dispatch and a swap after delivery are
+ * opposite ends of an order's life and belong to different categories, and
+ * nothing in the intent layer was reading that difference.
+ *
+ * The third is separate and simpler: "this week" was enough to name a message
+ * a Delivery query, whatever the message was about.
+ * ========================================================================= */
+
+describe("a return or swap AFTER delivery is not an order change", () => {
+  /**
+   * REPORTED. Named "Order change, before shipping queries" because "swap them
+   * both for black" reached the amendment intent, which sits second in the
+   * ownership order and never asked whether the parcel had arrived. It had:
+   * the customer says so in the first sentence.
+   */
+  it("names the reported post-delivery colour swap Return and refunds", () => {
+    const text =
+      "I'm really sorry I received my parcel today but the colour is not what I expected. Please is it possible to return it and swap them both for black. Box is packaged exactly the same as I only took out the shades to look at.";
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Return and refunds");
+    expect(classifyConversationCategory([text])).toBe("Return and refunds");
+    expect(detectIntents(text)).toContain("wants_post_delivery_return");
+  });
+
+  it("names received plus an explicit return and colour swap the same way", () => {
+    for (const text of [
+      "I received it today and want to return it and swap it for black.",
+      "The shades arrived this morning but I would like to return them and exchange for the black ones.",
+      "My order turned up yesterday, can I return it and have the chrome one instead?",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Return and refunds");
+    }
+  });
+
+  /**
+   * THE BOUNDARY THIS RULE EXISTS TO PROTECT. The same verbs, with nothing
+   * delivered: still an amendment, and still decided before the parcel leaves.
+   */
+  it("leaves a genuine pre-shipping change exactly where it was", () => {
+    for (const text of [
+      "Can you change my order to black before you send it?",
+      "Hi can i change colour of order to the gold colour thankyou simon",
+      "Hi I have mansged to order thr wrong cable. Coukd I change it for a braided cable.",
+      "I need to cancel my order before it ships",
+      "Have you received my message,can you change the order to 3 metres please.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe(
+        "Order change, before shipping queries",
+      );
+      expect(detectIntents(text), text).not.toContain("wants_post_delivery_return");
+    }
+  });
+
+  /**
+   * "swap" and "change" are not made to mean Return. Delivery is the whole
+   * condition, and without it neither word reaches this intent.
+   */
+  it("does not let the words swap or change mean a return on their own", () => {
+    for (const text of [
+      "Can I swap my order for the larger size before dispatch?",
+      "Please change my order to the black shade",
+    ]) {
+      expect(detectIntents(text), text).not.toContain("wants_post_delivery_return");
+    }
+  });
+
+  /**
+   * A PROBLEM WITH THE GOODS STILL OWNS THE MESSAGE. Every one of these is
+   * post-delivery and asks for a swap or a return, and every one keeps the
+   * category the measured rules already gave it — this intent cannot fire when
+   * something is actually wrong with what we sent.
+   */
+  it("never takes a message that reports a problem with the goods", () => {
+    for (const [text, expected] of [
+      ["my order arrived damaged, please send another", "Damage queries"],
+      ["My order arrived but a part is missing, can you send another", "Parts missing queries"],
+      ["my order came and the bulb is faulty, please send another", "Defective items"],
+      ["Wrong design arrived, I would like a different one", "Wrong item sent messages"],
+      [
+        "Could you send a returns label so I can return the wrong item that was delivered.",
+        "Wrong item sent messages",
+      ],
+      [
+        "Received wall lamps but shades/fittings cannot assemble as photograph portrays",
+        "Wrong description issues",
+      ],
+    ] as const) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe(expected);
+      expect(detectIntents(text), text).not.toContain("wants_post_delivery_return");
+    }
+  });
+
+  /**
+   * "not what I ordered" reads an order against what arrived; "not what I
+   * expected" reads a hope against it. Only the first is a wrong item.
+   */
+  it("tells a wrong item apart from an unmet expectation", () => {
+    expect(detectIntents("You sent the wrong item, not what i ordered")).toContain(
+      "received_wrong_item",
+    );
+    expect(detectIntents("I received it today and the colour is not what I expected")).not.toContain(
+      "received_wrong_item",
+    );
+  });
+});
+
+describe("a stock question inside a post-delivery exchange", () => {
+  /**
+   * REPORTED. Two messages: the lamp arrived in the wrong colour, then the
+   * customer asks whether the colour they want is in stock. The first message
+   * carried no intent at all — no phrase in it says "wrong", "return" or
+   * "swap" — so the thread was decided by the second, and "in stock" made it
+   * Pre sales. The stock question is how the customer chooses the replacement,
+   * not a fresh enquiry.
+   */
+  it("names the reported conversation Return and refunds", () => {
+    const thread = [
+      "Hi. Lamp arrived not quite the right colour i was expecting a deeper red/copper colour here is one i bought from you last time, i need this colour",
+      "Do you have this in stock? I think its this?",
+    ];
+    expect(classifyConversationCategory(thread)).toBe("Return and refunds");
+    expect(classifyMessageCategoryWithFallback(thread[0]!)).toBe("Return and refunds");
+  });
+
+  it("names the same shape stated more plainly", () => {
+    expect(
+      classifyConversationCategory([
+        "The lamp arrived, I need the deeper copper one.",
+        "Do you have that colour in stock?",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  /**
+   * "in stock" is not made to mean the opposite either. A standalone
+   * availability question, with nothing delivered, is still pre-sales.
+   */
+  it("leaves a standalone availability question as pre-sales", () => {
+    expect(classifyMessageCategoryWithFallback("Do you have the black shade in stock?")).toBe(
+      "Pre sales queries",
+    );
+    expect(classifyConversationCategory(["Do you have this in stock? I think its this?"])).toBe(
+      "Pre sales queries",
+    );
+  });
+
+  /** Wanting MORE of what arrived is a purchase, not an exchange. */
+  it("does not read a repeat purchase as an exchange", () => {
+    expect(
+      detectIntents("The lamp arrived and is lovely, I need the same colour for the hallway"),
+    ).not.toContain("wants_post_delivery_return");
+  });
+});
+
+describe("Delivery queries needs an actual delivery question", () => {
+  /**
+   * REPORTED. Named "Delivery queries" on the strength of "this week" — two
+   * words dating a shopping trip. No parcel, no whereabouts question, no delay,
+   * nothing outstanding. With no stronger category available it belongs on the
+   * admin fallback.
+   */
+  it("does not read a purchase comment as a delivery query", () => {
+    for (const text of [
+      "yes 🤣brought 3 of these shades this week didn't know I could buy as an option £10.89. £10.89. £10.89",
+      "I bought 3 shades this week and didn't know this was available as an option.",
+    ]) {
+      expect(detectIntents(text), text).not.toContain("delivery_request");
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Admin related issues");
+    }
+  });
+
+  /** The real thing, in both of its shapes, unchanged. */
+  it("still names a whereabouts question and a non-arrival", () => {
+    for (const text of [
+      "Where is my parcel? It still hasn't arrived.",
+      "Still waiting for my order.",
+      "where's the package",
+      "when will it arrive",
+      "Can it arrive this week?",
+      "any news on my parcel",
+      "Hallo, ich wäre dankbar für möglichst schnelle Lieferung",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Delivery queries");
+    }
+  });
+
+  /**
+   * Next to a delivery noun the same deadline words do mean delivery, and that
+   * is what the deadline branch is kept for. `DELIVERY_NOUN` is German-only, so
+   * this is the German form — and deliberately without "noch", which would
+   * reach the expedite pattern instead and prove nothing about the deadline.
+   */
+  it("keeps a deadline that is attached to a delivery", () => {
+    expect(classifyMessageCategoryWithFallback("Ist eine Lieferung diese Woche möglich?")).toBe(
+      "Delivery queries",
+    );
+  });
+});
+
+describe("the three fixes disturb nothing that was already right", () => {
+  it("keeps a true listing discrepancy as a description issue", () => {
+    expect(classifyMessageCategoryWithFallback("The listing said copper but you sent red.")).toBe(
+      "Wrong description issues",
+    );
+  });
+
+  it("keeps damage, missing parts and wrong item where they were", () => {
+    expect(
+      classifyMessageCategoryWithFallback("The item arrived damaged and the glass is cracked."),
+    ).toBe("Damage queries");
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Hi I've just received the shade... wondering if something is missing?",
+      ),
+    ).toBe("Parts missing queries");
+    expect(classifyMessageCategoryWithFallback("I received the wrong shade")).toBe(
+      "Wrong item sent messages",
+    );
+    expect(classifyMessageCategory("Wrong item, arrange a return")).toBe("Wrong item sent messages");
+  });
+
+  it("keeps a resolved thread deliberately uncategorised", () => {
+    expect(classifyConversationCategory(["Found it, all sorted."])).toBeNull();
+    expect(classifyMessageCategoryWithFallback("Found it, all sorted.")).toBeNull();
+    expect(
+      classifyConversationCategory([
+        "Only two lampshades arrived, one is missing",
+        "Found it, all sorted.",
+      ]),
+    ).toBe("Parts missing queries");
+  });
+});
+
+/* ========================================================================= *
+ * QUANTITY SHORTAGE, AND THE TWO THINGS IT IS NOT
+ *
+ * A count that falls short is not one case but two, and both are told apart
+ * from a pre-sales question about pack size by the same rule: every number gets
+ * a ROLE from the verb governing it, and a shortage needs a received count
+ * below an expected one. A message with only one role, or none, cannot reach
+ * the comparison at all.
+ *
+ * WHICH of the two cases it is depends on WHAT THE COUNT IS MEASURED AGAINST —
+ * the order, or the contents of what arrived. See "a shortfall against the
+ * order is a quantity error" and "a shortfall inside the product is a parts
+ * case" below; the pair of near-identical German and English threads is the
+ * clearest statement of the difference.
+ * ========================================================================= */
+
+describe("a shortfall against the order is a quantity error", () => {
+  /**
+   * THE TWO REPORTED CONVERSATIONS, verbatim, typos included.
+   *
+   * Both were named Parts missing when the shortage rule was first written,
+   * and both are wrong: every bulb and every driver that arrived is complete.
+   * What is short is the number of UNITS against the order.
+   */
+  it("names the reported short deliveries Wrong quantity sent issues", () => {
+    for (const text of [
+      "Hi I ordered 6 bulbs but have only recieved 3",
+      "Hi i ordered 2 of these and only received 1 of the drivers",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Wrong quantity sent issues");
+      expect(classifyConversationCategory([text]), text).toBe("Wrong quantity sent issues");
+    }
+  });
+
+  const SHORT_AGAINST_ORDER: readonly (readonly [string, ShortfallReason])[] = [
+    ["I ordered 6 bulbs but received 3.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["I ordered 5 and received 2.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["I ordered 2 and only 1 arrived.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["I ordered two drivers and only one arrived.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["I expected 4 but got 3.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["I should have received 4 but only got 2.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["I bought 5 shades and 2 turned up.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+    ["Only half of my order arrived.", "PARTIAL_ORDER_RECEIVED"],
+    ["Ich habe 6 Lampen bestellt. Es ist nur eine Lampe angekommen.", "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"],
+  ];
+
+  it.each(SHORT_AGAINST_ORDER)("names %j a quantity error", (text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Wrong quantity sent issues");
+    expect(detectIntents(text)).toContain("wrong_quantity_sent");
+  });
+
+  /** The evidence is reportable, so a reviewer can ask which rule fired. */
+  it.each(SHORT_AGAINST_ORDER)("records why for %j", (text, reason) => {
+    expect(quantityShortfallEvidence(text)).toBe(reason);
+  });
+
+  /** Measured wording the phrase table already knew, now reaching a category. */
+  it("names a shortfall stated without numbers", () => {
+    for (const text of [
+      "I received fewer than I ordered.",
+      "I ordered a set of 4 and I only received one.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Wrong quantity sent issues");
+    }
+  });
+});
+
+describe("a shortfall inside the product is a parts case", () => {
+  /**
+   * THE DISTINCTION, AS TWO ALMOST IDENTICAL MESSAGES.
+   *
+   * "ordered 2 ... only received 1 of the drivers" counts units against the
+   * order. "only 2 lampshades are in the box, there should be 3" counts the
+   * contents of a single pendant lamp that arrived exactly as ordered. Same
+   * arithmetic, different case, and the anchor is the only thing that says so.
+   */
+  const SHORT_INSIDE_THE_PRODUCT: readonly string[] = [
+    "Only two lampshades arrived but should be three",
+    "Leider sind nur 2 Lampenschirme dabei. Es sollten aber 3 dabei sein.",
+    "There were meant to be 3 drivers but only 1 was in the parcel.",
+    "The lamp arrived but the screws are missing.",
+    "The lamp arrived but one screw is missing.",
+    "The shade is here but the reducer ring was not included.",
+    "One component is missing.",
+    "One component is missing from the package.",
+    "The product arrived without the mounting bracket.",
+    "I received the parcel but one component is missing.",
+    "Die Lieferung ist unvollständig, eine Halterung fehlt.",
+  ];
+
+  it.each(SHORT_INSIDE_THE_PRODUCT)("names %j Parts missing", (text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Parts missing queries");
+    expect(detectIntents(text)).toContain("missing_component");
+  });
+
+  it("records the component reason rather than the quantity one", () => {
+    for (const text of SHORT_INSIDE_THE_PRODUCT) {
+      expect(quantityShortfallEvidence(text), text).toBe("MISSING_ORDER_COMPONENT");
+    }
+  });
+});
+
+describe("a quantity QUESTION is not a shortage", () => {
+  it("names pack-size and price-per-unit questions as pre-sales", () => {
+    for (const text of [
+      "How many drivers are included?",
+      "How many are included?",
+      "Is it one or two?",
+      "Is this one or a pair?",
+      "Is this sold as a pair?",
+      "Do I get two for this price?",
+      "Is this price for one bulb?",
+      "Is it just one crow for £19.89?",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Pre sales queries");
+      expect(quantityShortfallEvidence(text), text).toBeNull();
+    }
+  });
+
+  /**
+   * A PRICE IS NOT A QUANTITY. "just one" gave a received count of 1 and the
+   * "19" inside "£19.89" was read as the expectation, so a pre-sales question
+   * became a parts case. Currency and decimals are excluded from counts now.
+   */
+  it("does not read a price as the expected quantity", () => {
+    expect(quantityShortfallEvidence("Is it just one crow for £19.89?")).toBeNull();
+    expect(quantityShortfallEvidence("Only 1 left at £29.99 then?")).toBeNull();
+  });
+
+  /**
+   * ONE ROLE IS NOT A COMPARISON. Each of these names a count and nothing to
+   * measure it against, so none of them can be a shortage.
+   */
+  it("does not fire on a number with nothing to compare it to", () => {
+    for (const text of [
+      "I only received one",
+      "I only ordered 2 of these",
+      "Ich habe nur 2 bestellt",
+      "Is it one or two?",
+      "Nur eine Frage: passt das an eine E27 Fassung?",
+    ]) {
+      expect(quantityShortfallEvidence(text), text).toBeNull();
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Parts missing queries");
+    }
+  });
+
+  it("does not read a year or a reference number as a quantity", () => {
+    expect(
+      quantityShortfallEvidence("Ich habe nur 2 Stück, Bestellung von 2024 war in Ordnung"),
+    ).toBeNull();
+  });
+});
+
+describe("the shortage rule leaves the neighbouring categories alone", () => {
+  it("keeps a wrong item, a description complaint and a chase where they belong", () => {
+    for (const [text, expected] of [
+      ["I received a completely different driver.", "Wrong item sent messages"],
+      [
+        "The listing says 6 bulbs are included, but the listing itself is inaccurate.",
+        "Wrong description issues",
+      ],
+      ["The parcel is still on the way.", "Delivery queries"],
+      ["Shade arrived smashed", "Damage queries"],
+    ] as const) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe(expected);
+    }
+  });
+});
+
+/**
+ * ALL SEVEN REPORTED CONVERSATIONS, in one table.
+ *
+ * Kept together deliberately: each was fixed in a different pass, and the point
+ * of the matrix is that no later pass cost an earlier one its answer.
+ */
+describe("the seven real reported conversations", () => {
+  const REPORTED: readonly (readonly [string, string[], MessageCategory])[] = [
+    [
+      "received parcel, wants return and swap for black",
+      [
+        "I'm really sorry I received my parcel today but the colour is not what I expected. Please is it possible to return it and swap them both for black. Box is packaged exactly the same as I only took out the shades to look at.",
+      ],
+      "Return and refunds",
+    ],
+    [
+      "lamp arrived, wants another colour, with a supporting stock question",
+      [
+        "Hi. Lamp arrived not quite the right colour i was expecting a deeper red/copper colour here is one i bought from you last time, i need this colour",
+        "Do you have this in stock? I think its this?",
+      ],
+      "Return and refunds",
+    ],
+    [
+      "purchase comment with no actionable issue",
+      [
+        "yes 🤣brought 3 of these shades this week didn't know I could buy as an option £10.89. £10.89. £10.89",
+      ],
+      "Admin related issues",
+    ],
+    ["shade arrived smashed", ["Shade arrived smashed"], "Damage queries"],
+    ["pack-size question before buying", ["Is it just one crow for £19.89?"], "Pre sales queries"],
+    [
+      "ordered 6, received 3",
+      ["Hi I ordered 6 bulbs but have only recieved 3"],
+      "Wrong quantity sent issues",
+    ],
+    [
+      "ordered 2, received 1",
+      ["Hi i ordered 2 of these and only received 1 of the drivers"],
+      "Wrong quantity sent issues",
+    ],
+  ];
+
+  it.each(REPORTED)("classifies %s", (_name, messages, expected) => {
+    expect(classifyConversationCategory(messages)).toBe(expected);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * CST SEMANTIC CATEGORY OWNERSHIP
+ *
+ * One case per owning category, written as the ownership rule states it rather
+ * than as any single rule book phrases it. These are the boundaries the
+ * evidence layer exists to hold: every one of them is wording that at least two
+ * CST workbooks claim, and each has exactly one owner.
+ * ------------------------------------------------------------------------- */
+
+describe("semantic category ownership", () => {
+  const OWNERSHIP: readonly (readonly [string, string, MessageCategory])[] = [
+    // 1. DAMAGE — the received product is physically damaged. Delivery 9.3 and
+    // Defective INT-DF12 both claim this vocabulary; neither owns it.
+    ["smashed goods", "One of the shades arrived smashed.", "Damage queries"],
+    ["shattered goods", "The glass shade arrived shattered.", "Damage queries"],
+    ["broken goods", "The pendant arrived broken.", "Damage queries"],
+    ["cracked goods", "The shade is cracked.", "Damage queries"],
+    ["dented goods", "The metal shade has a big dent in it.", "Damage queries"],
+    ["chipped goods", "The paint is chipped on the arm.", "Damage queries"],
+
+    // 2. DELIVERY — whereabouts, non-arrival, transit and outer packaging.
+    ["whereabouts", "Where is my parcel?", "Delivery queries"],
+    ["delivered not received", "Tracking says delivered but nothing received.", "Delivery queries"],
+    ["packaging damage", "Box damaged but product fine.", "Delivery queries"],
+
+    // 3. DEFECTIVE — intact and not working.
+    ["intact but dead", "Lamp arrived intact but does not work.", "Defective items"],
+    ["stopped working", "It stopped working after two days.", "Defective items"],
+    ["flickering", "The bulb is flickering.", "Defective items"],
+
+    // 4. WRONG QUANTITY — fewer units than ordered.
+    ["ordered 6 received 3", "I ordered 6 bulbs but received 3.", "Wrong quantity sent issues"],
+    ["ordered 2 received 1", "I ordered 2 but only received 1.", "Wrong quantity sent issues"],
+    ["fewer than ordered", "Received fewer than I ordered.", "Wrong quantity sent issues"],
+
+    // 5. PARTS MISSING — the unit is here, a component is not.
+    ["screws absent", "Lamp arrived but mounting screws are missing.", "Parts missing queries"],
+    ["bracket absent", "The bracket was not included.", "Parts missing queries"],
+    ["reducer ring absent", "The reducer ring is missing.", "Parts missing queries"],
+
+    // 6. RETURN AND REFUNDS — post-delivery return, refund, exchange or swap.
+    ["exchange after delivery", "Received it and want to exchange it.", "Return and refunds"],
+    [
+      "swap after delivery",
+      "Received them today and want to swap them for black.",
+      "Return and refunds",
+    ],
+
+    // 7. ORDER CHANGE — modification or cancellation before dispatch.
+    [
+      "colour change before dispatch",
+      "Change it to black before you send it.",
+      "Order change, before shipping queries",
+    ],
+    [
+      "quantity change before dispatch",
+      "Change quantity before dispatch.",
+      "Order change, before shipping queries",
+    ],
+
+    // 8. PRE SALES — a prospective purchase question.
+    ["pack size", "Is it just one crow for £19.89?", "Pre sales queries"],
+    ["how many included", "How many are included?", "Pre sales queries"],
+
+    // 9. WRONG DESCRIPTION — the listing and the goods differ.
+    [
+      "listing says copper",
+      "Listing says copper but the received item is red.",
+      "Wrong description issues",
+    ],
+
+    // 10. WRONG ITEM SENT — a materially different product.
+    ["different product", "Ordered shade A but received shade B.", "Wrong item sent messages"],
+    ["stated mismatch", "You sent me the wrong item.", "Wrong item sent messages"],
+
+    // 11. ADMIN — the fallback, and the paperwork it genuinely owns.
+    ["invoice request", "Please send me a VAT invoice.", "Admin related issues"],
+    [
+      "purchase comment with nothing actionable",
+      "Bought 3 of these shades this week didn't know I could buy as an option",
+      "Admin related issues",
+    ],
+  ];
+
+  it.each(OWNERSHIP)("gives %s to the owning category", (_name, text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+});
+
+/**
+ * The ownership rules stated as EXCLUSIONS — the category each of these must
+ * NOT be, because another rule book's trigger list would otherwise claim it.
+ */
+describe("categories that overlapping trigger wording must not win", () => {
+  it("does not let Delivery take damage to the product itself", () => {
+    for (const text of [
+      "One of the shades arrived smashed.",
+      "The glass shade arrived shattered.",
+      "Item arrived broken — can't use it.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Damage queries");
+    }
+  });
+
+  it("does not let Defective take physically broken goods", () => {
+    for (const text of ["The shade arrived smashed.", "The glass is cracked."]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Defective items");
+    }
+  });
+
+  it("does not let Damage take a battered box with intact contents", () => {
+    expect(classifyMessageCategoryWithFallback("Box arrived damaged, contents seem okay")).toBe(
+      "Delivery queries",
+    );
+  });
+
+  it("does not read a bare arrival as a delivery query", () => {
+    for (const text of ["I received the parcel.", "My order arrived and it is perfect"]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Delivery queries");
+    }
+  });
+
+  it("does not read a single count as a missing part", () => {
+    expect(classifyMessageCategoryWithFallback("I only received one.")).not.toBe(
+      "Parts missing queries",
+    );
+  });
+
+  it("does not read a quantity mismatch as a missing part or a wrong item", () => {
+    for (const text of [
+      "I ordered 6 bulbs but received 3.",
+      "I ordered 2 but only received 1.",
+      "Received fewer than I ordered.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Wrong quantity sent issues");
+    }
+  });
+
+  it("does not let a stock question override an active exchange", () => {
+    expect(
+      classifyConversationCategory([
+        "Received them today but the colour is not what I wanted, can I swap them for black?",
+        "Do you have this in stock? I think its this?",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  it("does not read an unexpected colour on its own as a description error", () => {
+    for (const text of [
+      "The colour is a bit darker than I hoped.",
+      "The shade is a nicer colour than I expected.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Wrong description issues");
+    }
+  });
+
+  it("does not read a post-delivery exchange as a pre-shipping amendment", () => {
+    for (const text of [
+      "Received it and want to exchange it.",
+      "Received them today and want to swap them for black.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe(
+        "Order change, before shipping queries",
+      );
+    }
+  });
+});
+
+/**
+ * A CASE THE CUSTOMER CLOSED IS NOT WHAT THE THREAD IS ABOUT.
+ *
+ * "Earliest case wins" is right for a thread that ends with a thank-you, and it
+ * still is. It is wrong for the thread where the first problem was solved and a
+ * second one raised after it.
+ */
+describe("a resolved case does not outrank a newer unresolved one", () => {
+  it("takes the case raised after the resolution confirmation", () => {
+    expect(
+      classifyConversationCategory([
+        "A part is missing from the box.",
+        "Found it, all sorted thanks.",
+        "The bulb has stopped working now though.",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  it("still keeps the original case when the closing message only closes it", () => {
+    expect(
+      classifyConversationCategory([
+        "A part is missing from the box.",
+        "Found it, all sorted thanks.",
+      ]),
+    ).toBe("Parts missing queries");
+  });
+
+  it("still returns nothing when the whole thread is only a resolution", () => {
+    expect(classifyConversationCategory(["All sorted now", "Many thanks"])).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * PRE-SALES RECOGNITION, GROUNDED IN `PRE-SALES QUERIES.xlsx`
+ *
+ * A read-only audit of 50 real eBay/Amazon conversations tagged "Admin related
+ * issues" found 29 wrong, and Pre sales was the largest single group at 9. Each
+ * case below is either one of those nine or the CST intent family behind it.
+ * ------------------------------------------------------------------------- */
+
+describe("pre-sales questions the admin fallback used to swallow", () => {
+  const PRE_SALES: readonly (readonly [string, string])[] = [
+    // B — DIMENSIONS AND SPECS (INT-PS03). "measurements" was absent from the
+    // attribute list while "dimensions" was present, so these two sentences
+    // classified differently for no reason a customer could see.
+    ["measurements, plural", "can I please have the measurements of the lampshades"],
+    ["measurements, real audit wording", "Hi, can I please have the measurements of the amber tier lampshades?"],
+    ["dimensions", "what are the dimensions?"],
+    ["how big", "how big is the shade?"],
+    ["depth", "what is the depth of the ceiling rose?"],
+
+    // G — STOCK AND AVAILABILITY (INT-PS09). THE PLURAL BUG: the attribute list
+    // held "shade" and not "shades", so the plural fell to Admin while the
+    // singular was named Pre sales.
+    ["stock, plural noun", "do you sell clear glass shades as well?"],
+    ["stock, singular noun", "do you sell a clear glass shade?"],
+    ["stock, real audit wording", "Good morning, Im just wondering, do you sell clear glass shades as well? Thanks, Helen"],
+    ["stock in a colour", "do you have black in stock?"],
+    ["availability by finish", "Hello there do you have 3 of the brushed refurbished copper please ?"],
+
+    // Y — WEIGHT AND LOAD. No attribute in the list covered weight at all.
+    ["weight", "what weight can these hold?"],
+    ["weight, real audit wording", "I want to know what weight these can hold?"],
+    ["load capacity", "what is the load capacity of the bracket?"],
+
+    // N — COLOUR AND FINISH (INT-PS18). THE QUESTION-MARK BUG: identical
+    // sentences, and only the punctuated one was recognised.
+    ["colour, no question mark", "what colour is the shade underneath please"],
+    ["colour, mid-sentence interrogative", "Hi there what colour is the shade underneath please"],
+    ["material", "what is it made of, is it metal or plastic?"],
+
+    // M — OUTDOOR AND IP RATING (INT-PS17).
+    ["outdoor suitability", "is this suitable for outdoor use?"],
+    ["used outside", "can I use this outside"],
+    ["IP rating", "what is the IP rating, is it IP65?"],
+
+    // O — WIRING AND INSTALLATION (INT-PS19).
+    ["cable core count", "Hi i was wondering if its 2 or 3 core? The wire without the end"],
+    ["driver advice", "please advise which driver I need"],
+
+    // F — COMPATIBILITY QUERIES (INT-PS08).
+    ["compatibility", "will this work with my existing dimmer switch?"],
+
+    // Polite request forms the workbook lists directly, none with a question
+    // mark: "could you tell me the measurement", "please state the size".
+    ["polite request, no question mark", "could you tell me the size please"],
+    ["please + verb", "please send me the height measurement"],
+  ];
+
+  it.each(PRE_SALES)("names %s as a pre-sales query", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Pre sales queries");
+  });
+});
+
+/**
+ * GERMAN, AND WHY IT IS TRANSLATED RATHER THAN TABULATED.
+ *
+ * `PRE-SALES QUERIES.xlsx` holds no German — zero of its 1,125 stored strings —
+ * so there is no German trigger vocabulary in the approved corpus to extract,
+ * and writing German trigger phrases would be inventing CST evidence. The
+ * German product nouns are therefore mapped onto the English attribute the
+ * workbook already approves, and the CST concepts decide as they do in English.
+ */
+describe("German pre-sales enquiries, translated into the CST vocabulary", () => {
+  const GERMAN: readonly (readonly [string, string])[] = [
+    ["outdoor suitability", "Ist die Lampe für den Aussenbereich geeignet?"],
+    [
+      "outdoor use with an umlaut",
+      "Kann das Netzteil im Außenbereich verwendet werden und ggf. Feuchtigkeit durch Tau verkraften?",
+    ],
+    [
+      "mains voltage, a compound noun",
+      "Hallo, ich hätte doch sicherheitshalber gerne gewußt on das wirklich 2 getrennte Wicklingen sind ??? Mir geht es hier um die Galvanische Trennung zur Netzspannung !",
+    ],
+    ["dimensions", "Können Sie mir bitte die Abmessungen des Lampenschirms nennen?"],
+    ["dimmable", "Ist diese Lampe dimmbar?"],
+  ];
+
+  it.each(GERMAN)("names %s as a pre-sales query", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Pre sales queries");
+  });
+});
+
+/**
+ * CONTEXT PROTECTION. Widening pre-sales recognition must not let a product
+ * question take a conversation away from the problem it is about. Every one of
+ * these names a product attribute AND asks something, so each would qualify as
+ * a pre-sales enquiry on wording alone.
+ */
+describe("wider pre-sales recognition does not steal from other categories", () => {
+  const PROTECTED: readonly (readonly [string, string, MessageCategory])[] = [
+    [
+      "a stock question inside an active exchange",
+      "Lamp arrived and I want to exchange it. Do you have black in stock?",
+      "Return and refunds",
+    ],
+    ["a counted shortage", "I ordered 6 but received 3.", "Wrong quantity sent issues"],
+    ["physical damage", "Shade arrived smashed.", "Damage queries"],
+    ["a functional fault", "The lamp arrived but does not work.", "Defective items"],
+    ["an absent component", "The screws are missing.", "Parts missing queries"],
+    [
+      "an amendment to an existing order",
+      "Can you change my existing order to black before dispatch?",
+      "Order change, before shipping queries",
+    ],
+    [
+      "a listing mismatch",
+      "Listing says copper but the received item is red.",
+      "Wrong description issues",
+    ],
+    ["a delivery chase", "Where is my parcel?", "Delivery queries"],
+    ["a battered box", "Box damaged but product fine.", "Delivery queries"],
+    ["a different product", "Ordered shade A but received shade B.", "Wrong item sent messages"],
+  ];
+
+  it.each(PROTECTED)("leaves %s alone", (_name, text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+
+  /**
+   * `pre_sale_question` sits directly ABOVE `admin_issue` in the ownership
+   * order, so a widened attribute list puts invoice requests at risk the moment
+   * one mentions a product. `ADMIN.xlsx` › A — INVOICE & VAT owns these, and
+   * eleven of the sixteen genuinely-Admin conversations in the audit were
+   * exactly this.
+   */
+  const PAPERWORK: readonly (readonly [string, string])[] = [
+    ["a VAT invoice request", "Hi, Can you please supply a VAT invoice for this item?"],
+    ["a VAT receipt request", "Hello could I have a vat receipt please."],
+    ["an invoice request naming a product", "Can you send me the VAT invoice for the bulbs?"],
+    [
+      "a German invoice request",
+      "Hallo, ich habe für diesen Artikel keine Rechnung erhalten. Können Sie mir diese bitte noch zukommen lassen?",
+    ],
+  ];
+
+  it.each(PAPERWORK)("keeps %s with Admin", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Admin related issues");
+  });
+
+  it("still gives a non-actionable purchase comment to Admin", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "yes 🤣brought 3 of these shades this week didn't know I could buy as an option £10.89. £10.89. £10.89",
+      ),
+    ).toBe("Admin related issues");
+  });
+
+  it("still returns nothing for a thread that is only a resolution", () => {
+    expect(classifyConversationCategory(["All sorted now", "Many thanks"])).toBeNull();
+  });
+});
+
+/**
+ * The plural defect, pinned as a property rather than as a list of words.
+ *
+ * The attribute pattern is built from stems with the plural derived, so a stem
+ * that works in the singular must work in the plural. Written this way because
+ * the original bug was precisely a hand-maintained list where some stems had
+ * their plural and some did not.
+ */
+describe("product attributes recognise singular and plural alike", () => {
+  const PAIRS: readonly (readonly [string, string])[] = [
+    ["shade", "shades"],
+    ["lamp shade", "lamp shades"],
+    ["bulb", "bulbs"],
+    ["fitting", "fittings"],
+    ["measurement", "measurements"],
+    ["dimension", "dimensions"],
+    ["cable", "cables"],
+    ["driver", "drivers"],
+  ];
+
+  it.each(PAIRS)("treats %s and %s the same", (singular, plural) => {
+    const ask = (noun: string) => classifyMessageCategoryWithFallback(`do you sell ${noun}?`);
+    expect(ask(singular)).toBe("Pre sales queries");
+    expect(ask(plural)).toBe("Pre sales queries");
+  });
+
+  /**
+   * The opening bound is `(?:^|[^a-z])` rather than `\b`, so a stem buried in a
+   * longer word cannot fire. These are the collisions the deriving-plurals
+   * change could plausibly have introduced.
+   */
+  it("does not fire on a stem buried inside another word", () => {
+    for (const text of [
+      "can you download the file for me?",
+      "what is the score of the match?",
+      "do you have a screwdriver?",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Pre sales queries");
+    }
+  });
+});
+
+/**
+ * THE GUARDS THAT KEEP WIDER PRE-SALES RECOGNITION HONEST.
+ *
+ * Each of these is a real conversation from the remeasurement that the first
+ * cut of this change got wrong. They are pinned because every one of them names
+ * a product attribute and asks something, so nothing but the guard stops them.
+ */
+describe("pre-sales recognition yields to a return already under way", () => {
+  const POST_PURCHASE: readonly (readonly [string, string])[] = [
+    [
+      "a return-postage negotiation quoting dimensions",
+      "Due to the physical size (160mm x 140mm x 5mm) and weight (53g) of my returning parcel I believe the cost should be no more than a standard 1st class letter. I was intending to purchase the correct item 2 core x 5 mtrs.",
+    ],
+    [
+      "a returns-label request naming the product",
+      "Hi please can you send me a returns label so I can return this lampshade back to you. Many thanks",
+    ],
+    [
+      "a return asked for alongside a stock question",
+      "Hi there is it possible to return these items? We have discovered they are too big, they don't fit on to the light fitting, do you have smaller ones available?",
+    ],
+  ];
+
+  it.each(POST_PURCHASE)("does not read %s as pre-sales", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).not.toBe("Pre sales queries");
+  });
+
+  /**
+   * THE VETO REACHES ALL THREE WITNESSES, which is why it lives in `refine`
+   * rather than at the call sites. This message was rejected by the CST
+   * evidence layer and named a pre-sales query anyway, because the strict
+   * phrase table lists "voltage" and reads a hit as a witness with no context.
+   */
+  it("holds even when the strict phrase table is the witness", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Hi . I want to return item .. output voltage not mentioned and does not match 12v I needed",
+      ),
+    ).not.toBe("Pre sales queries");
+  });
+
+  /**
+   * The negation matters, and mirrors `REFUND_DECLINED`: a return mentioned in
+   * order to RULE IT OUT leaves a pre-sales enquiry exactly where it was.
+   */
+  it("still answers a wiring question that rules a return out", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "IS THE WIRING INCLUDED? The light socket also DONT WANT TO RETURN IT IF I CANNOT HOOK IT UP",
+      ),
+    ).toBe("Pre sales queries");
+  });
+
+  /**
+   * "Returning customer" is INT-PS02 (REGULAR CUSTOMER RECOGNITION) — a buyer
+   * introducing themselves, not a parcel going back.
+   */
+  it("does not mistake a returning customer for a return", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Hello Returning customer. Do you sell rubber grommets? To pass the braided flex through the metal casing so that it doesn't rub and fray?",
+      ),
+    ).toBe("Pre sales queries");
+  });
+});
+
+/**
+ * "finish" is a verb at least as often as it is a noun, and putting the bare
+ * stem in the attribute list cost a real delivery chase. The noun sense still
+ * has to work, which is what makes this a pair rather than a single assertion.
+ */
+describe("an attribute that is also a common verb", () => {
+  it("does not read 'finish a job' as a product finish", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "What's happening with these as we're waiting on them to finish a job",
+      ),
+    ).not.toBe("Pre sales queries");
+  });
+
+  it("still recognises the noun sense", () => {
+    expect(classifyMessageCategoryWithFallback("what finish is it, is it metal or plastic?")).toBe(
+      "Pre sales queries",
+    );
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * DELIVERY RECOGNITION, GROUNDED IN `Delivery_Master_Rules final.xlsx`
+ *
+ * The read-only Admin audit found 8 of its 29 false-Admin conversations should
+ * have been Delivery — the largest remaining gap after pre-sales. Each case
+ * below is either one of those or the numbered CST scenario behind it.
+ *
+ * DELIVERY MESSAGES ARE USUALLY STATEMENTS, not questions. "I did not receive
+ * my order" asks nothing and names no tracking claim, which is exactly why
+ * sheet 13 calls itself "the FIRST catch-all for basic non-receipt messages".
+ * Nothing here requires a question mark.
+ * ------------------------------------------------------------------------- */
+
+describe("delivery queries the admin fallback used to swallow", () => {
+  const DELIVERY: readonly (readonly [string, string])[] = [
+    // 13.1 — Not Received (General). A negated receipt, in the sheet's own
+    // wording. The classifier already knew how to recognise a non-arrival; what
+    // it lacked was any rule saying a stated non-arrival IS a delivery query.
+    ["plain non-receipt", "Hello I did not receive my order."],
+    ["no order arrival", "My order hasn't arrived"],
+    ["parcel not received", "I have not received my parcel"],
+    ["nothing delivered", "Nothing has been delivered"],
+    ["never arrived", "Order never arrived"],
+    ["still nothing", "Still nothing received"],
+    ["contracted negative", "I didn't get the package"],
+    ["contracted, no object", "Hello I didn't receive it yet."],
+
+    // 2.1 — Delivered Not Received. The subject of "says" is optional, because
+    // the customer usually does not name who marked it.
+    ["tracking says delivered", "Tracking says delivered but nothing received."],
+    ["marked delivered", "Marked as delivered but nothing here"],
+    ["courier claim", "It says delivered but I haven't received it"],
+    ["no delivery was made", "No delivery was made im home"],
+    ["in all day", "I was in all day and there was no delivery"],
+    ["left at door", "Says left at door but there's nothing"],
+
+    // 1.1 / 13.2 — whereabouts and overdue.
+    ["whereabouts", "Where is my parcel?"],
+    ["still waiting", "still waiting for my order"],
+    ["any update", "any update on delivery"],
+    [
+      "overdue",
+      "Hi any idea what's going on this should have been delivered yesterday but still not with me yet can you help ?",
+    ],
+
+    // 18.1 — Urgent Deadline. A booked trade is a deadline on its own; a job or
+    // an event needs a word of dependency beside it.
+    [
+      "electrician booked",
+      "I have paid an electrician to attend on Saturday to put all the lighting in, I need this today or early morning tomorrow at the latest",
+    ],
+    ["electrician coming", "My electrician is coming tomorrow and I need the order before then"],
+    ["installation deadline", "I need this today for the installation"],
+    ["job held up", "What's happening with these as we're waiting on them to finish a job"],
+
+    // 2.4 / 6.3 — collection point and depot.
+    ["collect where", "Where can I collect it?"],
+    ["pick up point", "Hi there, When and where can I pick up the item from please?"],
+    ["at a collection point", "It's at a collection point"],
+    ["at the depot", "Parcel is at the depot"],
+    ["collection email", "Hi why I still not receive the email for collection"],
+  ];
+
+  it.each(DELIVERY)("names %s as a delivery query", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Delivery queries");
+  });
+});
+
+/**
+ * GERMAN, translated into the approved vocabulary for the same reason as
+ * pre-sales: `Delivery_Master_Rules final.xlsx` contains no German at all, so
+ * there is nothing to extract and German trigger phrases would be invented
+ * evidence. "Packstation" is absent from the workbook but a parcel locker IS a
+ * collection point, which sheet 2.4 owns outright.
+ */
+describe("German delivery messages, translated into the CST vocabulary", () => {
+  const GERMAN: readonly (readonly [string, string])[] = [
+    [
+      "a Packstation the customer cannot access",
+      "Hallo, ich hab ein Problem. Die Ware wurde in einer Packstation hinterlegt. Da ich kein Smartphon habe komme ich da nich ran und DHL kann das angeblich auch nicht ändern.",
+    ],
+    ["a parcel shop", "Das Paket liegt im Paketshop, ich kann es nicht abholen."],
+  ];
+
+  it.each(GERMAN)("names %s as a delivery query", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Delivery queries");
+  });
+
+  /**
+   * THE OVERLAP THAT MATTERS. That first message also says "Trafo", which the
+   * German map renders as "transformer" — a pre-sales product attribute. It
+   * must not become a pre-sales enquiry on the strength of a product noun when
+   * the actual problem is a parcel sitting in a locker. `delivery_request`
+   * outranks `pre_sale_question` in `INTENT_OWNERSHIP`, so ownership resolves
+   * this without narrowing legitimate German pre-sales recognition.
+   */
+  it("does not let a product noun turn a Packstation problem into pre-sales", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Hallo, der Trafo wird noch ca. 9 Tage in der Packstation liegen und ich komme nicht ran.",
+      ),
+    ).toBe("Delivery queries");
+  });
+
+  it("still recognises a genuine German pre-sales question", () => {
+    expect(classifyMessageCategoryWithFallback("Ist die Lampe für den Aussenbereich geeignet?")).toBe(
+      "Pre sales queries",
+    );
+  });
+});
+
+/**
+ * CONTEXT PROTECTION. Every case below names a consignment or a delivery word,
+ * so each would qualify as a delivery query on wording alone.
+ */
+describe("wider delivery recognition does not steal from other categories", () => {
+  const PROTECTED: readonly (readonly [string, string, MessageCategory])[] = [
+    ["physical damage", "Shade arrived smashed.", "Damage queries"],
+    ["a functional fault", "Lamp arrived but does not work.", "Defective items"],
+    ["a counted shortage", "I ordered 6 but received 3.", "Wrong quantity sent issues"],
+    ["an absent component", "Lamp arrived but screws are missing.", "Parts missing queries"],
+    ["a return", "Received it and want to return it.", "Return and refunds"],
+    [
+      "a pre-dispatch amendment",
+      "Can you change the order before dispatch?",
+      "Order change, before shipping queries",
+    ],
+    ["a product enquiry", "Do you have this in stock?", "Pre sales queries"],
+    ["a listing mismatch", "Listing says copper but received red.", "Wrong description issues"],
+    ["a different product", "Ordered shade A but received shade B.", "Wrong item sent messages"],
+    // CST supports this one going TO Delivery: sheet 9.1 is "Outer box damaged
+    // — customer says contents appear OK".
+    ["packaging-only damage", "Box damaged but product fine.", "Delivery queries"],
+  ];
+
+  it.each(PROTECTED)("leaves %s alone", (_name, text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+
+  /**
+   * The non-receipt pattern reads a negator followed by a receipt word. Both
+   * of these contain a negator and an arrival word, and in neither is the
+   * arrival in dispute — the direction requirement is what separates them.
+   */
+  it("does not read a fault reported after arrival as a non-receipt", () => {
+    for (const text of [
+      "Lamp arrived but does not work.",
+      "The shade arrived but the fitting is not included.",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Delivery queries");
+    }
+  });
+
+  it("keeps a missing invoice with Admin rather than reading it as a non-receipt", () => {
+    expect(classifyMessageCategoryWithFallback("I have not received my VAT invoice.")).toBe(
+      "Admin related issues",
+    );
+  });
+
+  it("keeps an unreceived refund with Return and refunds", () => {
+    expect(classifyMessageCategoryWithFallback("I still have not received my refund.")).toBe(
+      "Return and refunds",
+    );
+  });
+});
+
+/**
+ * THE PARCEL TURNING UP ANSWERS "WHERE IS MY PARCEL".
+ *
+ * A delivery chase is the one case category its own thread routinely resolves
+ * without anybody saying "sorted", so it is the one category an arrival may
+ * supersede. Everything else still describes something wrong once the goods
+ * are in the customer's hands.
+ */
+describe("an arrival supersedes an earlier delivery chase", () => {
+  const THREADS: readonly (readonly [string, string[], MessageCategory])[] = [
+    ["damage after a chase", ["Where is my parcel?", "It arrived smashed."], "Damage queries"],
+    [
+      "a fault after a chase",
+      ["Where is my parcel?", "It arrived but does not work."],
+      "Defective items",
+    ],
+    [
+      "a missing part after a chase",
+      ["Where is my parcel?", "It arrived but the screws are missing."],
+      "Parts missing queries",
+    ],
+  ];
+
+  it.each(THREADS)("takes the later case for %s", (_name, messages, expected) => {
+    expect(classifyConversationCategory(messages)).toBe(expected);
+  });
+
+  it("keeps the chase when the later message is still a non-arrival", () => {
+    expect(
+      classifyConversationCategory(["Where is my parcel?", "Still nothing has arrived."]),
+    ).toBe("Delivery queries");
+  });
+
+  it("does not supersede in the other direction", () => {
+    expect(
+      classifyConversationCategory(["It arrived smashed.", "Where is my replacement?"]),
+    ).toBe("Damage queries");
+  });
+
+  it("takes a later chase over an earlier enquiry", () => {
+    expect(
+      classifyConversationCategory(["Do you stock black?", "My parcel still hasn't arrived."]),
+    ).toBe("Delivery queries");
+  });
+
+  it("still returns nothing for a thread that is only a resolution", () => {
+    expect(classifyConversationCategory(["All sorted now", "Many thanks"])).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE WHOLE MESSAGE DECIDES, NOT A PHRASE INSIDE IT
+ *
+ * Every case here is a COMPLETE message as a customer actually wrote it —
+ * greeting, digression, sign-off and all — rather than the trigger fragment
+ * lifted out of it. That is the point: each of these contains vocabulary
+ * belonging to a category it must NOT be filed under, and only the reading of
+ * the surrounding clause separates them.
+ * ------------------------------------------------------------------------- */
+
+describe("complete customer messages, read as situations", () => {
+  const MESSAGES: readonly (readonly [string, string, MessageCategory])[] = [
+    /* -------- technical specification: asked, never asserted -------- */
+    [
+      "a correction naming a component and a count",
+      "Hello James, Thank you for your reply. However, it unfortunately has nothing to do with my actual question! " +
+        'I wanted to know exactly whether this transformer "has two galvanically/electrically isolated windings"? ' +
+        "I didn't ask about the power rating! I would be very grateful for a correct answer. Regards, Uwe I.",
+      "Pre sales queries",
+    ],
+    [
+      "an isolation question",
+      "Could you confirm whether the primary and secondary windings are electrically isolated please",
+      "Pre sales queries",
+    ],
+    [
+      "a count asked about a feature",
+      "I want to know if this driver has two independent outputs",
+      "Pre sales queries",
+    ],
+    ["a core count question", "Can you tell me how many cores this cable has", "Pre sales queries"],
+    [
+      "a plain specification question",
+      "Does this transformer have two isolated windings?",
+      "Pre sales queries",
+    ],
+    [
+      "how many, with the component named",
+      "How many windings does this transformer have?",
+      "Pre sales queries",
+    ],
+
+    /* -------- a component genuinely absent, after receipt -------- */
+    [
+      "a bracket absent from the box",
+      "The fitting arrived today but the mounting bracket is missing from the box",
+      "Parts missing queries",
+    ],
+    [
+      "screws that should have been included",
+      "I received the lamp but the screws that should have been included are not there",
+      "Parts missing queries",
+    ],
+    [
+      "a winding absent after receipt",
+      "One winding is missing from the transformer I received.",
+      "Parts missing queries",
+    ],
+    [
+      "arrived without the bracket",
+      "The package arrived without the required bracket.",
+      "Parts missing queries",
+    ],
+
+    /* -------- units short against the order -------- */
+    ["ordered six, three came", "I ordered 6 bulbs but only received 3", "Wrong quantity sent issues"],
+    [
+      "two ordered, one arrived",
+      "I ordered two transformers and only one arrived.",
+      "Wrong quantity sent issues",
+    ],
+
+    /* -------- physical damage -------- */
+    [
+      "the real smashed-shade message",
+      "Have received my order from your good selves this morning, however one of the shades arrived smashed as per the photograph. Can you advise please. Thank you.Trevor.",
+      "Damage queries",
+    ],
+    [
+      "damage found on unpacking, blamed on the post",
+      "Hi. We've just opened the box for the first time since receiving it, and unfortunately one shade is broken. It must have happened in the post.",
+      "Damage queries",
+    ],
+    ["a cracked casing", "The transformer casing arrived cracked.", "Damage queries"],
+
+    /* -------- functional fault -------- */
+    [
+      "wired correctly and dead",
+      "I received it today, wired it correctly, but it does not switch on",
+      "Defective items",
+    ],
+    ["intact but not working", "The transformer arrived but does not work.", "Defective items"],
+
+    /* -------- listing vs reality -------- */
+    [
+      "a measured discrepancy against the listing",
+      "The listing states 40 cm but the item I received measures 30 cm",
+      "Wrong description issues",
+    ],
+    [
+      "an asserted specification contradiction",
+      "The listing says isolated outputs but this model does not have them.",
+      "Wrong description issues",
+    ],
+
+    /* -------- return, delivery, wrong item -------- */
+    [
+      "a post-delivery colour exchange",
+      "I'm really sorry I received my parcel today but the colour is not what I expected. " +
+        "Please is it possible to return it and swap them both for black. " +
+        "Box is packaged exactly the same as I only took out the shades to look at.",
+      "Return and refunds",
+    ],
+    [
+      "delivered but nothing received",
+      "Tracking shows delivered but I have not received anything",
+      "Delivery queries",
+    ],
+    [
+      "a size that does not fit, after receipt",
+      "Hi, received two vintage wall lamps as ordered, but are unable to assemble these as the glass shades are too large to fit underneath the champhored edge to secure properly.",
+      "Wrong item sent messages",
+    ],
+  ];
+
+  it.each(MESSAGES)("reads %s correctly", (_name, text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+});
+
+/**
+ * A QUESTION ABOUT A COMPONENT IS NOT A REPORT OF A MISSING ONE.
+ *
+ * `missing parts query .xlsx` needs an assertion that something expected is
+ * absent. A component noun, a count, and an interrogative frame are each
+ * routinely present in a specification question, and none of them is a claim.
+ */
+describe("component and quantity vocabulary inside a question", () => {
+  const NOT_MISSING: readonly string[] = [
+    "Does it have two windings?",
+    "How many screws does it come with?",
+    "Is there a bracket included with this?",
+    "Are there any fixings supplied?",
+    "I would like to know whether it has an earth terminal",
+    "Can you tell me if the shade comes with a reducer ring",
+  ];
+
+  it.each(NOT_MISSING)("does not read %j as a missing part", (text) => {
+    expect(classifyMessageCategoryWithFallback(text)).not.toBe("Parts missing queries");
+  });
+
+  /**
+   * The correction, which is the rollert4 defect in one line: a clause telling
+   * us we answered the wrong question is not evidence about the goods,
+   * whatever vocabulary it happens to contain.
+   */
+  const CORRECTIONS: readonly string[] = [
+    "It has nothing to do with my actual question",
+    "That was not my question, I asked about the winding isolation",
+    "I didn't ask about the power rating",
+  ];
+
+  it.each(CORRECTIONS)("does not take evidence from the correction %j", (text) => {
+    expect(detectIntents(text)).not.toContain("missing_component");
+  });
+
+  /**
+   * A denial is not a report. Each of these names a problem in order to rule it
+   * out, and the classifier used to file all three as the problem denied.
+   */
+  const DENIALS: readonly (readonly [string, MessageIntent])[] = [
+    ["Nothing is broken, I just want to check the wiring", "damaged_product"],
+    ["The item is not damaged, the box was just scuffed", "damaged_product"],
+    ["It is not faulty, I had wired it wrongly. All working now", "defective_product"],
+  ];
+
+  it.each(DENIALS)("takes no problem from the denial in %j", (text, intent) => {
+    expect(detectIntents(text)).not.toContain(intent);
+  });
+});
+
+/**
+ * THE CURRENT UNRESOLVED INTENT, across a whole thread.
+ *
+ * A conversation is a sequence of situations, and the one that matters is the
+ * one still open. Earliest-case-wins is right until an earlier case is answered
+ * by events.
+ */
+describe("the thread's current unresolved intent", () => {
+  it("keeps a technical question when the customer clarifies it", () => {
+    expect(
+      classifyConversationCategory([
+        "Hallo, ich hätte gerne gewußt ob das wirklich 2 getrennte Wicklungen sind? Mir geht es um die Galvanische Trennung zur Netzspannung!",
+        "However, it unfortunately has nothing to do with my actual question! I wanted to know whether this transformer has two isolated windings? I didn't ask about the power rating!",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  it("takes the damage once the chased parcel has arrived", () => {
+    expect(
+      classifyConversationCategory(["Where is my parcel?", "It arrived but the shade is smashed."]),
+    ).toBe("Damage queries");
+  });
+
+  it("takes the refund once the customer gives up on the deadline", () => {
+    expect(
+      classifyConversationCategory([
+        "I have paid an electrician to attend on Saturday to put all the lighting in, I need this today or early morning tomorrow at the latest.",
+        "No, as I've said I paid an electrician on Saturday to fix one I've got from B&Q. Please issue the refund.",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  it("still keeps a chase that nothing has answered", () => {
+    expect(
+      classifyConversationCategory(["Where is my parcel?", "Still nothing has arrived."]),
+    ).toBe("Delivery queries");
   });
 });
