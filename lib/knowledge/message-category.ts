@@ -2581,6 +2581,32 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
   // PACKAGING is context for the absent component; damage to the GOODS is the
   // complaint. The single-damage-word bound is what keeps "the box was damaged
   // and the shade is smashed" on the goods side of that line.
+  // A SIZE REMARK IS NOT A WRONG ITEM WHEN THE CUSTOMER IS ASKING WHETHER A
+  // PART IS MISSING.
+  //
+  //   "Is there suppose to be a fitting with it? The hole on the shade is too
+  //    big for a standard ceiling light!! The box was damaged and slightly open
+  //    so I'm just wondering if something is missing?"
+  //
+  // Every sentence is a question about what should have been in the box. The
+  // size is the customer's REASON for thinking a part is absent — a reducer ring
+  // — not a claim that we sent the wrong shade. `Wrong item sent final.xlsx`
+  // sheet 8 owns a measurement mismatch and its own phrases include "too big",
+  // which raised a wrong-item case above the parts case the customer is actually
+  // describing.
+  //
+  // ONLY WHERE THERE IS NO ORDERED-VERSUS-RECEIVED CLAIM. "You sent the 20cm
+  // instead of the 30cm and the reducer is missing" asserts a mismatch and stays
+  // a wrong item, which is why the test is on the assertion and not on the size
+  // wording.
+  if (
+    found.includes("received_wrong_item") &&
+    found.includes("missing_component") &&
+    !asserts(text, A_MISMATCH)
+  ) {
+    found = drop("received_wrong_item");
+  }
+
   if (found.includes("missing_component") && found.includes("damaged_product")) {
     const damageWords = (SIGNALS.find((s) => s.label === "Damage queries")?.phrases ?? []).filter(
       (phrase) => contains(text, phrase),

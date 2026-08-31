@@ -550,6 +550,20 @@ describe("every reported real case, in the customer's own words", () => {
     ).toBe("Parts missing queries");
   });
 
+  /**
+   * A SIZE REMARK USED TO EXPLAIN WHY A PART SEEMS ABSENT. Every sentence is a
+   * question about what should have been in the box; the hole being too big is
+   * the customer's reason for thinking a reducer ring is missing, not a claim
+   * that the wrong shade arrived.
+   */
+  it("a fitting queried, with the box damaged and open, is a parts case", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi I've just received the shade, thank you. Is there suppose to be a fitting with it? The hole on the shade is too big for a standard ceiling light!! The box was damaged and slightly open so I'm just wondering if something is missing?",
+      ]),
+    ).toBe("Parts missing queries");
+  });
+
   it("0193london — shades too large to assemble is a wrong item", () => {
     expect(
       classifyConversationCategory([
