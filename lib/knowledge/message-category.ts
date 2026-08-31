@@ -1990,6 +1990,24 @@ const IS_DEFECTIVE =
 const SIZE_OR_FIT_MISMATCH =
   /\btoo\s+(?:big|large|small|short|long|wide|narrow|thick|tight)\b|\bwrong\s+(?:size|sizes|diameter|dimensions?|length|width)\b|\b(?:does|do|did|would)\s?n[o']?t\s+fit\b|\bwo\s?n[o']?t\s+fit\b|\bnot\s+(?:the\s+)?right\s+(?:size|length|diameter|width)\b|\bmuch\s+(?:shorter|smaller|bigger|larger|longer)\b|\bnot\s+long\s+enough\b/i;
 
+/**
+ * WHAT ARRIVED IS THE OTHER THING — a mismatch stated without the word "wrong".
+ *
+ * `A_MISMATCH` knows the vocabulary of wrongness ("wrong", "not what I
+ * ordered", "different item"). It does not know the two constructions customers
+ * use most often to say the same thing without it:
+ *
+ *   "you sent the 20cm shade INSTEAD OF the 30cm one"
+ *   "the supplied fitting BELONGS TO ANOTHER type of light"
+ *
+ * `Wrong item sent  final.xlsx` is built out of the first — INT-WI02 through
+ * INT-WI06 are almost entirely "X not Y" and "X instead of Y" — and sheet 4
+ * (DIFFERENT ITEM UNUSABLE) is the second. Without them a supplied-but-wrong
+ * component reached no wrong-item signal at all.
+ */
+const SUPPLIED_THE_OTHER_THING =
+  /\binstead\s+of\b|\b(?:belongs|is\s+for|are\s+for|meant\s+for)\s+(?:to\s+)?(?:a\s+|an\s+)?(?:different|another|other)\b|\bfor\s+(?:a\s+|an\s+)?(?:different|another)\s+(?:type|model|kind|version|fitting|light|lamp)\b|\bnot\s+the\s+(?:type|kind|model|version|size)\s+(?:i|we)\s+(?:ordered|bought|wanted|expected)\b/i;
+
 /** A reference to what the listing promised, and a statement that reality differs. */
 const LISTING_REFERENCE =
   /\b(?:photo|photograph|picture|image|listing|advert\w*|description|described|depicted|portray\w*|shown|specification|specs?|abbildung|beschreibung)\b/i;
@@ -2377,7 +2395,17 @@ export function detectIntents(customerText: string | null): MessageIntent[] {
   add("wants_refund", wantsMoneyBack(text));
   add("wants_replacement", WANTS_A_REPLACEMENT.test(text));
   add("wants_order_change", AMENDMENT_REQUEST.test(text) || amendsAnOrderAlreadyPlaced(text));
-  add("received_wrong_item", HAS_THE_GOODS.test(text) && A_MISMATCH.test(text));
+  add(
+    "received_wrong_item",
+    (HAS_THE_GOODS.test(text) && A_MISMATCH.test(text)) ||
+      // "The SUPPLIED fitting belongs to another type of light." The mismatch
+      // construction carries the arrival with it — a part cannot have been
+      // supplied without having arrived — and "supplied" is deliberately not
+      // added to `HAS_THE_GOODS` itself, where it would break "are any fixings
+      // supplied?", a pre-sales question about a purchase nobody has made.
+      (asserts(text, SUPPLIED_THE_OTHER_THING) &&
+        (HAS_THE_GOODS.test(text) || /\bsupplied\b/i.test(text))),
+  );
   // ONE PIECE OF EVIDENCE, ONE INTENT. `quantityShortfallEvidence` already
   // decides which kind of shortage a message describes, and the two kinds are
   // different CST cases: units short against the order is a quantity error,
@@ -2602,7 +2630,8 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
   if (
     found.includes("received_wrong_item") &&
     found.includes("missing_component") &&
-    !asserts(text, A_MISMATCH)
+    !asserts(text, A_MISMATCH) &&
+    !asserts(text, SUPPLIED_THE_OTHER_THING)
   ) {
     found = drop("received_wrong_item");
   }

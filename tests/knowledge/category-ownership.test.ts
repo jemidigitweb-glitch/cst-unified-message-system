@@ -97,6 +97,31 @@ describe("a quantity, a component and a different item are three different thing
   });
 });
 
+describe("an absent component and a supplied-but-wrong one are different cases", () => {
+  /**
+   * THE LINE CST DRAWS. Parts missing is a component that should have been in
+   * the box and is not. Wrong item is a component that IS in the box and is the
+   * wrong one. A size remark on its own decides neither — it is as often the
+   * customer's reason for suspecting an absence as it is a claim about what
+   * arrived.
+   */
+  const CASES: readonly (readonly [string, MessageCategory])[] = [
+    [
+      "Hi I've just received the shade. Is there suppose to be a fitting with it? The hole on the shade is too big for a standard ceiling light. The box was damaged and slightly open so I'm just wondering if something is missing?",
+      "Parts missing queries",
+    ],
+    ["You sent the 20cm shade instead of the 30cm one and the reducer ring is missing too.", "Wrong item sent messages"],
+    ["The supplied fitting belongs to another type of light.", "Wrong item sent messages"],
+    ["The lamp arrived but the mounting screws are missing from the box.", "Parts missing queries"],
+    ["Will this shade be too big for a 28mm pendant?", "Pre sales queries"],
+    ["Does this shade come with a reducer ring?", "Pre sales queries"],
+  ];
+
+  it.each(CASES)("reads %j correctly", (text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+});
+
 describe("a pre-sales question survives the vocabulary it shares", () => {
   const PRE_SALES: readonly string[] = [
     "Does this transformer have two galvanically isolated windings?",
