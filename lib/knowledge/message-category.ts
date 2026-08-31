@@ -1664,8 +1664,25 @@ const EXPECTATION_VERB =
   /\b(?:ordered|order|bought|purchased|paid\s+for|requested|expected|expecting|should\s+(?:have\s+)?(?:be|been|contain|receive|received|recieved|got|had)|(?:meant|supposed)\s+to\s+(?:be|have|contain|receive)|bestellt|gekauft|sollte|sollten|m(?:ü|ue)ssten|erwartet)\b/gi;
 
 /** The number is what actually turned up. */
+/**
+ * "GOT TO" IS NOT "GOT".
+ *
+ * `got` is the commonest way a customer says a thing arrived, and it is also
+ * half of a verb of PROGRESS. Both appear in the same message:
+ *
+ *   "I purchased 2 of these lights ... he fitted one which was great but when he
+ *    got to the second one it was missing one of the hollow bolts and nut"
+ *
+ * Both lights arrived. The electrician fitted one and reached the second, which
+ * is missing a component — a Parts missing case. Reading "got to the second one"
+ * as a receipt of one unit paired it with the "2" and made it a quantity error,
+ * which sends an agent to dispatch a whole light instead of a bolt.
+ *
+ * The exclusion is only the prepositions that turn it into motion. "Got 3 of the
+ * 6" is untouched, and so is every other receipt verb.
+ */
 const RECEIPT_VERB =
-  /\b(?:received|recieved|got|arrived|came|delivered|sent|turned\s+up|in\s+the\s+(?:box|parcel|package)|dabei|angekommen|erhalten|bekommen|geliefert)\b/gi;
+  /\b(?:received|recieved|got(?!\s+(?:to|round|around|as\s+far|onto|up\s+to))|arrived|came|delivered|sent|turned\s+up|in\s+the\s+(?:box|parcel|package)|dabei|angekommen|erhalten|bekommen|geliefert)\b/gi;
 
 /**
  * The clause the number sits in — a verb in a neighbouring clause is not its

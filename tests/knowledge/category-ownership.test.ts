@@ -535,6 +535,21 @@ describe("every reported real case, in the customer's own words", () => {
     ).toBe("Damage queries");
   });
 
+  /**
+   * trippinnitro — BOTH LIGHTS ARRIVED. The electrician fitted one and reached
+   * the second, which is missing a bolt. Reading "got to the second one" as a
+   * receipt of one unit paired it with the "2" and made it a quantity error,
+   * which would send a whole light instead of the bolt the customer asked for.
+   */
+  it("trippinnitro — a component absent from the second unit is a parts case", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi I purchased 2 of these lovely lights from you earlier in the month my electrician came today to fit them into our new kitchen he fitted one which was great but when he got to the second one it was missing one of the hollow bolts and nut so he was unable to put up.can you please send me the small part that is missing so I can get the work completed. It is piece c on the instructions and I enclose a photo.",
+        "Thank you so much James I look forward to hearing from you",
+      ]),
+    ).toBe("Parts missing queries");
+  });
+
   it("0193london — shades too large to assemble is a wrong item", () => {
     expect(
       classifyConversationCategory([
