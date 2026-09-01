@@ -755,6 +755,37 @@ function segmentsOf(clause: string): { expected: string | null; received: string
   if (receivedAt === -1) return { expected: clause, received: null };
   if (expectedAt === -1) return { expected: null, received: clause };
 
+  /*
+   * A CONJUNCTION THAT ACTUALLY SEPARATES THE TWO ROLES WINS, wherever it sits.
+   *
+   * The cue positions are not reliable enough to divide on alone. "Unfortunately
+   * ITS the wrong colour - SHOULD BE the green brass version BUT a light brass
+   * one HAS BEEN SENT" opens with `its`, which is a received cue, ahead of the
+   * expected cue `should be`. Dividing between those two put the complaint on
+   * the received side and BOTH values — the one ordered and the one that came —
+   * on the expected side, so the row vanished on a live wrong-colour report.
+   *
+   * So each contrastive conjunction is tested for whether it genuinely splits
+   * one role from the other: an expected cue on one side, a received cue on the
+   * other, and no expected cue bleeding across. That is a stronger signal than
+   * where the first cue of each kind happens to fall, because the conjunction is
+   * the word the customer used to mark the contrast.
+   */
+  for (const match of clause.matchAll(ROLE_BOUNDARY)) {
+    const left = clause.slice(0, match.index);
+    const right = clause.slice(match.index);
+    const leftExpected = EXPECTED_CUE.test(left);
+    const rightExpected = EXPECTED_CUE.test(right);
+
+    if (leftExpected && !rightExpected && RECEIVED_CUE.test(right)) {
+      return { expected: left, received: right };
+    }
+    if (rightExpected && !leftExpected && RECEIVED_CUE.test(left)) {
+      return { expected: right, received: left };
+    }
+  }
+
+  /* No conjunction divides them, so fall back to the cue positions. */
   const low = Math.min(expectedAt, receivedAt);
   const high = Math.max(expectedAt, receivedAt);
 
