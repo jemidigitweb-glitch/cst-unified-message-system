@@ -1252,7 +1252,10 @@ const PACK_SIZE_QUESTION = new RegExp(
     "\\bhow\\s+many\\b",
     "\\bis\\s+(?:it|this|that)\\s+(?:just\\s+)?(?:one|1|a\\s+single)\\b",
     "\\b(?:one|1)\\s+or\\s+(?:two|2|a\\s+pair)\\b",
-    "\\b(?:sold|come|comes|supplied|priced)\\s+(?:as|in)\\s+(?:a\\s+)?(?:pair|pairs|set|sets|single|singly|twos)\\b",
+    // "boxes", "packs" and "bundles" join the pairs and sets: "do they come in
+    // boxes of 3?" is the same question in the packaging the seller happens to
+    // use, and it reached nothing at all.
+    "\\b(?:sold|come|comes|supplied|priced)\\s+(?:as|in)\\s+(?:a\\s+)?(?:pair|pairs|set|sets|single|singly|twos|box|boxes|pack|packs|packet|packets|bundle|bundles)\\b",
     "\\bas\\s+a\\s+(?:pair|set)\\b",
     "\\bdo\\s+i\\s+get\\s+(?:\\w+\\s+){0,2}?(?:one|two|three|four|\\d{1,3})\\b",
     "\\b(?:price|cost)\\s+(?:is\\s+)?for\\s+(?:one|1|a\\s+single|each|the\\s+pair)\\b",
@@ -1340,7 +1343,13 @@ function looksPreSales(text: string): boolean {
   return (
     text.length < MAX_ENQUIRY_LENGTH &&
     asksOrRequests(text) &&
-    namesAProductAttribute(text) &&
+    // HOW MANY COME IN THE BOX IS A SPECIFICATION QUESTION. "I would like to
+    // purchase Types 4 and 5. Do they come in boxes of 3? I need a total of 8."
+    // is a buyer working out what to order and it reached the admin catch-all,
+    // because pack size is not in `PRODUCT_ATTRIBUTE_STEMS` and nothing else in
+    // the message names an attribute. The four exclusions below still apply, so
+    // this cannot take a message that reports a problem or names an order.
+    (namesAProductAttribute(text) || PACK_SIZE_QUESTION.test(text)) &&
     !ASKING_FOR_PAPERWORK.test(text) &&
     !ALREADY_PURCHASED.test(text) &&
     !AWAITING_SOMETHING.test(text) &&
@@ -1397,6 +1406,14 @@ export function classifyMessageCategory(customerText: string | null): MessageCat
     // Paperwork belongs to Admin, whatever product it names — the same guard
     // the intent layer applies, applied to this witness too.
     .filter((entry) => entry.label !== "Pre sales queries" || !ASKING_FOR_PAPERWORK.test(text))
+    // Whose mistake it was is not something a phrase table can see. "Sorry it's
+    // the wrong one" scores a Wrong-item hit on the word `wrong` alone, and the
+    // customer is apologising for their own order. The same guard the intent
+    // layer applies, applied to this witness too.
+    .filter(
+      (entry) =>
+        entry.label !== "Wrong item sent messages" || !CUSTOMER_OWNS_THE_MISTAKE.test(text),
+    )
     .filter((entry) => {
       const concept = claimBehindCategory(entry.label);
       if (concept === undefined) return true;
@@ -1546,6 +1563,89 @@ const A_MISMATCH =
   /\b(?:wrong|incorrect|not\s+what\s+i\s+(?:(?:'ve|have|had)\s+)?(?:ordered|order|asked|requested|bought|purchased|paid|chose|chosen|selected)|not\s+the\s+one|different\s+(?:item|product|one|model|type|thing)|(?:completely|totally|entirely)\s+different|(?:the\s+)?(?:correct|right)\s+one|falsch\w*|nicht\s+das\s+was)\b/i;
 
 /**
+ * SOMETHING DIFFERENT WAS SUPPLIED TO THE CUSTOMER.
+ *
+ * The receipt/supply half of a wrong-item claim, stated in the three verbs CST
+ * uses to describe it: the goods were RECEIVED, SENT, or DELIVERED. Deliberately
+ * narrower than `HAS_THE_GOODS`, which also counts `got` — "I got a different
+ * one" is the customer describing their own purchase at least as often as ours,
+ * and the ambiguity is the whole problem being fixed here.
+ */
+const SOMETHING_DIFFERENT_WAS_SUPPLIED =
+  /\b(?:received|receive|recieved|arrived|delivered|dispatched|despatched|shipped|sent|came|erhalten|geliefert|angekommen)\b/i;
+
+/**
+ * THE CUSTOMER BOUGHT A DIFFERENT ONE THEMSELVES.
+ *
+ * "I've bought a different one now sorry" is a customer withdrawing a pre-sales
+ * enquiry — they went elsewhere. It is not a report that we supplied the wrong
+ * thing, and there is no case to open.
+ *
+ * WHY THIS IS NEEDED WHERE THE EXISTING GUARD IS NOT ENOUGH. `A_MISMATCH`'s
+ * `different <noun>` alternative reads the WORD "different" with no account of
+ * who did what: the customer's own purchase and our mis-shipment produce the
+ * same match. The comment on `A_MISMATCH` says it is "paired with
+ * `HAS_THE_GOODS`", and it is — but only in the `Wrong item sent messages`
+ * CATEGORY PREDICATE, which runs as a veto on a category already chosen.
+ * `claims.wrong_item` is read earlier than that, and it sets
+ * `event = "wrong_item_supplied"`, which routes the message before the paired
+ * guard is ever consulted. So the pairing has to hold at the point the claim is
+ * made, which is what this does.
+ *
+ * NARROW BY CONSTRUCTION. It requires the customer to be the subject (`i`/`we`),
+ * an ACQUISITION verb — never a receipt verb — and `different` close enough to
+ * be that verb's object. "You sent me a different one" has no such subject; "I
+ * received a different one" names no acquisition verb; both still assert.
+ *
+ * AND IT DEFERS WHENEVER A SUPPLY IS ALSO MENTIONED. "I ordered the black one
+ * and received a different one" matches this shape and is still a genuine
+ * wrong-item report, so the claim stands wherever the customer also says
+ * something was received, sent or delivered. This suppresses only the case
+ * where the sole "different" in the message is one the customer bought.
+ */
+const CUSTOMER_BOUGHT_A_DIFFERENT_ONE =
+  /\b(?:i|we)\b[^.!?]{0,12}?\b(?:bought|buying|ordered|ordering|purchased|purchasing|chose|chosen|selected|picked|found|sourced|re-?ordered|gone\s+with|went\s+with)\b[^.!?]{0,40}?\bdifferent\b/i;
+
+/**
+ * Whether the only "different" in the message is one the customer bought.
+ *
+ * Named rather than inlined so the claim table reads as the rule it implements:
+ * a wrong item requires something different to have been supplied.
+ */
+function boughtADifferentOneThemselves(text: string): boolean {
+  return (
+    CUSTOMER_BOUGHT_A_DIFFERENT_ONE.test(text) && !SOMETHING_DIFFERENT_WAS_SUPPLIED.test(text)
+  );
+}
+
+/**
+ * THE CUSTOMER GOT IT WRONG, NOT US.
+ *
+ * "Sorry it's the wrong one, needs to be 5v output, I can return if possible"
+ * and "my partner has returned the wrong lights to you" both filed as Wrong
+ * item sent. Neither says we shipped the wrong thing: the first is a customer
+ * who ordered the wrong spec, the second is a customer who posted the wrong
+ * parcel back. Both are returns.
+ *
+ * THREE TIGHT SHAPES, and the tightness is the point — "sorry, you sent me the
+ * wrong item" must keep asserting a wrong item, and it contains both "sorry"
+ * and "wrong".
+ *
+ *   an apology owning it     `sorry … it's the wrong` — the wrongness
+ *                            predicated of the thing, not of anything we did.
+ *                            "Sorry I think you sent the wrong one" does not
+ *                            match, because the verb there is ours.
+ *   mis-ordered              "I ordered/bought/chose the wrong …"
+ *   mis-returned             "I/we/my partner returned/sent back the wrong …"
+ *
+ * Unlike `boughtADifferentOneThemselves` this needs no supply check: each shape
+ * already names the customer as the actor, so a supply mentioned elsewhere in
+ * the message cannot be what these describe.
+ */
+const CUSTOMER_OWNS_THE_MISTAKE =
+  /\bsorry\b[^.!?]{0,20}\bit'?s\s+the\s+wrong\b|\b(?:i|we)\s+(?:have\s+|had\s+)?(?:ordered|bought|purchased|chose|chosen|picked|selected)\s+the\s+wrong\b|\b(?:i|we|my\s+[a-z]+)\s+(?:have\s+|has\s+|had\s+)?(?:returned|sent\s+back|posted\s+back)\s+(?:the\s+|a\s+)?wrong\b/i;
+
+/**
  * Something that should be in the package is not — stated as an ABSENCE.
  *
  * "only received one" USED TO BE HERE AND IS NOT ANY MORE. `only <count>`,
@@ -1575,8 +1675,54 @@ const A_MISMATCH =
  * wasn't there" and "part absent", and "the screws that should have been
  * included are not there" matched nothing at all.
  */
-const SOMETHING_ABSENT =
-  /\b(?:missing|incomplete|not\s+included|no\s+screws|nothing\s+to\s+(?:hang|fix|attach|mount|secure|hold|screw|fasten)|short\s+of|(?:arrived|received|recieved|came)\s+without\s+(?!a\s+(?:mark|scratch|scratches|blemish|problem|issue|hitch|fault)\b)|(?:are|is|was|were)\s?n[o']?t\s+(?:there|in\s+the\s+box|included|present)|fehl\w*|unvollst(?:ä|ae)ndig|nicht\s+enthalten)\b/i;
+
+/**
+ * The components a customer names when one of them is absent.
+ *
+ * A CLOSED LIST, for the same reason the colour vocabulary is one. The
+ * constructions below ("no X", "but not the X") are grammatical shapes that
+ * would otherwise fire on any noun — "no problem", "no idea", "but not the
+ * price" — so the noun has to be one this business actually ships as part of
+ * something else.
+ *
+ * Grounded in the trigger rows already in `cst-category-evidence.ts`: INT-MP05
+ * names screws, brackets, fixings, driver and instructions, and the rest are
+ * the parts those rows sit beside in `missing parts query .xlsx`.
+ */
+const COMPONENT_NOUN =
+  "screws?|bracket|brackets|fixings?|fitting|fittings|driver|transformer|instructions?|manual|" +
+  "bulbs?|shades?|holders?|adapters?|adaptors?|rings?|covers?|cables?|flex|cord|chain|rod|" +
+  "canopy|rose|nuts?|bolts?|washers?|connectors?|plate|diffuser|glass|grommet|gland";
+
+/**
+ * ABSENCE IS STATED IN MORE THAN ONE GRAMMAR, AND ONLY ONE WAS READ.
+ *
+ * `no screws` was the single hard-coded instance of a general shape. The live
+ * sample shows what that cost: "there is no fitting with it" and "I have
+ * received the shade but not the fitting" are both plain reports of a missing
+ * component, neither contains the word "missing", and both fell to the admin
+ * catch-all. Sixteen threads in a 1,697-thread sample carried an absence signal
+ * and were filed as Admin.
+ *
+ * TWO SHAPES ARE ADDED, both bounded by the component list:
+ *
+ *   "no <component>"          the absence stated as a bare negative existential
+ *   "but/and not the <comp>"  the absence stated as an exception to what DID
+ *                             arrive — the shape of a partial delivery
+ *
+ * THE SECOND IS THE DANGEROUS ONE AND IS BOUNDED TWICE. "it's not the shade I
+ * ordered" is a WRONG ITEM, not an absence, and it contains "not the shade".
+ * What separates them is that an absence is coordinated onto something that did
+ * arrive ("received the shade BUT NOT the fitting") while a mismatch continues
+ * into what was expected ("not the shade I ORDERED"). So the coordinator is
+ * required in front, and a following subject pronoun is refused.
+ */
+const SOMETHING_ABSENT = new RegExp(
+  String.raw`\b(?:missing|incomplete|not\s+included|nothing\s+to\s+(?:hang|fix|attach|mount|secure|hold|screw|fasten)|short\s+of|(?:arrived|received|recieved|came)\s+without\s+(?!a\s+(?:mark|scratch|scratches|blemish|problem|issue|hitch|fault)\b)|(?:are|is|was|were)\s?n[o']?t\s+(?:there|in\s+the\s+box|included|present)|fehl\w*|unvollst(?:ä|ae)ndig|nicht\s+enthalten)\b` +
+    String.raw`|\bno\s+(?:${COMPONENT_NOUN})\b` +
+    String.raw`|\b(?:but|and)\s+not\s+(?:the\s+|a\s+|an\s+|any\s+)?(?:${COMPONENT_NOUN})\b(?!\s+(?:i|we|that|which|you)\b)`,
+  "i",
+);
 
 /**
  * A shortfall stated as ARITHMETIC rather than as the word "missing".
@@ -1808,7 +1954,28 @@ function orderedMoreThanArrived(text: string): boolean {
   }
 
   if (expected.length === 0 || arrived.length === 0) return false;
-  return Math.min(...arrived) < Math.max(...expected);
+
+  /*
+   * SEVERAL RECEIVED COUNTS ENUMERATE ONE DELIVERY, so they are added up.
+   *
+   * "I ordered 2 blue lampshades, why have you sent me one green and one blue"
+   * was filed as a quantity shortfall because the smallest arrived count, 1,
+   * is less than the 2 ordered. Two shades did arrive. Nothing is short — the
+   * colour of one of them is wrong, which is a different category and a
+   * different remedy, and an agent sent to chase a missing unit finds none.
+   *
+   * The customer is doing the addition themselves when they coordinate the
+   * counts, so the coordination is required: without an "and" joining them,
+   * two numbers are two separate claims and the smallest still governs.
+   * "I ordered 6 bulbs and only 3 arrived" is untouched either way, and
+   * "ordered 6, got 2 and 1 broken" still totals 3 against 6.
+   */
+  const coordinated = arrived.length > 1 && /\b(?:and|&|und)\b/i.test(text);
+  const receivedTotal = coordinated
+    ? arrived.reduce((total, value) => total + value, 0)
+    : Math.min(...arrived);
+
+  return receivedTotal < Math.max(...expected);
 }
 
 /**
@@ -1976,9 +2143,25 @@ const BARE_SHORTFALL = new RegExp(
  *
  * "chip" is bounded to its damage sense (`chip on`, `chipped`) because the bare
  * noun is not one.
+ *
+ * GERMAN NAMES DAMAGE WITH A NOUN, AND THIS ONLY HELD THE ADJECTIVES.
+ * `beschädigt`, `zerbrochen` and `zerkratzt` are all participles — they cover
+ * "der Artikel ist beschädigt angekommen" and nothing else. A German customer
+ * reporting the single most common breakage writes a noun instead: "die Lampe
+ * ist mit einem RISS im Glas angekommen", "der Schirm hat eine DELLE". Neither
+ * reached any damage signal, so both fell to the admin catch-all — the same
+ * failure the English list had before "shattered" was added to it, in the
+ * language where nobody had checked.
+ *
+ * `gebrochen` joins `zerbrochen` for the same reason: the prefix is optional in
+ * ordinary use and only the prefixed form was listed.
+ *
+ * `sprung` is DELIBERATELY ABSENT while `gesprungen`, `zersprungen` and
+ * `Sprünge` are present. As a bare stem it is an English word ("sprung a
+ * leak"), and this pattern runs against every message in every language.
  */
 const IS_DAMAGED =
-  /\b(?:damag\w*|broken|smash\w*|crack\w*|dent\w*|scratch\w*|besch(?:ä|ae)digt|zerbrochen|zerkratzt|shatter\w*|chipped|chip\s+(?:on|off)|crush\w*|scuff\w*|fractur\w*)\b|\b(?:slightly\s+)?(?:bent|buckled|warped|misshapen)\b|\b(?:burn\s+marks?|melted|melting|heat\s+damage|discolour\w*|discolor\w*|blemish\w*|fray\w*|loose\s+threads?)\b|\b(?:not\s+perfectly\s+round|shape\s+(?:is\s+)?off|slight\s+wobble)\b/i;
+  /\b(?:damag\w*|broken|smash\w*|crack\w*|dent\w*|scratch\w*|besch(?:ä|ae)digt|(?:zer|ge)brochen|zerkratzt|shatter\w*|chipped|chip\s+(?:on|off)|crush\w*|scuff\w*|fractur\w*)\b|\b(?:slightly\s+)?(?:bent|buckled|warped|misshapen)\b|\b(?:burn\s+marks?|melted|melting|heat\s+damage|discolour\w*|discolor\w*|blemish\w*|fray\w*|loose\s+threads?)\b|\b(?:not\s+perfectly\s+round|shape\s+(?:is\s+)?off|slight\s+wobble)\b|\b(?:riss|risse|rissen|spr(?:ü|ue)nge|delle|dellen|kratzer|bruchstelle|gesprungen|zersprungen|angeschlagen)\b/i;
 
 /**
  * The goods are intact and they do not work.
@@ -1990,7 +2173,7 @@ const IS_DAMAGED =
  * all.
  */
 const IS_DEFECTIVE =
-  /\b(?:faulty|defect\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
+  /\b(?:faulty|defect\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\bbroke\b(?!n)|\bsmell(?:s|ing|t)?\s+of\s+(?:\w+\s+){0,2}burning\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
 
 /**
  * WHAT ARRIVED IS THE WRONG SIZE — the other half of "wrong item sent".
@@ -2190,6 +2373,38 @@ function wantsADifferentVariant(text: string): boolean {
  * measured, and it arrives through the phrase table and the strict shape rule —
  * duplicating it in a looser form here is what caused the damage above.
  */
+/**
+ * A PROBLEM WITH THE DELIVERY ITSELF — the journey, the attempt, the address.
+ *
+ * The audit found three of these filed elsewhere: a missed delivery attempt
+ * with the wrong postcode on it filed as an order change, and a parcel
+ * "stranded in Denmark for pickup" filed as admin. None of them is a request to
+ * amend an order, and none is an administrative query — each is a parcel that
+ * has not reached the customer, which is what Delivery owns.
+ *
+ * AN ADDRESS COMPLAINT IS A DELIVERY MATTER, not an amendment. "They have the
+ * incorrect postcode" reports what the carrier holds; it does not ask us to
+ * change anything. The word "cancel" is what still marks a real amendment, and
+ * it is checked separately where this is used.
+ */
+const DELIVERY_PROBLEM =
+  /\b(?:missed\s+(?:delivery\s+)?attempt|attempted\s+delivery|delivery\s+attempt|failed\s+delivery|missed\s+delivery|delivery\s+(?:was\s+)?missed|(?:incorrect|wrong)\s+(?:post\s?code|postcode|address)|stranded|held\s+(?:at|in)\s+(?:the\s+)?(?:depot|customs|sorting)|collection\s+point|for\s+pick\s?-?\s?up|pick\s+(?:it|them)\s+up|delivery\s+office)\b/i;
+
+/**
+ * SOMEBODY CHANGING A FITTING, not an order.
+ *
+ * "will see if my Electrician can change it to a wall switch" matched
+ * `AMENDMENT_REQUEST`'s "change it" and took a pre-sales compatibility thread
+ * into Order change. The actor is the giveaway: an order amendment is asked of
+ * US, so a sentence whose subject is the customer, their tradesperson or the
+ * product itself is describing physical work, not a request.
+ *
+ * "Can you change my order" is unaffected — "you" is deliberately not a subject
+ * here.
+ */
+const THIRD_PARTY_PHYSICAL_CHANGE =
+  /\b(?:i|we|he|she|they|my\s+\w+|the\s+\w+)\s+(?:can|could|will|would|might|may|is\s+going\s+to)\s+(?:chang(?:e|ing)|swap|switch)\b/i;
+
 const AMENDMENT_REQUEST = new RegExp(
   [
     // A change applied to an object, either immediately... "over" is
@@ -2536,6 +2751,37 @@ const PROBLEM_INTENTS: readonly MessageIntent[] = [
 ];
 
 /**
+ * WHAT THE AUDIT SHOWED, recorded here beside the signal it turns on.
+ *
+ * Six of the thirteen miscategorised conversations were the same mistake — the
+ * remedy taking the case from the issue that caused it:
+ *
+ *   a parcel that never came, closed with "please issue the refund"
+ *   a delivery chase, closed with "you could just refund it"
+ *   "I purchased these by mistake. Could I cancel the order and get a refund"
+ *   a burning smell on first use, followed by "please could I have a refund"
+ *
+ * Every one is a Delivery, Order-change or Defective case in which the customer
+ * has said what they want done about it. The refund is the remedy; the reason
+ * they are writing is the category. Delivery and Order change are exactly the
+ * two the original note deliberately left out — "a chase the customer has given
+ * up on, a cancellation with the money back" — and the live evidence reversed
+ * both. They are applied in `ownedIntentCategory` rather than as a drop, so the
+ * refund survives as a fact about the message; see `OUTRANKS_A_REFUND`.
+ */
+
+/**
+ * The REFUND is the thing that has not turned up.
+ *
+ * Predicated on the money, not on a parcel — "still have not received my
+ * refund", "the refund has not come". A delivery case says the opposite way
+ * round: the parcel is late and the refund is what the customer now wants.
+ */
+const REFUND_NOT_RECEIVED =
+  /\b(?:not|n'?t|never|still\s+waiting\s+for|awaiting|chasing)\s+(?:\w+\s+){0,3}?(?:refund|money\s+back|payment)\b|\b(?:refund|money)\s+(?:has\s+|have\s+)?(?:not|n'?t|never)\s+(?:come|arrived|been\s+(?:received|paid|issued))\b/i;
+
+
+/**
  * A RETURN OR EXCHANGE OF SOMETHING ALREADY DELIVERED.
  *
  * WHAT WENT WRONG WITHOUT IT. "I received my parcel today but the colour is not
@@ -2619,8 +2865,64 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
   // refund legitimately owns: a chase the customer has given up on, a
   // cancellation with the money back, a colour nobody likes. None of those
   // raises a problem intent, so none of them reaches this.
+  /*
+   * WHAT HAS NOT ARRIVED IS THE MONEY, NOT A PARCEL.
+   *
+   * "I posted the return last week. I still have not received my refund." reads
+   * as a delivery problem to every arrival test in this file — the customer
+   * says they have not received something. It is a refund chase, and Return
+   * owns it. Without this, widening the refund hold to cover delivery took it.
+   *
+   * The distinction is what the negation is predicated on: "have not received
+   * my REFUND" here, against "the parcel has not arrived … please issue the
+   * refund" in the delivery case, where the refund is asked for outright and
+   * nothing says it is late.
+   */
   if (found.includes("wants_refund") && found.some((intent) => PROBLEM_INTENTS.includes(intent))) {
     found = drop("wants_refund");
+  }
+
+  /*
+   * THE WRONGNESS IS THE CUSTOMER'S OWN.
+   *
+   * Dropped HERE rather than only at the claim, because the corpus reaches this
+   * intent by its own route: `INT-WI11` matches "the wrong one" wherever it
+   * appears, so suppressing the claim left the evidence layer still asserting
+   * it. This is the cross-category judgement — two signals fired and one of
+   * them is about who made the mistake — which is what `refine` is for.
+   */
+  if (found.includes("received_wrong_item") && CUSTOMER_OWNS_THE_MISTAKE.test(text)) {
+    found = drop("received_wrong_item");
+  }
+
+  /*
+   * THE PARCEL'S OWN JOURNEY OWNS THE CONVERSATION.
+   *
+   * A missed attempt, a wrong postcode on the label, a parcel stranded abroad —
+   * each is a delivery problem, and each was reaching a different category. The
+   * intent is asserted here rather than widening the chase patterns because
+   * this is a statement about ownership, not about wording: whatever else the
+   * message says, a parcel that has not reached the customer is Delivery's.
+   *
+   * CANCELLATION STILL WINS, and that exception is the reason this is safe.
+   * "Cancel it, the address is wrong" is an amendment with a delivery reason
+   * attached, and the customer has said plainly what they want done.
+   */
+  if (DELIVERY_PROBLEM.test(text)) {
+    if (!found.includes("delivery_request")) found = [...found, "delivery_request"];
+    if (!/\bcancel/i.test(text)) found = drop("wants_order_change");
+  }
+
+  /*
+   * Somebody changing a fitting is not somebody amending an order. Dropped only
+   * where nothing else in the message names the order or asks to cancel it.
+   */
+  if (
+    found.includes("wants_order_change") &&
+    THIRD_PARTY_PHYSICAL_CHANGE.test(text) &&
+    !/\bcancel|\border\b/i.test(text)
+  ) {
+    found = drop("wants_order_change");
   }
 
   // DAMAGE AGAINST A MISSING PART, decided by what the damage is predicated on
@@ -3097,7 +3399,7 @@ export function classifyMessageCategoryWithFallback(
   // intent is what comes out, because ownership order encodes which problem a
   // message is ABOUT while scoring only counts how many words it happened to use.
   const intents = detectIntents(text);
-  const owned = ownedIntentCategory(intents);
+  const owned = ownedIntentCategory(intents, text);
   if (owned !== null) return owned;
 
   // The strict table still gets the last word on anything intent could not
@@ -3148,9 +3450,83 @@ export function classifyMessageCategoryWithFallback(
  * declined — which is the same rule already applied to the strict table's Admin
  * verdict, stated once for both.
  */
-function ownedIntentCategory(intents: readonly MessageIntent[]): MessageCategory | null {
+/**
+ * The intents that outrank a refund request WITHOUT SUPPRESSING IT.
+ *
+ * WHY OWNERSHIP AND NOT A DROP. A problem intent removes `wants_refund` in
+ * `refine`, and that stays. These two must not: the customer really did ask for
+ * their money back, and something other than the classifier needs to know.
+ * `draft-validation` reads the same intents to check that a reply which cancels
+ * an order also says what happens to the payment — dropping the intent here
+ * silently switched that check off, on the exact conversation it was written
+ * for ("I purchased these by mistake. Could I cancel the order and get a refund
+ * please").
+ *
+ * So the refund survives as a fact about the message, and loses only the
+ * category. A cancellation is an Order change and a parcel that never came is a
+ * Delivery case; in both, the refund is the remedy the customer has named.
+ *
+ * A REFUND CHASE IS EXEMPT, because then the money IS the subject: "I posted
+ * the return last week, I still have not received my refund" is Return's own
+ * case and no delivery reading may take it.
+ */
+/**
+ * THE GOODS ARE STATED TO HAVE ARRIVED — a positive claim, not any mention of
+ * arrival.
+ *
+ * Deliberately narrower than `HAS_THE_GOODS`, which counts `got` and `sent`.
+ * "I paid an electrician on Saturday to fix one I've got from B&Q" says the
+ * customer bought a substitute elsewhere, not that our parcel came, and reading
+ * it as an arrival would hand a live delivery failure to Return.
+ *
+ * Negated arrivals cannot match either: "still hasn't arrived" and "others have
+ * arrived" are outside every shape here, so a chase stays a chase.
+ */
+const GOODS_CONFIRMED_ARRIVED =
+  /\b(?:was|were|is|are|has\s+been|have\s+been)\s+delivered\b|\b(?:i|we)\s+(?:have\s+)?(?:now\s+)?received\b|\bit\s+arrived\b|\barrived\s+(?:on|today|yesterday)\b|\bhas\s+arrived\b/i;
+
+/**
+ * A remedy loses the category to the issue behind it — while the issue is live.
+ *
+ * `wants_refund` survives in the intent list either way; only ownership moves.
+ * A problem intent still removes it in `refine`, and that is unchanged.
+ *
+ * ONCE THE GOODS HAVE ARRIVED, NEITHER DEFERRAL APPLIES. A delivery complaint
+ * about a parcel now sitting on the customer's table, or a cancellation they
+ * are recounting after it shipped anyway, is a RETURN: "I cancelled your order
+ * on Tuesday … the package was delivered on Friday … I formally requested a
+ * refund and need you to arrange for your items to be returned". That is the
+ * before-shipping / post-delivery line, and without it this change moved a real
+ * return into Order change — the one conversation it disturbed that the audit
+ * had not asked about.
+ */
+function ownedIntentCategory(intents: readonly MessageIntent[], text = ""): MessageCategory | null {
+  /*
+   * A CANCELLATION ONLY OUTRANKS A REFUND WHILE THERE IS STILL AN ORDER TO
+   * CANCEL, which is the before-shipping / post-delivery line.
+   *
+   * "I cancelled your order on Tuesday night … the package was delivered on
+   * Friday … I formally requested a refund and need you to arrange for your
+   * items to be returned" is a RETURN. The cancellation is history the customer
+   * is recounting; the goods are on their table. Without the arrival test this
+   * read as a pre-shipping amendment and moved a real return out of the
+   * category that handles it — a conversation the audit did not ask about, and
+   * the only one this change moved by accident.
+   *
+   * A delivery problem needs no such test: a parcel that has not arrived is
+   * Delivery's whether or not anything else is going on.
+   */
+  const deferRefund =
+    intents.includes("wants_refund") &&
+    !REFUND_NOT_RECEIVED.test(text) &&
+    !GOODS_CONFIRMED_ARRIVED.test(text) &&
+    intents.some(
+      (intent) => intent === "delivery_request" || intent === "wants_order_change",
+    );
+
   for (const [intent, category] of INTENT_OWNERSHIP) {
     if (category === "Admin related issues") continue;
+    if (deferRefund && intent === "wants_refund") continue;
     if (intents.includes(intent)) return category;
   }
   return null;
@@ -3259,7 +3635,14 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
       ? "not_stated"
       : claimStatus(text, SOMETHING_ABSENT),
     listing_mismatch: claimStatus(text, LISTING_MISMATCH, { negationReverses: false }),
-    wrong_item: claimStatus(text, A_MISMATCH),
+    // A "different one" the CUSTOMER bought is not one we supplied. Checked
+    // here rather than only in the category predicate because this claim sets
+    // `event = "wrong_item_supplied"` a few lines below, which routes the
+    // message before that predicate is consulted.
+    wrong_item:
+      boughtADifferentOneThemselves(text) || CUSTOMER_OWNS_THE_MISTAKE.test(text)
+        ? "not_stated"
+        : claimStatus(text, A_MISMATCH),
   };
 
   const journey: JourneyStage = looksResolved(text)
@@ -3282,7 +3665,15 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
     ? "refund_or_return"
     : WANTS_A_REPLACEMENT.test(text) && hasTakenDelivery(text)
       ? "exchange_or_replacement"
-      : AMENDMENT_REQUEST.test(text) && !hasTakenDelivery(text)
+      : // The same two conditions the corpus applies to this category — a
+        // delivery problem and somebody's electrician changing a fitting are
+        // neither of them a request to amend an order. Applied here too because
+        // this is a second, independent route to `order_amendment`, and gating
+        // only the corpus left it reachable.
+        AMENDMENT_REQUEST.test(text) &&
+          !hasTakenDelivery(text) &&
+          (!DELIVERY_PROBLEM.test(text) || /\bcancel/i.test(text)) &&
+          (!THIRD_PARTY_PHYSICAL_CHANGE.test(text) || /\bcancel|\border\b/i.test(text))
         ? "order_amendment"
         : asserted("physical_damage") ||
             asserted("functional_fault") ||
@@ -3589,13 +3980,20 @@ const CORPUS_CONDITIONS: Readonly<
   },
 
   // BEFORE SHIPPING is the whole category. A post-delivery exchange is a return.
+  // TWO CONDITIONS ADDED, both from the audit and both about what the message
+  // is actually asking for. A parcel's own journey is Delivery's whatever
+  // wording surrounds it, and somebody's electrician changing a fitting is not
+  // a request to us at all. Cancellation still passes either gate — it names
+  // the amendment outright — which is what keeps the category's own cases.
   "Order change, before shipping queries": (text, semantics) =>
     (semantics.requestedAction === "order_amendment" ||
       AMENDMENT_REQUEST.test(text) ||
       amendsAnOrderAlreadyPlaced(text) ||
       PRE_DISPATCH_INSTRUCTION.test(text)) &&
     !hasTakenDelivery(text) &&
-    semantics.journey !== "returning"
+    semantics.journey !== "returning" &&
+    (!DELIVERY_PROBLEM.test(text) || /\bcancel/i.test(text)) &&
+    (!THIRD_PARTY_PHYSICAL_CHANGE.test(text) || /\bcancel|\border\b/i.test(text))
       ? null
       : "NOT_A_PRE_DISPATCH_AMENDMENT",
 
@@ -3983,7 +4381,7 @@ export function classifyConversationCategory(
   // landing next to each other.
   const perMessage = texts.map((text) => {
     const intents = detectIntents(text);
-    const owned = ownedIntentCategory(intents);
+    const owned = ownedIntentCategory(intents, text);
     if (owned !== null) return owned;
 
     // Admin is the fallback and outranks nothing — see the same step in
@@ -4075,12 +4473,28 @@ export function classifyConversationCategory(
      * case-wins left it on Delivery. Restricting this to arrivals answered the
      * first shape and not the second.
      *
+     * A REMEDY IS NOT A SUPERSEDING CASE, and that is the correction the audit
+     * forced. "Return and refunds" was reaching this as a different case
+     * category, so a chase answered with "yes, a replacement is fine" or
+     * "please refund me" stopped being a delivery problem — the parcel is still
+     * missing and the customer has merely said what they want done about it.
+     *
+     * The two shapes quoted above no longer arrive here as Return at all: a
+     * refund asked for alongside a delivery problem is dropped in `refine`, so
+     * those messages classify as Delivery and the chase stands on its own
+     * terms. What remains is a later message naming a PROBLEM WITH THE GOODS —
+     * damage, a fault, a wrong item, a missing part — which genuinely does
+     * answer "where is it" and replace the question.
+     *
      * Still narrow in the ways that matter: only Delivery is superseded, and
-     * only by a DIFFERENT case category, so a chase followed by another chase
-     * stays exactly where it was.
+     * only by a different PROBLEM category, so a chase followed by another
+     * chase stays exactly where it was.
      */
     const supersedes = cases.find(
-      (index) => index > first && perMessage[index] !== "Delivery queries",
+      (index) =>
+        index > first &&
+        perMessage[index] !== "Delivery queries" &&
+        PROBLEM_CATEGORIES.includes(perMessage[index]!),
     );
     return supersedes === undefined ? perMessage[first]! : perMessage[supersedes]!;
   };

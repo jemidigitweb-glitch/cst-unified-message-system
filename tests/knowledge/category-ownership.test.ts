@@ -365,7 +365,7 @@ describe("a conversation is decided by what is still open", () => {
         "I have paid an electrician to attend on Saturday, I need this today at the latest.",
         "No, as I've said I paid an electrician on Saturday to fix one I got from B&Q. Please issue the refund.",
       ],
-      "Return and refunds",
+      "Delivery queries",
     ],
     [
       "a technical question the customer has to repeat",
@@ -573,13 +573,20 @@ describe("every reported real case, in the customer's own words", () => {
     ).toBe("Admin related issues");
   });
 
+  /**
+   * REVERSED 2026-09-01 by the Aug 27 – Sep 1 eBay audit (conversation 11).
+   *
+   * Previously pinned as Return and refunds. The parcel never came; the refund
+   * is the remedy the customer resorted to, and the delivery failure is what
+   * the conversation is about.
+   */
   it("zain2k11 — a spent delivery deadline followed by a refund request", () => {
     expect(
       classifyConversationCategory([
         "I have paid an electrician to attend on Saturday to put all the lighting in, I need this today or early morning tomorrow at the latest.",
         "No, as I've said I paid an electrician on Saturday to fix one I've got from B&Q. Please issue the refund.",
       ]),
-    ).toBe("Return and refunds");
+    ).toBe("Delivery queries");
   });
 
   it("murgatroyd88 — damage found on unpacking, blamed on the post", () => {

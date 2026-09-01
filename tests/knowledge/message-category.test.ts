@@ -718,12 +718,19 @@ describe("real eBay validation set", () => {
    * rule that Return and refunds requires refund intent, this is the wrong item
    * having been sent.
    */
+  /**
+   * REVERSED 2026-09-01 by the audit (conversation 21); was Wrong item sent.
+   *
+   * "Sorry it's the wrong one, needs to be 5v output" is a customer who ordered
+   * the wrong spec and says so. A customer's own mis-selection is not us
+   * sending the wrong thing, and the remedy they ask for is a return.
+   */
   it("names the mismatch, not the return offered as a way of fixing it", () => {
     expect(
       classifyMessageCategory(
         "Sorry it's the wrong one needs to be 5v output, I can return if possible please.",
       ),
-    ).toBe("Wrong item sent messages");
+    ).toBe("Return and refunds");
   });
 
   /** A return offered with no noun after the verb — every other phrase needs one. */
@@ -826,7 +833,7 @@ describe("required regression set", () => {
     // match — see the note on the phrase itself.
     [
       "Sorry it's the wrong one needs to be 5v output, I can return if possible",
-      "Wrong item sent messages",
+      "Return and refunds",
     ],
     ["Cables are advertised at 6mm but mine is 8.85mm", "Wrong description issues"],
     ["Can this power 12volt car lights?", "Pre sales queries"],
@@ -895,7 +902,7 @@ describe("customer intent validation set", () => {
     ],
     [
       "Sorry it's the wrong one needs to be 5v output, I can return if possible",
-      "Wrong item sent messages",
+      "Return and refunds",
     ],
     ["black machined nuts appears to be missing", "Parts missing queries"],
   ];
@@ -1136,7 +1143,7 @@ describe("refund boundary validation set", () => {
   it("reads a return offered as a correction route as the original problem", () => {
     expect(
       classifyMessageCategory("Sorry it's the wrong one needs to be 5v output, I can return if possible"),
-    ).toBe("Wrong item sent messages");
+    ).toBe("Return and refunds");
   });
 
   it("names a spec question as pre-sales even with a preamble", () => {
@@ -1517,14 +1524,31 @@ describe("the fallback cannot invent a return or refund", () => {
   });
 
   it("does name it once the money is asked for", () => {
-    for (const text of [
-      "I want my money back",
-      "Please refund me",
-      "Can I cancel and get a refund?",
-    ]) {
+    for (const text of ["I want my money back", "Please refund me"]) {
       expect(detectIntents(text), text).toContain("wants_refund");
       expect(classifyMessageCategoryWithFallback(text), text).toBe("Return and refunds");
     }
+  });
+
+  /**
+   * REVERSED 2026-09-01 by the Aug 27 – Sep 1 audit (conversation 33).
+   *
+   * "I purchased these by mistake. Could I cancel the order and get a refund
+   * please." is a pre-shipping cancellation, and CST routes it to Order change;
+   * the refund is the remedy attached to it. This case previously pinned the
+   * category as Return and refunds.
+   *
+   * THE INTENT IS STILL ASSERTED, and that half has not changed. The refund is
+   * a fact about the message whatever category owns it — `draft-validation`
+   * reads it to check that a reply which cancels also says what happens to the
+   * money, and suppressing it switched that check off silently.
+   */
+  it("keeps the refund intent while a cancellation owns the category", () => {
+    const text = "Can I cancel and get a refund?";
+    expect(detectIntents(text)).toContain("wants_refund");
+    expect(classifyMessageCategoryWithFallback(text)).toBe(
+      "Order change, before shipping queries",
+    );
   });
 
   /**
@@ -1652,6 +1676,54 @@ describe("a resolved conversation keeps the category it earned", () => {
     ] as const) {
       expect(classifyConversationCategory([opener, "All good now, thanks"]), opener).toBe(expected);
     }
+  });
+
+  /**
+   * A DIFFERENT ONE THE CUSTOMER BOUGHT IS NOT ONE WE SUPPLIED.
+   *
+   * The live eBay thread this reproduces: a height question, our reply asking
+   * for the listing link, and the customer closing with "I've bought a
+   * different one now sorry" — a withdrawn pre-sales enquiry that classified as
+   * Wrong item sent.
+   *
+   * `A_MISMATCH` read the word "different" with no account of who did what, so
+   * the customer's own purchase and our mis-shipment produced the same claim.
+   */
+  it("keeps pre-sales when the customer says they bought a different one elsewhere", () => {
+    expect(
+      classifyConversationCategory([
+        "Could you tell me the height of this please?",
+        "I've bought a different one now sorry.",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  /** The same withdrawal, however the customer phrases their own purchase. */
+  it.each([
+    "I've bought a different one now sorry.",
+    "I have since ordered a different one",
+    "We went with a different one in the end",
+    "I found a different one elsewhere, thanks anyway",
+    "I chose a different one in the end",
+  ])("does not read %j as a wrong item", (closing) => {
+    expect(
+      classifyConversationCategory(["Could you tell me the height of this please?", closing]),
+    ).toBe("Pre sales queries");
+  });
+
+  /**
+   * The other half of the rule, and the reason the guard is not simply "drop
+   * any sentence containing bought and different". Wrong item still needs only
+   * what it always needed: something different RECEIVED, SENT or DELIVERED.
+   */
+  it.each([
+    "You sent me a different one",
+    "I received a different one",
+    "I ordered the black one and received a different one",
+    "The item is completely different",
+    "you have sent the wrong item",
+  ])("still reads %j as a wrong item", (message) => {
+    expect(classifyMessageCategoryWithFallback(message)).toBe("Wrong item sent messages");
   });
 
   /**
@@ -3529,18 +3601,366 @@ describe("the thread's current unresolved intent", () => {
     ).toBe("Damage queries");
   });
 
-  it("takes the refund once the customer gives up on the deadline", () => {
+  /** REVERSED 2026-09-01 by the audit (conversation 11); was Return and refunds. */
+  it("keeps the delivery problem when the customer gives up and asks for the money", () => {
     expect(
       classifyConversationCategory([
         "I have paid an electrician to attend on Saturday to put all the lighting in, I need this today or early morning tomorrow at the latest.",
         "No, as I've said I paid an electrician on Saturday to fix one I've got from B&Q. Please issue the refund.",
       ]),
-    ).toBe("Return and refunds");
+    ).toBe("Delivery queries");
   });
 
   it("still keeps a chase that nothing has answered", () => {
     expect(
       classifyConversationCategory(["Where is my parcel?", "Still nothing has arrived."]),
     ).toBe("Delivery queries");
+  });
+});
+
+/* ========================================================================= *
+ * LIVE CATEGORY REGRESSIONS
+ *
+ * Each block reproduces a mistake seen on the live inbox, then pins the
+ * boundary it turned on. The negative controls matter as much as the positives:
+ * every one of these fixes widens a signal, and a widened signal is only safe
+ * if the thing next to it still classifies as it did.
+ * ========================================================================= */
+
+describe("live regression — a different one the customer bought", () => {
+  /** Height question, our reply asking for a link, customer goes elsewhere. */
+  it("keeps pre-sales when the enquiry is withdrawn, not answered", () => {
+    expect(
+      classifyConversationCategory([
+        "Could you tell me the height of this please?",
+        "I've bought a different one now sorry.",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  it("still reads a different one WE supplied as a wrong item", () => {
+    for (const message of [
+      "You sent me a different one",
+      "I received a different one",
+      "I ordered the black one and received a different one",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(message), message).toBe(
+        "Wrong item sent messages",
+      );
+    }
+  });
+
+  it("does not lose a return the customer still wants", () => {
+    for (const thread of [
+      ["I've bought a different one now, can I return this?"],
+      ["Can I get a refund for this order", "I have bought a different one elsewhere"],
+      ["I have bought a different one, I want to send this back"],
+    ]) {
+      expect(classifyConversationCategory(thread), thread.join(" | ")).toBe("Return and refunds");
+    }
+  });
+});
+
+describe("live regression — German damage is named with a noun", () => {
+  /**
+   * The pattern held `beschädigt`, `zerbrochen` and `zerkratzt` — all
+   * participles. A German customer reporting the commonest breakage writes a
+   * noun, and every one of these fell to the admin catch-all.
+   */
+  it.each([
+    "Die Lampe ist mit einem Riss im Glas angekommen.",
+    "Der Artikel kam mit einem Riss im Glas an. Bitte um Ersatz.",
+    "Das Glas ist gebrochen angekommen.",
+    "Der Schirm hat eine Delle.",
+    "Das Glas ist gesprungen.",
+    "Der Lampenschirm hat einen Kratzer.",
+  ])("reads %j as damage", (message) => {
+    expect(classifyConversationCategory([message])).toBe("Damage queries");
+  });
+
+  it("keeps damage when the message also asks for paperwork", () => {
+    // Secondary context must not choose the category. An invoice request
+    // alongside a crack is a damage case that also wants a receipt.
+    expect(
+      classifyConversationCategory(["Die Lampe kam mit einem Riss im Glas an. Bitte um Rechnung."]),
+    ).toBe("Damage queries");
+  });
+
+  it("leaves the English damage vocabulary exactly as it was", () => {
+    for (const message of ["The glass arrived cracked", "The shade arrived shattered"]) {
+      expect(classifyConversationCategory([message]), message).toBe("Damage queries");
+    }
+  });
+
+  it("does not read a functional fault as damage", () => {
+    expect(classifyConversationCategory(["The lamp does not work at all"])).toBe("Defective items");
+  });
+});
+
+describe("live regression — an absence stated without the word missing", () => {
+  /**
+   * `no screws` was the one hard-coded instance of a general shape. These are
+   * plain reports of a missing component that contain no form of "missing".
+   */
+  it.each([
+    "I have received the shade but not the fitting",
+    "Received the shade today but there is no fitting with it.",
+    "Shade arrived without the fitting",
+    "The shade came but the fitting was not in the box",
+    "I received the box but not the shade, please refund",
+  ])("reads %j as a missing part", (message) => {
+    expect(classifyConversationCategory([message])).toBe("Parts missing queries");
+  });
+
+  /**
+   * THE BOUNDARY THIS TURNS ON. "not the shade I ordered" is a wrong item and
+   * contains "not the shade"; an absence is coordinated onto something that DID
+   * arrive, a mismatch continues into what was expected.
+   */
+  it("does not read a wrong-item mismatch as an absence", () => {
+    expect(classifyConversationCategory(["It's not the shade I ordered"])).not.toBe(
+      "Parts missing queries",
+    );
+    expect(classifyMessageCategoryWithFallback("You sent me a different one")).toBe(
+      "Wrong item sent messages",
+    );
+  });
+
+  it("does not read a negated problem as an absence", () => {
+    for (const message of [
+      "There is no problem with the shade, thanks",
+      "No issue with the order, just checking the delivery date",
+    ]) {
+      expect(classifyConversationCategory([message]), message).not.toBe("Parts missing queries");
+    }
+  });
+
+  it("keeps a counted shortfall as a quantity case", () => {
+    expect(classifyConversationCategory(["I ordered 6 bulbs and only 3 arrived"])).toBe(
+      "Wrong quantity sent issues",
+    );
+  });
+
+  it("does not read a pre-sales component question as an absence", () => {
+    expect(classifyConversationCategory(["What fitting does this take?"])).toBe(
+      "Pre sales queries",
+    );
+  });
+});
+
+describe("secondary context never chooses the category alone", () => {
+  it("does not categorise from an attachment mention", () => {
+    expect(classifyConversationCategory(["Photo attached"])).not.toBe("Damage queries");
+  });
+
+  it("uses the problem the photo is evidence of", () => {
+    expect(classifyConversationCategory(["Photo attached, the glass is cracked"])).toBe(
+      "Damage queries",
+    );
+  });
+});
+
+/* ========================================================================= *
+ * AUG 27 – SEP 1 2026 eBay AUDIT
+ *
+ * Thirteen live conversations whose category was wrong, pinned in the
+ * customer's own words. Grouped by the boundary each one turned on, because
+ * the group is the generalisation and the conversation is only its witness.
+ * ========================================================================= */
+
+describe("audit — a remedy does not take the case from the issue that caused it", () => {
+  it("keeps a delivery failure closed with a refund request", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi has this been shipped yet! Others I ordered same time from other companies have arrived, your one showing not shipped",
+        "No, as I've said I paid an electrician on Saturday to fix one I've got from. B&q. Please issue the refund.",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("keeps a delivery chase closed with an offer to refund", () => {
+    expect(
+      classifyConversationCategory([
+        "What's happening with these as we're waiting on them to finish a job",
+        "You could just refund it as I need this urgently so I'll just buy some out of CEF",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("keeps a chase when the customer accepts a replacement", () => {
+    expect(
+      classifyConversationCategory([
+        "Hello can you tell me where is the item pleases still hasnt arrived",
+        "Yes replacement is fine thanks",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("keeps a pre-shipping cancellation asked for with the money", () => {
+    expect(
+      classifyConversationCategory([
+        "I purchased these by mistake. Could I cancel the order and get a refund please.",
+      ]),
+    ).toBe("Order change, before shipping queries");
+  });
+
+  it("keeps an electrical failure reported before the refund was asked for", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi received and used today - the smell of electric burning and the best off the switch was horrendous If I hadn't of been at home there would of been a fire ???",
+        "Please could I have a refund",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  it("keeps a breakage reported alongside a request for a replacement", () => {
+    expect(
+      classifyConversationCategory([
+        "in a twist if a screwdriver, the bulbholder on one lamp broke. can you send me a replacement please?",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  /** The other side of the rule: the money itself is what has not arrived. */
+  it("still gives a refund chase to Return and refunds", () => {
+    expect(
+      classifyConversationCategory([
+        "I posted the return last week.",
+        "I still have not received my refund.",
+      ]),
+    ).toBe("Return and refunds");
+  });
+});
+
+describe("audit — the customer's own mistake is not ours", () => {
+  it("reads an apology for the wrong spec as a return", () => {
+    expect(
+      classifyConversationCategory([
+        "Sorry it's the wrong one needs to be 5v output, I can return if possible please.",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  it("reads the customer returning the wrong parcel as a return", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi I am really sorry it would seem my partner has returned the wrong lights to you. Please can i pay for the ones you have received to be sent back to me?",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  it("still reads a wrong item WE sent as a wrong item", () => {
+    for (const text of [
+      "You sent me the wrong item",
+      "Sorry, you sent me the wrong one",
+      "I received a different one",
+    ]) {
+      expect(classifyConversationCategory([text]), text).toBe("Wrong item sent messages");
+    }
+  });
+});
+
+describe("audit — the parcel's own journey belongs to Delivery", () => {
+  it("reads a missed attempt with the wrong postcode as delivery", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi ive had a delivery missed attempt But looking closely they have the incorrect postcode I'll try to put screenshot in here",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("reads a parcel stranded abroad for collection as delivery", () => {
+    expect(
+      classifyConversationCategory([
+        "Hey! I ordered one for me and one for mom of these but the are stranded i Denmark for pickup.",
+        "Want me to pick it up in Kjellerup DK. But my address in Faroe Islands",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("still gives an explicit cancellation to Order change", () => {
+    expect(
+      classifyConversationCategory(["Please cancel my order, the address is wrong"]),
+    ).toBe("Order change, before shipping queries");
+  });
+});
+
+describe("audit — pre-sales enquiries the catch-all was taking", () => {
+  it("reads a pack-size purchase enquiry as pre-sales", () => {
+    expect(
+      classifyConversationCategory([
+        "Hello. I have an inquiry. I would like to purchase Types 4 and 5. Do they come in boxes of 3? I need a total of 8.",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  it("keeps a compatibility thread when an electrician changes a fitting", () => {
+    expect(
+      classifyConversationCategory([
+        "Thanks for your previous message re the black on, found this in your Sellers other items, and the chrome one would work with my decor. Would it work my corded pull switch",
+        "Hi, you have'nt answered my query, will it work with my existing Pull cord?",
+        "Ok, will see if my Electrician can change it to a wall switch, done it before for the bathroom",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  it("still reads a real order amendment as one", () => {
+    expect(
+      classifyConversationCategory(["Can you change my order to the black one please?"]),
+    ).toBe("Order change, before shipping queries");
+  });
+});
+
+describe("audit — a full delivery is not a shortfall", () => {
+  it("reads two shades arriving in the wrong colour as a wrong item", () => {
+    expect(
+      classifyConversationCategory([
+        "I ordered 2 dep blue lampshades ,why have you sent me one green and one blue",
+        "Ordered 2 blue shades ,you have sent ,me one blue and one green Please send second blue shade ,what to do with spare green one!!!",
+      ]),
+    ).toBe("Wrong item sent messages");
+  });
+
+  it("still counts a genuine shortfall as one", () => {
+    for (const text of [
+      "I ordered 6 bulbs and only 3 arrived",
+      "i ordered 2 of these and only received 1 of the drivers",
+    ]) {
+      expect(classifyConversationCategory([text]), text).toBe("Wrong quantity sent issues");
+    }
+  });
+});
+
+describe("audit — \"my order\" is a noun, not the verb", () => {
+  /**
+   * Live 2026-08-21. A damage report that became Wrong item sent, because
+   * `ORDERED_ONE_THING_RECEIVED_ANOTHER` read the NOUN "my order" as the verb
+   * and paired "and unfortunately" against "smashed in" as two different
+   * things. Wrong item outranks damage, so the whole conversation moved.
+   */
+  it("reads a smashed bulb as damage, not a wrong item", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi\n I have just received my order and unfortunately one of the bulbs got smashed in the post (not very well packed) ",
+      ]),
+    ).toBe("Damage queries");
+  });
+
+  it.each([
+    "I received the order and one bulb got broken",
+    "your order arrived and the glass got cracked",
+  ])("is not tricked by %j", (message) => {
+    expect(classifyConversationCategory([message])).toBe("Damage queries");
+  });
+
+  /** The verb sense still reads a genuine contrast. */
+  it("still reads an ordered-versus-received contrast", () => {
+    for (const message of [
+      "I ordered 2 dep blue lampshades ,why have you sent me one green and one blue",
+      "I ordered the plain black one and I have received a black and chrome one",
+      "I order these regularly and this time received the wrong one",
+    ]) {
+      expect(classifyConversationCategory([message]), message).toBe("Wrong item sent messages");
+    }
   });
 });

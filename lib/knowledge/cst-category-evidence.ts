@@ -371,8 +371,34 @@ export type CategoryEvidence = {
  * Exported so the ownership resolver can re-read the captures; nothing else
  * uses it.
  */
+/**
+ * A COUNT AND AN INDIRECT OBJECT ARE NOT THE THING.
+ *
+ * "I ordered 2 blue lampshades, why have you sent me one green and one blue"
+ * captured `2 dep` as what was ordered and `me one` as what arrived — a
+ * quantity and a pronoun, neither of them the product. The contrast the row
+ * exists to read is between the two DESCRIPTIONS, so the count and the "me" are
+ * skipped before the capture starts.
+ *
+ * Both skips are optional, so every shape this already matched still matches.
+ */
+/**
+ * `order` IS A NOUN FAR MORE OFTEN THAN IT IS A VERB HERE.
+ *
+ * "I have just received my ORDER and unfortunately one of the bulbs GOT
+ * smashed in the post" is a damage report. This row read the noun as the verb,
+ * took "and unfortunately" as the thing ordered and "smashed in" as the thing
+ * received, found them different, and asserted a wrong item — which outranks
+ * damage in the ownership table, so the whole conversation became Wrong item
+ * sent.
+ *
+ * The lookbehind keeps the verb sense ("I order these regularly and received
+ * the wrong one") and refuses the noun after a determiner or possessive, which
+ * is how customers write "my order", "the order", "your order". `ordered` is
+ * unaffected and is the form nearly every real contrast uses.
+ */
 export const ORDERED_ONE_THING_RECEIVED_ANOTHER =
-  /\b(?:ordered|order|bought|purchased|asked\s+for|paid\s+for|requested)\s+(?:the\s+|a\s+|an\s+|some\s+|my\s+)?([\w.\-]+(?:\s+[\w.\-]+)?)\b[^.!?]{0,40}?\b(?:received|recieved|got\s+sent|got|you\s+sent|sent\s+me|arrived\s+was|came\s+as|delivered\s+was)\s+(?:the\s+|a\s+|an\s+|some\s+|my\s+)?([\w.\-]+(?:\s+[\w.\-]+)?)/i;
+  /\b(?:ordered|(?<!\b(?:my|the|your|our|his|her|their|its|this|that|a|an|each|every|first|last|whole|entire|original|recent|previous)\s)order|bought|purchased|asked\s+for|paid\s+for|requested)\s+(?:the\s+|a\s+|an\s+|some\s+|my\s+)?(?:\d+\s+|one\s+|two\s+|three\s+|four\s+)?([\w.\-]+(?:\s+[\w.\-]+)?)\b[^.!?]{0,40}?\b(?:received|recieved|got\s+sent|got|you\s+sent|sent\s+me|arrived\s+was|came\s+as|delivered\s+was)\s+(?:me\s+)?(?:the\s+|a\s+|an\s+|some\s+|my\s+)?(?:\d+\s+|one\s+|two\s+|three\s+|four\s+)?([\w.\-]+(?:\s+[\w.\-]+)?)/i;
 
 /**
  * Words that are not a product, so cannot be one side of the contrast.
