@@ -446,27 +446,129 @@ describe("customer product data", () => {
   const assembly = read("lib", "ai", "draft-assembly.ts");
 
   it("is its own section, below the order context and never inside it", () => {
-    expect(panel).toContain("CUSTOMER_PRODUCT_DATA_HEADING");
-    expect(panel).toContain("<CustomerProductData messages={messages} />");
+    expect(panel).toContain("REPORTED_DETAILS_HEADING");
+    // Props asserted individually rather than as one formatted line, so
+    // reformatting cannot fail this and adding a prop cannot silently pass it.
+    expect(panel).toContain("<CustomerReportedProductDetails");
+    for (const prop of [
+      "listingText={listingText}",
+      "messages={messages}",
+      // Which marketplace decides whether an absent image means "none sent" or
+      // "never captured", so it is not optional in the wiring.
+      "marketplace={conversation.marketplace}",
+      "marketplaceLabel={capability.label}",
+    ]) {
+      expect(panel, prop).toContain(prop);
+    }
     expect(panel.indexOf("<OrderContextFacts")).toBeLessThan(
-      panel.indexOf("<CustomerProductData"),
+      panel.indexOf("<CustomerReportedProductDetails"),
     );
     // Not folded into the verified block's field list.
-    expect(panel).not.toMatch(/ORDER_DETAIL_FIELDS[\s\S]{0,200}customerProduct/i);
+    expect(panel).not.toMatch(/ORDER_DETAIL_FIELDS[\s\S]{0,200}customerReported/i);
   });
 
   it("hides itself rather than showing an empty box", () => {
-    const section = panel.slice(panel.indexOf("function CustomerProductData"));
-    expect(section).toContain("if (details.length === 0) return null");
+    const section = panel.slice(panel.indexOf("function CustomerReportedProductDetails"));
+    expect(section).toContain("if (isEmptyReportedDetails(details)) return null");
   });
 
   it("reads the thread the view already holds, fetching nothing", () => {
-    const section = panel.slice(
-      panel.indexOf("function CustomerProductData"),
-      panel.indexOf("export function ContextPanel"),
-    );
-    expect(section).not.toMatch(/fetch\(|useEffect/);
+    const start = panel.indexOf("function CustomerReportedProductDetails");
+    const end = panel.indexOf("export function ContextPanel");
+    // Asserted, not assumed: `indexOf` returning -1 would silently slice a
+    // window that guards nothing, which is how this check quietly stopped
+    // covering the section it names.
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+
+    expect(panel.slice(start, end)).not.toMatch(/fetch\(|useEffect/);
     expect(workspace).toContain("messages={detail?.messages ?? []}");
+  });
+
+  /**
+   * The two columns come from two places, and the section must never fill one
+   * from the other.
+   *
+   * A listing value back-filled from the customer's own claim would print their
+   * complaint as the specification it is being compared against — the exact
+   * provenance blur this whole section exists to prevent, in the one place it
+   * would be invisible.
+   */
+  it("labels all three sources and says so when no listing value was recorded", () => {
+    const section = panel.slice(panel.indexOf("function CustomerReportedProductDetails"));
+    expect(section).toContain("COLUMN_LISTING");
+    expect(section).toContain("COLUMN_EXPECTED");
+    expect(section).toContain("COLUMN_REPORTED");
+    expect(section).toContain("LISTING_VALUE_ABSENT");
+  });
+
+  /**
+   * The verified column may be filled from listing text and nothing else.
+   *
+   * A customer's recollection of what they ordered is now carried right next to
+   * it, which is exactly the arrangement in which a well-meaning "fall back to
+   * the expected value when the listing is empty" would look like an
+   * improvement. It would silently promote a claim to a verified fact in the
+   * cases that end in a refund decision.
+   */
+  it("never falls back to the customer's expected value for the verified column", () => {
+    const reported = read("lib", "domain", "customer-reported-product-details.ts");
+    // The verified column is resolved by one named function, and that function
+    // is handed the LISTING value. The customer's tokens reach it only to
+    // decide whether the listing value measures the same thing.
+    expect(reported).toContain(
+      "listingValue: comparableListingValue(attribute, listing.get(attribute), report.rawValues)",
+    );
+    expect(reported).not.toMatch(/listingValue:[^,\n]*(report\.expected|expectedValue)/);
+
+    // And that function can only ever return the listing value or null.
+    const resolver = reported.slice(
+      reported.indexOf("function comparableListingValue"),
+      reported.indexOf("function customerReportedProductDetails"),
+    );
+    expect(resolver).not.toMatch(/\bexpected\b|customerTokens\.join|return customerTokens/);
+    // The three labels are distinct strings, so no column can read as another.
+    expect(reported).toContain('COLUMN_LISTING = "Listing / Verified"');
+    expect(reported).toContain('COLUMN_EXPECTED = "Customer Expected / Ordered"');
+  });
+
+  /**
+   * Customer evidence is customer-uploaded or it is absent.
+   *
+   * The panel may render only what `customerEvidenceImages` selected out of the
+   * conversation's own inbound messages. A listing photo or a return-log photo
+   * shown under this heading is fabricated evidence in a case that can end in a
+   * refund — and the return log has no buyer column, so its photo may belong to
+   * a different customer entirely.
+   */
+  it("renders only images that came off the conversation's own messages", () => {
+    const section = panel.slice(panel.indexOf("function CustomerEvidenceImages"));
+    expect(section).toContain("details.images.map");
+    for (const forbidden of [
+      "ebay-image-repository",
+      "resolve-image-context",
+      "productImage",
+      "mainImageUrl",
+      "returnImage",
+      "fetch(",
+    ]) {
+      expect(section, `${forbidden} is not a customer upload`).not.toContain(forbidden);
+    }
+  });
+
+  it("states the gap rather than substituting an image when none was sent", () => {
+    const reported = read("lib", "domain", "customer-reported-product-details.ts");
+    expect(reported).toContain('message.direction !== "inbound"');
+    expect(reported).toContain('attachment.kind !== "image"');
+    // Its only image input is the messages parameter — there is no repository,
+    // no fetch and no listing image to substitute.
+    expect(reported).not.toMatch(/fetch\(|Repository|server-only/);
+    expect(panel).toContain("details.imageGap");
+    // The gap is explained per marketplace, never flattened to one sentence:
+    // "the customer sent nothing" is false on eBay, where attachments simply
+    // are not captured on ingestion.
+    expect(panel).toContain("imageGapMessage(details.imageGap");
+    expect(panel).not.toMatch(/No customer-uploaded images on this conversation\./);
   });
 
   it("takes only customer messages, and only readable ones", () => {
