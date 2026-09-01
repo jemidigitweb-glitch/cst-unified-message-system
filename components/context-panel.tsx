@@ -4,11 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 
 import { isUnresolvedReference } from "@/lib/domain/conversation-reference";
 import {
-  CUSTOMER_PRODUCT_DATA_HEADING,
-  type CustomerMessage,
-  extractCustomerProductData,
-  panelCustomerProductData,
-} from "@/lib/domain/customer-product-data";
+  COLUMN_EXPECTED,
+  COLUMN_LISTING,
+  COLUMN_REPORTED,
+  LISTING_VALUE_ABSENT,
+  REPORTED_DETAILS_HEADING,
+  type ReportingMessage,
+  customerReportedProductDetails,
+  imageGapMessage,
+  isEmptyReportedDetails,
+} from "@/lib/domain/customer-reported-product-details";
 import {
   CONTEXT_NOT_LOADED_TEXT,
   MULTIPLE_ORDERS_TEXT,
@@ -86,11 +91,23 @@ function OrderContextFacts({
   conversationContext,
   selectedOrderNumber,
   onSelectOrder,
+  onListingResolved,
 }: {
   conversationId: string;
   conversationContext: ConversationOrderContext;
   selectedOrderNumber: string | null;
   onSelectOrder: (orderNumber: string | null) => void;
+  /**
+   * Hands the authoritative listing text up to the reported-details section.
+   *
+   * ONE ORDER ONLY, and that restriction is the point. Where a conversation
+   * matched several genuine purchases, no listing here has been shown to be the
+   * one the customer is writing about — comparing their complaint against a
+   * guess would produce an expected value with no claim to being expected. The
+   * section still renders in that case; its Listing column just stays empty,
+   * which is the honest reading of "we do not yet know which order this is".
+   */
+  onListingResolved: (listingText: string | null) => void;
 }) {
   const [context, setContext] = useState<OrderContextResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -145,6 +162,29 @@ function OrderContextFacts({
     // would re-run this on every parent render for no behavioural difference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context, conversationId, selectedOrderNumber]);
+
+  /**
+   * Publishes the resolved listing text, so the reported-details section can
+   * put an expected value beside the customer's claim.
+   *
+   * Reports null as deliberately as it reports a value. Nothing matched, still
+   * loading, and "matched several orders" all mean the same thing to the
+   * section above: there is no single listing whose specification this
+   * conversation is entitled to be compared against, so it must show none.
+   */
+  useEffect(() => {
+    if (context === null) {
+      onListingResolved(null);
+      return;
+    }
+    const resolved = orderDetailsFrom(context, conversationContext);
+    onListingResolved(resolved.length === 1 ? (resolved[0]?.productDetails ?? null) : null);
+    // `conversationContext` is rebuilt by the parent on every render and
+    // `onListingResolved` is a plain state setter; including either would
+    // re-run this continuously for no behavioural difference. The fetched
+    // context is the only input that can actually change the answer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context]);
 
   /** Remembers the choice for this conversation, and forgets it when cleared. */
   function chooseOrder(orderNumber: string | null): void {
@@ -308,38 +348,203 @@ function MatchEvidence({ reasons }: { reasons: readonly string[] }) {
 }
 
 /**
- * What the customer said about the product, in their own words.
+ * What the listing says, against what the customer says they received.
  *
  * A SEPARATE SECTION FROM ORDER CONTEXT, deliberately. Everything above was
- * verified against the source database; this was asserted by a member of the
- * public. Putting a colour the customer asked for in the same list as a SKU
- * the backend confirmed would make the two read as one kind of thing, and the
- * reviewer's whole job here is telling them apart.
+ * verified against the source database; the right-hand value in every row below
+ * was asserted by a member of the public. Putting them in one list would make
+ * the two read as one kind of thing, and telling them apart is the reviewer's
+ * whole job here.
  *
- * ABSENT, NOT EMPTY. Most conversations mention no dimensions or colours at
- * all. An empty box headed "Customer product data" would suggest the customer
- * gave none when in fact none was looked for, so the section simply does not
- * render.
+ * TWO VALUES, ALWAYS BOTH LABELLED. A single value under "Dimensions" is
+ * ambiguous in the worst way — the reader cannot tell whether the system is
+ * reporting the specification or the complaint. Every row names which side each
+ * value came from, and a listing value that was never recorded says so in
+ * words rather than being left blank next to a populated claim.
  *
- * Values are slices of the customer's own messages — nothing here paraphrases,
- * normalises or converts, so every row can be checked by reading the thread.
+ * ABSENT, NOT EMPTY. Most conversations report no discrepancy at all, so the
+ * section does not render rather than showing an empty box that would suggest
+ * the customer was asked and said nothing.
  */
-function CustomerProductData({ messages }: { messages: readonly CustomerMessage[] }) {
+function CustomerReportedProductDetails({
+  listingText,
+  messages,
+  marketplace,
+  marketplaceLabel,
+}: {
+  listingText: string | null;
+  messages: readonly ReportingMessage[];
+  /** Decides whether an absent image means "none sent" or "never captured". */
+  marketplace: string;
+  marketplaceLabel: string;
+}) {
   const details = useMemo(
-    () => panelCustomerProductData(extractCustomerProductData(messages)),
-    [messages],
+    () => customerReportedProductDetails({ listingText, messages, marketplace }),
+    [listingText, messages, marketplace],
   );
-  if (details.length === 0) return null;
+  if (isEmptyReportedDetails(details)) return null;
 
   return (
     <section className="flex flex-col gap-2">
-      <SectionHeading>{CUSTOMER_PRODUCT_DATA_HEADING}</SectionHeading>
-      <dl className="flex flex-col gap-0.5 text-sm">
-        {details.map((detail) => (
-          <Row key={`${detail.label}:${detail.value}`} label={detail.label} value={detail.value} />
+      <SectionHeading>{REPORTED_DETAILS_HEADING}</SectionHeading>
+
+      <ul className="flex flex-col gap-2">
+        {details.attributes.map((row) => (
+          <li
+            key={row.attribute}
+            className="rounded border border-current/15 px-2 py-1.5"
+          >
+            <h3 className="text-sm font-medium">{row.attribute}</h3>
+            <dl className="mt-1 flex flex-col gap-0.5">
+              {/*
+                Verified first, then the two customer claims. The order is the
+                point: a reviewer reads what the record says before reading what
+                anyone remembers, and the customer's two values sit together
+                below it as the pair of statements they are.
+              */}
+              <ComparisonRow
+                label={COLUMN_LISTING}
+                value={row.listingValue}
+                absentText={LISTING_VALUE_ABSENT}
+                verified
+              />
+              {/*
+                Rendered only when the customer actually said what they ordered.
+                An always-present blank row here would invite it to be read as
+                "the customer expected nothing", and worse, would sit in the
+                shape of a value waiting to be filled from the listing.
+              */}
+              {row.expectedValue !== null && (
+                <ComparisonRow label={COLUMN_EXPECTED} value={row.expectedValue} />
+              )}
+              <ComparisonRow label={COLUMN_REPORTED} value={row.reportedValue} />
+            </dl>
+            {/*
+              The sentence the value came from, when the value is not already
+              the sentence. A reviewer deciding whether "13 cm" is a wrong item
+              or a customer measuring the shade instead of the drop needs the
+              words, and they are a few inches from the thread that proves them.
+            */}
+            {row.customerWording !== null && (
+              <p className="mt-1 text-xs opacity-60">
+                &ldquo;{row.customerWording}&rdquo;
+              </p>
+            )}
+          </li>
         ))}
-      </dl>
+      </ul>
+
+      <CustomerEvidenceImages details={details} marketplaceLabel={marketplaceLabel} />
     </section>
+  );
+}
+
+/**
+ * One side of a comparison, with the side it came from always named.
+ *
+ * `absentText` is supplied only for the listing value. A missing expected value
+ * is a real, reportable state — we hold no specification for this attribute —
+ * and saying so is what stops the reader assuming the blank means "matches".
+ * The customer's own value is never absent, because a row exists only where
+ * they stated one.
+ */
+function ComparisonRow({
+  label,
+  value,
+  absentText,
+  verified = false,
+}: {
+  label: string;
+  value: string | null;
+  absentText?: string;
+  /**
+   * Whether this row is the authoritative one.
+   *
+   * Carried as a flag rather than inferred from the label so the styling cannot
+   * drift away from the provenance it signals. Only the listing row sets it,
+   * and it is the sole visual difference between the verified value and the two
+   * customer claims — which now sit adjacent and would otherwise read as three
+   * equivalent facts.
+   */
+  verified?: boolean;
+}) {
+  const missing = value === null;
+  return (
+    <div className="flex items-baseline gap-2">
+      <dt
+        className={`w-[10.5rem] shrink-0 text-[11px] ${verified ? "font-medium opacity-75" : "opacity-60"}`}
+      >
+        {label}
+      </dt>
+      <dd className={`text-sm ${missing ? "italic opacity-50" : ""}`}>
+        {missing ? (absentText ?? "") : value}
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * Photographs the CUSTOMER sent, and nothing else.
+ *
+ * The images come from `customerEvidenceImages`, whose only input is this
+ * conversation's own inbound messages — see that function for why listing and
+ * return photographs cannot reach it. Nothing is substituted when there are
+ * none: a listing shot standing in for a missing customer photo would be a
+ * fabricated piece of evidence in a case that may end in a refund.
+ *
+ * THE GAP IS STATED, AND WHICH GAP IT IS MATTERS. "The customer sent no
+ * photograph" is a fact about the customer and the cue to ask for one, which
+ * the damage rules require before anything is offered. "Attachments are not
+ * captured" is a fact about our ingestion and says nothing about the customer —
+ * on eBay they demonstrably do send photographs, so showing the first sentence
+ * there would send a reviewer chasing someone who already complied.
+ */
+function CustomerEvidenceImages({
+  details,
+  marketplaceLabel,
+}: {
+  details: ReturnType<typeof customerReportedProductDetails>;
+  marketplaceLabel: string;
+}) {
+  if (details.imageGap !== null) {
+    return (
+      <p className="text-xs opacity-60">
+        {imageGapMessage(details.imageGap, marketplaceLabel)}
+      </p>
+    );
+  }
+  if (details.images.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1">
+      <h3 className="text-[11px] opacity-60">Customer-uploaded images</h3>
+      <ul data-testid="customer-evidence-images" className="flex flex-wrap gap-2">
+        {details.images.map((attachment) => (
+          <li key={attachment.url}>
+            <a
+              href={attachment.url}
+              target="_blank"
+              // noreferrer as well as noopener: the URL is ours, and the page
+              // the customer's photo opens in does not need to know where it
+              // came from. Same rule as the thread view.
+              rel="noopener noreferrer"
+              title={attachment.label}
+            >
+              {/* Plain <img> for the same reason as the thread view: next/image
+                  would need the storage host in next.config remotePatterns and
+                  would route customer photographs through the optimiser. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={attachment.url}
+                alt={attachment.label}
+                loading="lazy"
+                className="max-h-32 max-w-[120px] rounded border border-black/10 object-cover transition-opacity hover:opacity-90 dark:border-white/15"
+              />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -354,10 +559,10 @@ export function ContextPanel({
   capability: MarketplaceCapability;
   /**
    * The thread, already loaded by the view above — read ONLY to surface what
-   * the customer said about the product. Nothing here fetches it again, and
-   * nothing derived from it is stored.
+   * the customer reported about the product and which images they attached.
+   * Nothing here fetches it again, and nothing derived from it is stored.
    */
-  messages: readonly CustomerMessage[];
+  messages: readonly ReportingMessage[];
   /**
    * The order a reviewer picked, held by the workspace rather than here so the
    * draft panel -- a sibling, not a child -- can send it with the next
@@ -373,9 +578,26 @@ export function ContextPanel({
   selectedOrderNumber: string | null;
   onSelectOrder: (orderNumber: string | null) => void;
 }) {
+  /**
+   * The resolved listing text, TAGGED WITH THE CONVERSATION IT CAME FROM.
+   *
+   * The tag is not defensive padding. `OrderContextFacts` is keyed by
+   * conversation and refetches on a switch, so for the render between "new
+   * conversation selected" and "its context arrived" a bare string would still
+   * hold the PREVIOUS conversation's listing — and this panel would show one
+   * customer's complaint beside another customer's product specification.
+   * Comparing the tag makes that unrepresentable rather than merely unlikely.
+   */
+  const [listing, setListing] = useState<{
+    conversationId: string;
+    text: string | null;
+  } | null>(null);
+
   if (conversation === null) {
     return <p className="p-5 text-sm opacity-70">No conversation selected.</p>;
   }
+
+  const listingText = listing?.conversationId === conversation.id ? listing.text : null;
 
   const first = formatSourceTimestamp(conversation.firstSourceTimestamp);
   const last = formatSourceTimestamp(conversation.lastSourceTimestamp);
@@ -422,19 +644,27 @@ export function ContextPanel({
           conversationContext={conversationContext}
           selectedOrderNumber={selectedOrderNumber}
           onSelectOrder={onSelectOrder}
+          onListingResolved={(text) =>
+            setListing({ conversationId: conversation.id, text })
+          }
         />
       </section>
 
       {/*
         Its own section, a sibling of Context rather than nested inside it.
         Nested, its heading sat at the same indent as the order-context heading
-        directly above and read as a second heading for the same block. It is
-        conversation-level anyway — what the customer asked for is true of the
-        thread whichever order a reviewer picks — so a section of its own is
-        also the more honest placement. Renders nothing at all when the
-        customer stated no product details.
+        directly above and read as a second heading for the same block. What the
+        customer reported is conversation-level anyway — their complaint is true
+        of the thread whichever order a reviewer picks — so a section of its own
+        is also the more honest placement. Renders nothing at all when the
+        customer reported no product details and attached no images.
       */}
-      <CustomerProductData messages={messages} />
+      <CustomerReportedProductDetails
+        listingText={listingText}
+        messages={messages}
+        marketplace={conversation.marketplace}
+        marketplaceLabel={capability.label}
+      />
     </div>
   );
 }
