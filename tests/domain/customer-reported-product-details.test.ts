@@ -741,3 +741,51 @@ describe("audit — the correct extractions stay correct", () => {
     expect(row?.reportedValue).toBe("green, blue");
   });
 });
+
+describe("audit — a contrast the complaint preamble was hiding", () => {
+  /**
+   * Live 94421, in full. The message opens "Unfortunately ITS the wrong
+   * colour", and `its` is a received cue sitting ahead of the expected cue
+   * `should be`. Dividing on cue position put the complaint on the received
+   * side and both values on the expected side, so the row disappeared —
+   * visible only on the whole message, not on the sentence that follows it.
+   */
+  it("reads green brass against light brass through the preamble", () => {
+    const row = customerReportedProductDetails({
+      listingText: "Vintage Ceiling Rose Choose Colour[Green Brass + Hook]",
+      marketplace: "ebay",
+      messages: [
+        inbound(
+          "Unfortunately its the wrong colour - should be the green brass version but a light brass one has been sent",
+        ),
+      ],
+    }).attributes[0];
+
+    expect(row?.listingValue).toBe("Green Brass");
+    expect(row?.expectedValue).toBe("green brass");
+    expect(row?.reportedValue).toBe("light brass");
+  });
+
+  it("reads a plain ordered-versus-received colour swap", () => {
+    const row = customerReportedProductDetails({
+      listingText: "Matt Black Wall Light",
+      marketplace: "ebay",
+      messages: [inbound("I ordered the black one but received a silver one")],
+    }).attributes[0];
+
+    expect(row?.listingValue).toBe("Matt Black");
+    expect(row?.expectedValue).toBe("black");
+    expect(row?.reportedValue).toBe("silver");
+  });
+
+  it("keeps the customer's own casing on both sides", () => {
+    const row = customerReportedProductDetails({
+      listingText: null,
+      marketplace: "ebay",
+      messages: [inbound("I ordered the Black one but received a Silver one")],
+    }).attributes[0];
+
+    expect(row?.expectedValue).toBe("Black");
+    expect(row?.reportedValue).toBe("Silver");
+  });
+});
