@@ -63,10 +63,19 @@ afterEach(() => {
 
 describe("selecting the provider", () => {
   /** 1. Royal Mail selects it. */
-  it("is the provider for the Royal Mail carrier", () => {
-    expect(getTrackingProvider("royal_mail")).toBe(royalMailProvider);
+  /**
+   * REGISTERED, BUT NO LONGER SELECTED. The source-database provider is listed
+   * ahead of this one for every carrier, because it can answer and this cannot —
+   * no endpoint is implemented. What is still pinned is that this provider
+   * declares itself correctly, so the day its endpoint exists, moving it ahead
+   * in `PROVIDERS` is the only change needed.
+   */
+  it("declares itself for the Royal Mail carrier", () => {
     expect(royalMailProvider.carrier).toBe("royal_mail");
     expect(royalMailProvider.name).toBe(ROYAL_MAIL_PROVIDER_NAME);
+    // The registry answers, and it answers with the source database.
+    expect(getTrackingProvider("royal_mail")).toBeDefined();
+    expect(getTrackingProvider("royal_mail")).not.toBe(royalMailProvider);
   });
 
   /**
@@ -77,14 +86,16 @@ describe("selecting the provider", () => {
   it("is reached by every stored Royal Mail spelling", () => {
     for (const stored of ["Royal Mail", "Royal Mail 48", "Royal Mail 24", "Royal Mail 1st Class"]) {
       expect(carrierFrom(stored), stored).toBe("royal_mail");
-      expect(getTrackingProviderFor(stored), stored).toBe(royalMailProvider);
+      // The normaliser still lands on one carrier, and that carrier has a
+      // provider. Which provider is the registry's business, not this file's.
+      expect(getTrackingProviderFor(stored), stored).toBeDefined();
     }
   });
 
-  /** 2. An unsupported carrier must not resolve to Royal Mail. */
+  /** 2. An unsupported carrier must never resolve to Royal Mail's API. */
   it("is not selected for any other carrier", () => {
     for (const carrier of ["evri", "dhl", "dpd", "ups", "usps", "yodel"] as const) {
-      expect(getTrackingProvider(carrier), carrier).toBeUndefined();
+      expect(getTrackingProvider(carrier), carrier).not.toBe(royalMailProvider);
     }
     for (const stored of ["Evri", "Hermes", "DPD", "wayfair", "Other", null]) {
       expect(getTrackingProviderFor(stored), String(stored)).not.toBe(royalMailProvider);

@@ -53,7 +53,7 @@ const singleOrderSnapshot = {
   conversation_id: "32439",
   resolution: "single_order",
   sub_source_id: 1,
-  order_number: "13-15029-03048",
+  order_number: "11-11111-11111",
   order_date: "2026-08-21",
   order_status_summary: "Dispatched",
   tracking_number: null,
@@ -158,7 +158,7 @@ describe("resolveEbayImageContext — return evidence, verified single order onl
       },
     ]);
     const returnsCall = sourceCalls.find((c) => c.text.includes("customer_service.ebay_returns"));
-    expect(returnsCall!.values).toEqual(["13-15029-03048", "167833569765", 1]);
+    expect(returnsCall!.values).toEqual(["11-11111-11111", "167833569765", 1]);
   });
 
   it("never triggers a fresh order resolution -- reads the existing snapshot only, no write query issued", async () => {

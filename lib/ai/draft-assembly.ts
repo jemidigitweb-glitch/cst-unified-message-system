@@ -126,6 +126,23 @@ export function verifiedTrackingBlock(tracking: TrackingResult | null | undefine
 
   const latest = tracking.trackingEvents.at(-1);
 
+  /**
+   * The whole scan history, most recent first.
+   *
+   * A single latest scan is enough to answer "where is it" and useless for the
+   * questions that actually generate work: whether a return arrived, when a
+   * delivery was attempted, how long a parcel has sat unmoved. Those are read
+   * off the shape of the journey, and the model cannot infer a shape from one
+   * point. Reversed here because `trackingEvents` is oldest-first by contract
+   * and a reader wants the newest line first.
+   */
+  const history = [...tracking.trackingEvents]
+    .reverse()
+    .map(
+      (event) =>
+        `  * ${event.timestamp} — ${TRACKING_STATUS_LABELS[event.status]} — ${event.description}`,
+    );
+
   return [
     "VERIFIED TRACKING INFORMATION:",
     `- Carrier: ${CARRIER_LABELS[tracking.carrier]}`,
@@ -135,9 +152,38 @@ export function verifiedTrackingBlock(tracking: TrackingResult | null | undefine
     latest === undefined
       ? "- Latest scan: (none recorded)"
       : `- Latest scan: ${latest.description}${latest.location === null ? "" : ` at ${latest.location}`}`,
+    history.length === 0 ? "- Tracking history: (none recorded)" : "- Tracking history (most recent first):",
+    ...history,
     `- Source: ${tracking.source.retrieval === "live" ? "Live" : "Cached"}`,
     "",
+    /*
+     * EVIDENCE FIRST, CONTENT ONLY IF ASKED FOR. Both halves are here because
+     * each was broken in turn.
+     *
+     * Withholding it produced drafts asking a customer to "send us the latest
+     * tracking update" on a conversation where every scan above was already in
+     * front of the model — asking for a fact we hold reads as not having
+     * looked.
+     *
+     * Supplying it without this rule produced the opposite: a customer writing
+     * "the driver is missing from my order, I need a refund" was answered with
+     * "the carrier last recorded the parcel as delivered on 28 August at
+     * 13:21" — true, verified, and an answer to a question nobody asked. It
+     * reads as deflection, and it buries the part of the reply they wanted.
+     *
+     * So the model is told what the tracking is FOR: reasoning always, saying
+     * only when the customer's own question turns on where the parcel is.
+     */
+    "VERIFIED SHIPMENT TRACKING INFORMATION IS AUTHORITATIVE. Use it before requesting information from the customer. Never ask them for the latest tracking update, the current parcel status, or the tracking history — all of it is above.",
+    "IT IS EVIDENCE, NOT SOMETHING YOU MUST REPEAT. Before putting any of it in the reply, ask yourself: does this customer need delivery or shipment information to have THEIR message answered? If yes — they are asking where the parcel is, whether it arrived, when it will come, about a delay, a delivery attempt, a redelivery or a collection — then say what the carrier recorded and what it means for them. If no — they are asking about a missing part, a refund amount, a replacement decision, a wrong or damaged item, or the product itself — then use the tracking silently, to check your assumptions and to avoid contradicting the record, and do not narrate it. Answer the question they actually asked.",
     "USE ONLY THIS VERIFIED TRACKING INFORMATION. Do not guess the delivery status, do not estimate when it will arrive, and do not describe any movement not listed above. If the status is unknown, say that we are checking with the carrier — do not fill the gap.",
+    /*
+     * The one case where raising it unprompted IS right. Without this, the
+     * relevance rule above would let a customer saying "it never arrived"
+     * against a Delivered scan be answered as though the record agreed with
+     * them.
+     */
+    "If what the customer describes conflicts with the record above, that makes it relevant: say what the carrier recorded, and ask them to confirm the detail that would settle it.",
     tracking.source.retrieval === "cached"
       ? "This was retrieved a short time ago rather than this moment. Do not present it as the position right now — say what the carrier last recorded."
       : null,

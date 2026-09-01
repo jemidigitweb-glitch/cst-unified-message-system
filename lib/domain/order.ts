@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { TrackingResult } from "@/lib/tracking/provider";
+
 import type { VerifiedFact } from "./draft";
 import type { OrderMatchEvidence } from "./order-match-evidence";
 
@@ -134,6 +136,21 @@ export type OrderContextResponse = {
    * sentences about the match, never values a draft may state.
    */
   readonly evidence: OrderMatchEvidence[];
+  /**
+   * Where the parcel has got to, when the same gate the draft uses allowed a
+   * lookup and it produced an answer.
+   *
+   * NULL IS THE ORDINARY CASE and is reported as null rather than as an empty
+   * shape. Every refusal upstream lands here identically: not a delivery query,
+   * no verified tracking number, an unrecognised carrier, a reference recorded
+   * against two orders, an order sent in more than one parcel, or a
+   * non-terminal status too old to state. The panel shows no tracking section
+   * for any of them, which is the same thing it did before this field existed.
+   *
+   * DISPLAY ONLY. Nothing downstream reads it: the draft pipeline resolves its
+   * own tracking through `resolveTrackingContext`, and does not call this route.
+   */
+  readonly tracking: TrackingResult | null;
 };
 
 /**

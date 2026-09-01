@@ -65,14 +65,32 @@ export type TrackingContext =
   | { readonly tracking: TrackingResult }
   | { readonly tracking: null; readonly reason: TrackingSkipReason };
 
-export async function resolveTrackingContext(input: {
-  readonly category: MessageCategory | null;
+/**
+ * The lookup itself, with NO category gate — everything except the question.
+ *
+ * WHY THIS IS SEPARATE, and why the gate did not simply move or disappear. The
+ * category check exists for ONE consumer: the draft. Putting a scan history in
+ * front of the model on a conversation about a cracked lampshade adds tokens,
+ * latency and a fact the reply has no business using, and that argument is
+ * still sound — so `resolveTrackingContext` below is unchanged and the draft
+ * pipeline behaves exactly as it did.
+ *
+ * It was never a good argument for the SIDEBAR. A reviewer answering a damage
+ * claim, a wrong-item complaint or a refund request is often asking precisely
+ * whether the parcel arrived and when — and hiding a verified shipment from
+ * them bought nothing, because a human reading a screen costs no tokens and
+ * states nothing to a customer.
+ *
+ * EVERY OTHER GATE IS SHARED, deliberately, by both callers reaching this one
+ * function: the tracking number and courier must come from a resolved order,
+ * the carrier must normalise, and the provider's own refusals — never polled,
+ * one reference on two orders, an order sent in several parcels, a stale
+ * non-terminal status — all still apply. The only thing display skips is the
+ * question the customer happened to ask.
+ */
+export async function resolveVerifiedTracking(input: {
   readonly facts: readonly VerifiedFact[];
 }): Promise<TrackingContext> {
-  if (input.category !== TRACKING_CATEGORY) {
-    return { tracking: null, reason: "not_a_delivery_query" };
-  }
-
   // Both come from the resolved order, never from the customer's message.
   const trackingNumber = factValue(input.facts, "tracking_number");
   if (trackingNumber === null) return { tracking: null, reason: "no_tracking_number" };
@@ -111,4 +129,23 @@ export async function resolveTrackingContext(input: {
     );
     return { tracking: null, reason: "lookup_failed" };
   }
+}
+
+/**
+ * The draft's entry point: the category gate, then the shared lookup.
+ *
+ * UNCHANGED. Same signature, same first check, same result for every input it
+ * has ever been given. The body below it moved into `resolveVerifiedTracking`
+ * so display could reach it without the gate — sharing the code is what stops
+ * the two paths' safety rules drifting apart, which is the failure a second
+ * copy of this function would eventually produce.
+ */
+export async function resolveTrackingContext(input: {
+  readonly category: MessageCategory | null;
+  readonly facts: readonly VerifiedFact[];
+}): Promise<TrackingContext> {
+  if (input.category !== TRACKING_CATEGORY) {
+    return { tracking: null, reason: "not_a_delivery_query" };
+  }
+  return resolveVerifiedTracking({ facts: input.facts });
 }

@@ -38,6 +38,14 @@ import {
   restorableSelection,
   saveStoredSelection,
 } from "@/lib/domain/order-selection-storage";
+import {
+  NO_HISTORY_TEXT,
+  TRACKING_HEADING,
+  TRACKING_HISTORY_TOGGLE,
+  trackingHistoryEntries,
+  trackingSummaryRows,
+} from "@/lib/domain/shipment-tracking-display";
+import type { TrackingResult } from "@/lib/tracking/provider";
 
 import { StatusBadge } from "./status-badge";
 
@@ -112,11 +120,32 @@ function OrderContextFacts({
   const [context, setContext] = useState<OrderContextResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
+  /**
+   * REFETCHED WHEN THE REVIEWER PICKS AN ORDER, and that is the point.
+   *
+   * Everything the backend derives from a resolved order — including the
+   * shipment — keys off `facts`, and an ambiguous conversation has none until
+   * somebody chooses. Sending the choice is what lets the route resolve it and
+   * come back with the tracking for THAT order.
+   *
+   * NOTHING IS GUESSED WHILE THE ANSWER IS PENDING. With no selection the
+   * request carries none, the resolver returns no facts, and the panel shows no
+   * shipment — rather than the first, the newest, or the likeliest candidate's.
+   * The route re-checks the number against the orders this conversation
+   * actually matched, so what the browser sends is validated, not trusted.
+   */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      setLoading(true);
       try {
-        const response = await fetch(`/api/conversations/${conversationId}/order-context`);
+        const query =
+          selectedOrderNumber === null
+            ? ""
+            : `?selectedOrder=${encodeURIComponent(selectedOrderNumber)}`;
+        const response = await fetch(
+          `/api/conversations/${conversationId}/order-context${query}`,
+        );
         if (!response.ok) throw new Error("request failed");
         const payload = (await response.json()) as OrderContextResponse;
         if (!cancelled) setContext(payload);
@@ -129,7 +158,7 @@ function OrderContextFacts({
     return () => {
       cancelled = true;
     };
-  }, [conversationId]);
+  }, [conversationId, selectedOrderNumber]);
 
   /**
    * Restores a selection this reviewer made before reloading the page.
@@ -200,8 +229,21 @@ function OrderContextFacts({
   }
 
   const orders = orderDetailsFrom(context, conversationContext);
+
+  /*
+   * Tracking is shown even where no order block is, and the two are decided
+   * separately on purpose. The display lookup that fills `orders` reads the
+   * source live and can come back empty on an outage, while `facts` — which is
+   * what tracking was resolved from — survived. Hiding a verified shipment
+   * because a cosmetic lookup failed would withhold the more useful of the two.
+   */
   if (orders.length === 0) {
-    return <p className="text-sm opacity-60">{CONTEXT_NOT_LOADED_TEXT}</p>;
+    return (
+      <div className="flex flex-col gap-5">
+        <p className="text-sm opacity-60">{CONTEXT_NOT_LOADED_TEXT}</p>
+        <ShipmentTracking tracking={context.tracking} />
+      </div>
+    );
   }
 
   /**
@@ -214,31 +256,190 @@ function OrderContextFacts({
    */
   const selectable = orders.length > 1;
 
+  const list = (
+    <ul className="flex flex-col gap-2">
+      {orders.map((order, index) => (
+        <li
+          key={order.orderNumber ?? index}
+          className="rounded border border-current/15 px-2 py-1.5"
+        >
+          {selectable && order.orderNumber !== null && (
+            <OrderChoice
+              conversationId={conversationId}
+              orderNumber={order.orderNumber}
+              checked={selectedOrderNumber === order.orderNumber}
+              onChoose={chooseOrder}
+            />
+          )}
+          <OrderDetailBlock order={order} />
+          <MatchEvidence reasons={reasonsFor(context.evidence, order.orderNumber)} />
+        </li>
+      ))}
+    </ul>
+  );
+
   return (
-    <div className="flex flex-col gap-2">
-      <SectionHeading>Order context</SectionHeading>
-      {/* Said once, above the list: the choice is over the set, not per order. */}
-      {selectable && <p className="text-xs opacity-70">{MULTIPLE_ORDERS_TEXT}</p>}
-      <ul className="flex flex-col gap-2">
-        {orders.map((order, index) => (
-          <li
-            key={order.orderNumber ?? index}
-            className="rounded border border-current/15 px-2 py-1.5"
-          >
-            {selectable && order.orderNumber !== null && (
-              <OrderChoice
-                conversationId={conversationId}
-                orderNumber={order.orderNumber}
-                checked={selectedOrderNumber === order.orderNumber}
-                onChoose={chooseOrder}
-              />
-            )}
-            <OrderDetailBlock order={order} />
-            <MatchEvidence reasons={reasonsFor(context.evidence, order.orderNumber)} />
-          </li>
-        ))}
-      </ul>
+    <div className="flex flex-col gap-5">
+      {/*
+        COLLAPSIBLE ONLY WHERE THERE IS SOMETHING TO COLLAPSE.
+
+        A single matching order renders exactly as it always has — a heading and
+        the block — because a disclosure control there would ask a reviewer to
+        open something to find the one answer that was never in doubt. Several
+        candidates are the case that fills the sidebar, and the case a reviewer
+        is done with once they have chosen, so those get the control.
+
+        OPEN BY DEFAULT WHILE NOTHING IS CHOSEN. The panel's job at that moment
+        is to get a choice made; hiding the candidates behind a click would bury
+        the one action that unblocks everything below, tracking included. Once a
+        choice exists the section starts collapsed, because the chosen order is
+        summarised on the control itself.
+      */}
+      {selectable ? (
+        <details open={selectedOrderNumber === null} className="flex flex-col gap-2">
+          <summary className="cursor-pointer list-none select-none">
+            <span className="flex items-baseline gap-1.5">
+              <SectionHeading>Order context</SectionHeading>
+              <span aria-hidden="true" className="text-[10px] opacity-50">
+                ▼
+              </span>
+            </span>
+            <span className="mt-0.5 block text-xs opacity-70">
+              {selectedOrderNumber === null
+                ? MULTIPLE_ORDERS_TEXT
+                : `Order ${selectedOrderNumber} selected — ${orders.length} matched`}
+            </span>
+          </summary>
+          <div className="mt-2">{list}</div>
+        </details>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <SectionHeading>Order context</SectionHeading>
+          {list}
+        </div>
+      )}
+
+      {/* BELOW the orders, never inside one: the shipment is the order's, and
+          where several orders matched none of them has been shown to be the one
+          this parcel belongs to. The backend enforces that — with no selection
+          it resolves no facts, so `tracking` is null here and this renders
+          nothing. */}
+      <ShipmentTracking tracking={context.tracking} />
     </div>
+  );
+}
+
+/**
+ * Where the parcel has got to, under the orders it belongs to.
+ *
+ * ABSENT RATHER THAN EMPTY. Nothing renders when `tracking` is null, and null
+ * covers every refusal upstream — not a delivery query, no verified reference,
+ * an unrecognised carrier, a reference recorded against two orders, an order
+ * sent in more than one parcel, a status too old to state. A box reading "no
+ * tracking available" on the great majority of conversations would be noise,
+ * and worse, it would invite the reader to wonder which of those six things
+ * happened when the panel cannot tell them.
+ *
+ * NOTHING HERE DECIDES ANYTHING. No query, no carrier call, no choosing between
+ * shipments. This renders `OrderContextResponse.tracking` exactly as the route
+ * produced it, and the route reuses the same gate the draft does — so a reviewer
+ * and the model can never be looking at two different accounts of one parcel.
+ *
+ * WORDING IS LOAD-BEARING and lives in
+ * `lib/domain/shipment-tracking-display.ts`, not here: "Last carrier update",
+ * never "Live location" or "Current position". Every result on this path is the
+ * sync's copy of what a carrier last reported, and a present-tense heading would
+ * promise something the data cannot support.
+ */
+function ShipmentTracking({ tracking }: { tracking: TrackingResult | null }) {
+  if (tracking === null) return null;
+
+  const rows = trackingSummaryRows(tracking);
+  const history = trackingHistoryEntries(tracking);
+
+  return (
+    <section data-testid="shipment-tracking" className="flex flex-col gap-2">
+      <SectionHeading>{TRACKING_HEADING}</SectionHeading>
+
+      {/*
+        STACKED, not label-left/value-right like the order rows above. A
+        tracking reference is long enough to be truncated by a right-aligned
+        column, and a truncated reference is worse than no reference — a
+        reviewer copies it into a carrier's site character for character.
+      */}
+      <dl className="flex flex-col gap-1.5">
+        {rows.map((row) => (
+          <div key={row.label}>
+            <dt className="text-[11px] opacity-60">{row.label}</dt>
+            <dd className="text-sm break-all">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {/*
+        A plain <details>. Collapsed by default because the summary above
+        answers the question a reviewer usually has, and the browser's own
+        disclosure needs no state, no effect and no keyboard handling of ours.
+      */}
+      <details className="mt-0.5">
+        <summary className="cursor-pointer text-[11px] opacity-70 select-none">
+          {TRACKING_HISTORY_TOGGLE}
+        </summary>
+        {history.length === 0 ? (
+          <p className="mt-1.5 text-xs opacity-60">{NO_HISTORY_TEXT}</p>
+        ) : (
+          /*
+            A TIMELINE, newest at the top.
+
+            Date and time stacked on the left, a node on a continuous rule, the
+            carrier's wording on the right, alternating row tint. The rule is
+            drawn on each row rather than as one absolutely-positioned line so
+            it cannot come adrift from the nodes when a description wraps to two
+            lines — which, in a sidebar this narrow, most of them do.
+
+            NO PER-SCAN CARRIER BADGE. The reference design shows one, and this
+            data cannot honestly support it: the carrier is recorded once per
+            SHIPMENT, not per scan, so a badge on every row would be the same
+            value repeated — or worse, a guess. The courier is named once, above,
+            where it is actually known.
+          */
+          <ol data-testid="shipment-tracking-history" className="mt-1.5">
+            {history.map((entry, index) => (
+              <li
+                key={`${entry.date}-${entry.time}-${entry.status}-${index}`}
+                className={`flex gap-2 ${index % 2 === 1 ? "bg-current/[0.035]" : ""}`}
+              >
+                <div className="w-[5.5rem] shrink-0 py-1.5 text-right">
+                  <p className="text-[11px] font-medium">{entry.date}</p>
+                  {entry.time !== "" && (
+                    <p className="text-[11px] opacity-50">{entry.time}</p>
+                  )}
+                </div>
+
+                {/* The rule and its node. `aria-hidden` because it carries no
+                    information a screen reader has not already been given. */}
+                <div aria-hidden="true" className="relative flex w-3 shrink-0 justify-center">
+                  <span
+                    className={`absolute w-px bg-current/20 ${
+                      index === 0
+                        ? "top-3.5 bottom-0"
+                        : index === history.length - 1
+                          ? "top-0 h-3.5"
+                          : "inset-y-0"
+                    }`}
+                  />
+                  <span className="relative mt-2.5 h-2 w-2 rounded-full border border-current/30 bg-current/20" />
+                </div>
+
+                <p className="min-w-0 py-1.5 text-sm break-words">
+                  {entry.description ?? entry.status}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </details>
+    </section>
   );
 }
 

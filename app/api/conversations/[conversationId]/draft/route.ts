@@ -9,14 +9,13 @@ import {
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
 import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
 import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
-import { resolveTrackingContext } from "@/lib/context/resolve-tracking-context";
+import { resolveVerifiedTracking } from "@/lib/context/resolve-tracking-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { VerifiedFact } from "@/lib/domain/draft";
 import type { ConversationDetail } from "@/lib/domain/inbox";
 import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
 import { NO_APPLICABLE_RULE_CODE, coverageFor } from "@/lib/knowledge/rule-coverage";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
-import { classifyConversationCategory } from "@/lib/knowledge/message-category";
 import { getDraft, isDraftStoreMissing } from "@/lib/repositories/draft-repository";
 import { getConversation, parseConversationId } from "@/lib/repositories/conversation-repository";
 import { recordUsage } from "@/lib/sync/ai-usage-writer";
@@ -301,25 +300,29 @@ export async function POST(
     const facts = await verifiedFactsFor(detail.conversation, selectedOrderNumber);
 
     /**
-     * Carrier tracking, for delivery queries only.
+     * Carrier tracking, on EVERY category rather than delivery queries alone.
      *
-     * GATED TWICE, and both gates are in `resolveTrackingContext`: the
-     * conversation has to be a delivery query, and the order has to have
-     * already resolved to a verified tracking number and a carrier we support.
-     * Neither is ever taken from the customer's message.
+     * WHY THE CATEGORY GATE WENT. It was there to keep a scan history out of
+     * the model's context on conversations that had no use for one, and the
+     * saving was real but small. The cost was not: a customer who had returned
+     * an item was being asked to "send us the latest tracking update" by a
+     * draft written on a system that already held the scan showing the parcel
+     * delivered. Asking someone for a fact we have is worse than the tokens
+     * that fact costs, and it happens on exactly the categories the gate
+     * excluded — returns, wrong item, replacement, damage.
+     *
+     * `resolveVerifiedTracking` is `resolveTrackingContext` without that one
+     * check. EVERY OTHER GATE REMAINS, because it is the same function
+     * underneath: the tracking number and courier still come from a resolved
+     * order and never from the customer's message, the carrier must normalise,
+     * and the provider still refuses a reference on two orders, an order sent
+     * in several parcels, and a stale non-terminal status.
      *
      * NEVER FAILS THE DRAFT. It returns a result or null, and null is the
-     * ordinary case — an unsupported carrier, an unreachable API, a refused
-     * credential and a stale cache all produce null, and the draft is written
-     * exactly as it was before this existed. That is why there is no try/catch
-     * here: there is nothing for it to catch.
+     * ordinary case — the draft is then written exactly as it was before this
+     * existed. That is why there is no try/catch here: nothing to catch.
      */
-    const category = classifyConversationCategory(
-      detail.messages
-        .filter((message) => message.direction === "inbound")
-        .map((message) => message.bodyText),
-    );
-    const trackingContext = await resolveTrackingContext({ category, facts });
+    const trackingContext = await resolveVerifiedTracking({ facts });
     if (trackingContext.tracking === null) {
       // The reason, never the reference or the customer's words.
       console.info(`[tracking] no tracking for ${id}: ${trackingContext.reason}`);

@@ -95,7 +95,23 @@ function isSafeAddress(address: string): boolean {
  * of the right shape to assert against, and a documented list of two is far
  * safer than loosening the pattern that catches a genuine one.
  */
-const PLACEHOLDER_ORDER_NUMBERS = ["00-00000-00000", "12-34567-89012"];
+const PLACEHOLDER_ORDER_NUMBERS = [
+  "00-00000-00000",
+  "12-34567-89012",
+  // All-nines and all-ones: neither can be an issued reference, and both are
+  // visibly not one at a glance, which is the property this list is for.
+  "99-99999-99999",
+  /*
+   * `11-11111-11111` replaced a REAL order number that this guard caught in
+   * four committed test files. It existed in `order_management.orders` — one
+   * live row — so it was a genuine leak of customer data into the repository,
+   * not a fixture that merely looked like one. The guard did exactly what it
+   * is for; the fixtures were wrong. Anything of this shape that is not
+   * obviously synthetic belongs in the tests as a synthetic value, never on
+   * this list.
+   */
+  "11-11111-11111",
+];
 
 const PATTERNS: { name: string; pattern: RegExp; safe?: (match: string) => boolean }[] = [
   {

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { loadOrderDisplayDetails } from "@/lib/context/load-order-display";
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
+import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
+import { resolveVerifiedTracking } from "@/lib/context/resolve-tracking-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { OrderContextResponse } from "@/lib/domain/order";
 import { matchEvidenceFor, orderByNearest } from "@/lib/domain/order-match-evidence";
@@ -47,7 +49,7 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ conversationId: string }> },
 ): Promise<NextResponse> {
   const { conversationId } = await context.params;
@@ -64,7 +66,40 @@ export async function GET(
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
     }
 
-    const facts = await resolveEbayOrderContext(getSourcePool(), pool, detail.conversation);
+    let facts = await resolveEbayOrderContext(getSourcePool(), pool, detail.conversation);
+
+    /**
+     * The reviewer's choice, on the SAME terms the draft route already grants
+     * it — see `verifiedFactsFor` there, which this deliberately mirrors.
+     *
+     * ORDER OF PRECEDENCE, NOT A MERGE. The resolver speaks first: the guard is
+     * `facts.length === 0`, so a conversation that resolved to a single order on
+     * its own evidence cannot be overridden by anything a browser sends. A
+     * selection is read only where the resolver returned nothing, which for an
+     * ambiguous conversation is exactly what it returns.
+     *
+     * WHY THE PANEL NEEDS THIS AT ALL. Everything below keys off `facts` —
+     * including the tracking lookup. Without the selection the sidebar had no
+     * facts for an ambiguous conversation, so it could show a reviewer the
+     * order they had just picked and no shipment for it, while the draft
+     * generated from that same choice had both. One choice, two answers.
+     *
+     * `resolveSelectedOrderContext` re-checks the number against the orders
+     * this conversation actually matched, so a request naming any other order
+     * gets nothing back. Nothing here trusts the query string.
+     */
+    const selectedOrderNumber = new URL(request.url).searchParams.get("selectedOrder");
+    if (facts.length === 0 && selectedOrderNumber !== null) {
+      try {
+        facts = await resolveSelectedOrderContext(
+          getSourcePool(),
+          detail.conversation,
+          selectedOrderNumber,
+        );
+      } catch (cause) {
+        console.error("[order-context] selected order resolution failed", cause);
+      }
+    }
 
     /**
      * Read after resolving, deliberately: the call above is what writes this
@@ -123,6 +158,35 @@ export async function GET(
      */
     const evidence = orders.length > 1 ? matchEvidenceFor(orders, detail.messages) : [];
 
+    /**
+     * Where the parcel has got to — WHATEVER THE CUSTOMER ASKED ABOUT.
+     *
+     * `resolveVerifiedTracking`, not `resolveTrackingContext`: display takes
+     * the same lookup without the delivery-query gate. That gate exists to keep
+     * a scan history out of the MODEL's context on a conversation it has no
+     * business using one for, and it earns its place there. It earned nothing
+     * here — a reviewer answering a damage claim, a wrong-item complaint or a
+     * refund request is often asking exactly whether the parcel arrived, and
+     * hiding a verified shipment from them cost them the answer while saving
+     * nothing.
+     *
+     * EVERY OTHER REFUSAL STILL APPLIES, because both paths call one function.
+     * No resolved order, no tracking number, an unrecognised carrier, a
+     * reference recorded against two orders, an order sent in several parcels,
+     * a stale non-terminal status — each still returns null, and the panel
+     * still shows nothing.
+     *
+     * NEVER FAILS THE REQUEST. Order facts are the answer this route exists to
+     * give, and a tracking failure must not cost them.
+     */
+    let tracking: OrderContextResponse["tracking"] = null;
+    try {
+      const trackingContext = await resolveVerifiedTracking({ facts });
+      tracking = trackingContext.tracking;
+    } catch (cause) {
+      console.error("[order-context] tracking lookup failed", cause);
+    }
+
     const payload: OrderContextResponse = {
       conversationId: id,
       facts,
@@ -130,6 +194,7 @@ export async function GET(
       candidates,
       orders,
       evidence,
+      tracking,
     };
     return NextResponse.json(payload);
   } catch (cause) {

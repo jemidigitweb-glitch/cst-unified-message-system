@@ -65,13 +65,13 @@ describe("findReturnEvidenceImages", () => {
     ]);
 
     await findReturnEvidenceImages(client, {
-      orderNumber: "13-15029-03048",
+      orderNumber: "11-11111-11111",
       itemId: "167833569765",
       subSourceId: 1,
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.values).toEqual(["13-15029-03048", "167833569765", 1]);
+    expect(calls[0]!.values).toEqual(["11-11111-11111", "167833569765", 1]);
     expect(calls[0]!.text).toContain("order_id = $1");
     expect(calls[0]!.text).toContain("item_id = $2::bigint");
     expect(calls[0]!.text).toContain("sub_source = $3::int");
@@ -84,7 +84,7 @@ describe("findReturnEvidenceImages", () => {
     ]);
 
     const images = await findReturnEvidenceImages(client, {
-      orderNumber: "13-15029-03048",
+      orderNumber: "11-11111-11111",
       itemId: "167833569765",
       subSourceId: 1,
     });
@@ -103,7 +103,7 @@ describe("findReturnEvidenceImages", () => {
     const { client } = fake([]);
 
     const images = await findReturnEvidenceImages(client, {
-      orderNumber: "13-15029-03048",
+      orderNumber: "11-11111-11111",
       itemId: "167833569765",
       subSourceId: 1,
     });

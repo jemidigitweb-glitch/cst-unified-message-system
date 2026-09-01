@@ -152,28 +152,27 @@ describe("the route refuses before it calls the model", () => {
   });
 
   /**
-   * The second gate. The corpus existed, the model ran, and it cited nothing
-   * that resolves — so the revision is not saved. Not saved and flagged; not
-   * saved at all, which is what makes the contradiction impossible to render.
+   * THE SECOND GATE WAS REMOVED ON PURPOSE, so the two tests that guarded it
+   * are gone with it rather than left failing.
+   *
+   * It discarded any draft whose citations did not resolve against the local
+   * corpus, which made CITATION RESOLUTION the definition of rule
+   * applicability. The two are not the same thing, and it was measured on live
+   * data: a conversation with all 1,329 marketplace-scoped rules available was
+   * refused because the model's references, on that one run, did not resolve —
+   * the rules applied, the bookkeeping was off, and the reviewer was told the
+   * knowledge base had nothing for them.
+   *
+   * Applicability is now decided once, by the retrieval logic, BEFORE the call
+   * — which is the first gate, still guarded above. A stale or legacy-format
+   * reference is an audit finding about a citation, reported by the evidence
+   * endpoint, and it never suppresses a draft. See the comment in the route
+   * that records the same reasoning.
+   *
+   * `citationsAreValid` remains exported from `lib/knowledge/rule-coverage.ts`
+   * and is still unit-tested there; what is gone is the route calling it as a
+   * suppression gate.
    */
-  it("discards rather than saves a draft with no valid citation", () => {
-    const check = route.indexOf("if (!citationsAreValid(");
-    const save = route.indexOf("saveRevision(");
-    expect(check).toBeGreaterThan(-1);
-    expect(check).toBeLessThan(save);
-    expect(route.slice(check, save)).toContain("return NextResponse.json");
-  });
-
-  it("still records the spend of a discarded call", () => {
-    const check = route.indexOf("if (!citationsAreValid(");
-    const save = route.indexOf("saveRevision(");
-    const block = route.slice(check, save);
-    expect(block).toContain("recordUsage");
-    // No revision id, and an outcome that keeps it out of every success reading.
-    expect(block).toContain("draftRevisionId: null");
-    expect(block).toContain("discarded_no_valid_rule");
-  });
-
   it("writes no fallback reply of its own", () => {
     expect(route).not.toMatch(/fallbackReply|genericReply|defaultDraft/i);
   });

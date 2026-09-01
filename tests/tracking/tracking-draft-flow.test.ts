@@ -151,13 +151,20 @@ describe("2. the gate decides whether a carrier is asked at all", () => {
     expect(context.tracking === null && context.reason).toBe("carrier_not_recognised");
   });
 
-  it("stops at a recognised carrier that has no provider", async () => {
+  /**
+   * Every recognised carrier now HAS a provider — the source database serves
+   * all of them — so the gate no longer stops at `carrier_not_supported` for
+   * one. It gets as far as the lookup and stops there instead, with no source
+   * database configured in this environment. The guarantee under test is
+   * unchanged and is the one that matters: no tracking reaches the draft.
+   */
+  it("produces no tracking when the lookup cannot be answered", async () => {
     const context = await resolveTrackingContext({
       category: "Delivery queries",
       facts: [...TRACKED.filter((f) => f.name !== "delivery_courier"), { name: "delivery_courier", value: "Evri" }],
     });
     expect(context.tracking).toBeNull();
-    expect(context.tracking === null && context.reason).toBe("carrier_not_supported");
+    expect(context.tracking === null && context.reason).toBe("lookup_failed");
   });
 });
 

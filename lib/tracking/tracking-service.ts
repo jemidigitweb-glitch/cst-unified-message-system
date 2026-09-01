@@ -8,6 +8,7 @@ import {
   TrackingNotConfigured,
 } from "./provider";
 import { royalMailProvider } from "./royal-mail-provider";
+import { sourceDatabaseProviders } from "./source-database-provider";
 
 /**
  * Which provider answers a tracking lookup.
@@ -42,11 +43,26 @@ import { royalMailProvider } from "./royal-mail-provider";
  */
 
 /**
- * The registered providers.
+ * The registered providers, in precedence order.
  *
- * One entry, and it is not yet able to answer. See the note above.
+ * THE SOURCE DATABASE COMES FIRST, and the order is the whole decision.
+ * `getTrackingProvider` takes the first entry matching a carrier, so listing the
+ * source-database providers ahead of Royal Mail makes them the answer for every
+ * carrier including Royal Mail's own.
+ *
+ * That is deliberate. The upstream application already polls every carrier into
+ * `order_management.shipment_tracking_log` — one synced table covering all
+ * fourteen carriers this system can name — whereas `royalMailProvider` has no
+ * endpoint implemented and, in most environments, no credentials. A registry
+ * that preferred Royal Mail would hand the largest carrier to the one provider
+ * that cannot answer.
+ *
+ * ROYAL MAIL STAYS REGISTERED rather than being deleted. It is the worked
+ * example of a live carrier integration and the place that work resumes; moving
+ * it ahead of the source database is a one-line change on the day its endpoint
+ * exists and its freshness is known to beat a synced copy.
  */
-const PROVIDERS: readonly TrackingProvider[] = [royalMailProvider];
+const PROVIDERS: readonly TrackingProvider[] = [...sourceDatabaseProviders, royalMailProvider];
 
 const NOT_CONFIGURED_REASON =
   "No carrier tracking provider is connected. Tracking is not available for this carrier yet.";
@@ -92,9 +108,16 @@ export function trackingStatus(carrier: Carrier): TrackingProviderStatus {
     : { configured: true, carrier, provider: provider.name };
 }
 
-/** Every carrier that can currently be asked. Empty until one is registered. */
+/**
+ * Every carrier that can currently be asked.
+ *
+ * DEDUPLICATED, because more than one provider may be registered for the same
+ * carrier — Royal Mail has two, the source database and its own API, and only
+ * the first is ever selected. This answers "which carriers can be asked", not
+ * "how many providers exist", so listing Royal Mail twice would be wrong.
+ */
 export function connectedCarriers(): readonly Carrier[] {
-  return PROVIDERS.map((provider) => provider.carrier);
+  return [...new Set(PROVIDERS.map((provider) => provider.carrier))];
 }
 
 /**

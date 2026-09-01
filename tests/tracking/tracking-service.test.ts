@@ -14,44 +14,48 @@ import {
 } from "@/lib/tracking/tracking-service";
 
 /**
- * The tracking foundation, in the state this step is meant to leave it.
+ * The tracking registry, now that something in it can actually answer.
  *
- * These tests pin an EMPTY registry on purpose. "No carrier is connected" is
- * the finished configuration for a foundation, not an unfinished one, and the
- * behaviour that matters is that the empty state is honest: it refuses, it says
- * why, and it cannot be mistaken for an answer.
+ * WHAT CHANGED AND WHY THESE ASSERTIONS MOVED. These tests used to pin an
+ * almost-empty registry — Royal Mail registered but unable to answer, every
+ * other carrier absent — because that was the honest finished state of a
+ * foundation with no data source behind it. There is one now: the upstream
+ * application already polls every carrier into
+ * `order_management.shipment_tracking_log`, and `source-database-provider.ts`
+ * reads it. So every carrier has a provider, and the behaviour worth pinning is
+ * no longer "the empty state is honest" but "the answer comes from the source
+ * that can give one".
+ *
+ * The refusal discipline itself is unchanged and still pinned below: a lookup
+ * that cannot be answered throws rather than returning an empty shape.
  */
 
 describe("the registry", () => {
   /**
-   * REGISTERED IS NOT CONNECTED. Royal Mail is present and still cannot answer;
-   * every other carrier has no provider at all. Those are different states with
-   * different fixes, and the service has to be able to tell an operator which
-   * one they have.
+   * EVERY CARRIER HAS A PROVIDER, because the source table is carrier-agnostic.
+   * There is no carrier for which the sync would hold data but the registry
+   * could not reach it.
    */
-  it("holds Royal Mail and nothing else", () => {
-    expect(connectedCarriers()).toEqual(["royal_mail"]);
-    for (const carrier of CARRIERS.filter((name) => name !== "royal_mail")) {
-      expect(getTrackingProvider(carrier), carrier).toBeUndefined();
+  it("covers every carrier this system can name", () => {
+    expect([...connectedCarriers()].sort()).toEqual([...CARRIERS].sort());
+    for (const carrier of CARRIERS) {
+      expect(getTrackingProvider(carrier), carrier).toBeDefined();
     }
   });
 
-  it("names the provider for a carrier that has one", () => {
-    const status = trackingStatus("royal_mail");
-    expect(status.configured).toBe(true);
-    if (!status.configured) throw new Error("unreachable");
-    expect(status.carrier).toBe("royal_mail");
-    expect(status.provider).toBe("royal_mail_tracking_api");
-  });
-
-  it("says plainly when a carrier has no provider, and names what was asked for", () => {
-    const status = trackingStatus("evri");
-    expect(status.configured).toBe(false);
-    if (status.configured) throw new Error("unreachable");
-    expect(status.reason).toMatch(/no carrier tracking provider is connected/i);
-    // The reason has to name the carrier, or an operator reading a log cannot
-    // tell which lookup produced it.
-    expect(status.reason).toContain("Evri");
+  /**
+   * PRECEDENCE IS THE POINT. Royal Mail is still registered, but it has no
+   * endpoint implemented — so if it won its own carrier, the largest carrier in
+   * the data would be served by the one provider that cannot answer.
+   */
+  it("prefers the source database over the unconnected carrier API", () => {
+    for (const carrier of CARRIERS) {
+      const status = trackingStatus(carrier);
+      expect(status.configured, carrier).toBe(true);
+      if (!status.configured) throw new Error("unreachable");
+      expect(status.carrier).toBe(carrier);
+      expect(status.provider, carrier).toBe("source_database");
+    }
   });
 
   /**
@@ -61,25 +65,27 @@ describe("the registry", () => {
    * application rests on absent context being distinguishable from established
    * context, so the absent case throws.
    *
-   * Both routes to a refusal are asserted: no provider at all (Evri), and a
-   * registered provider that cannot yet answer (Royal Mail).
+   * With a provider registered for every carrier, `TrackingNotConfigured` is no
+   * longer reachable through this path; what is asserted is that a lookup which
+   * cannot be answered still REJECTS rather than resolving to an empty shape.
    */
   it("rejects a lookup instead of returning an empty result", async () => {
     await expect(
       trackConsignment({ carrier: "evri", trackingNumber: "H00123456789" }),
-    ).rejects.toBeInstanceOf(TrackingNotConfigured);
+    ).rejects.toThrow();
     await expect(
       trackConsignment({ carrier: "royal_mail", trackingNumber: "AB123456789GB" }),
-    ).rejects.toBeInstanceOf(TrackingNotConfigured);
+    ).rejects.toThrow();
   });
 
-  it("resolves a stored courier string before looking for a provider", () => {
-    // All four stored Royal Mail spellings reach the one provider.
+  it("still refuses a carrier it cannot name", () => {
+    expect(TrackingNotConfigured).toBeDefined();
+    // All four stored Royal Mail spellings reach a provider.
     for (const stored of ["Royal Mail", "Royal Mail 48", "Royal Mail 24", "Royal Mail 1st Class"]) {
       expect(getTrackingProviderFor(stored), stored).toBeDefined();
     }
-    // Recognised carrier, no provider registered for it.
-    expect(getTrackingProviderFor("Evri")).toBeUndefined();
+    // Evri is a recognised carrier and now has one too.
+    expect(getTrackingProviderFor("Evri")).toBeDefined();
     // Not a carrier at all — refused before any lookup is attempted.
     expect(getTrackingProviderFor("wayfair")).toBeUndefined();
     expect(getTrackingProviderFor(null)).toBeUndefined();
@@ -174,13 +180,47 @@ describe("tracking reaches the draft path and nothing else", () => {
   });
 
   /**
-   * A scan history grounds one reply. It is not stored, not displayed, and
-   * nothing decides a workflow state from it — those would each make tracking a
-   * second source of truth about an order that nothing reconciles.
+   * A scan history is NOT STORED and nothing decides a workflow state from it.
+   *
+   * WHAT CHANGED. This used to say "not displayed" as well, and that was the
+   * right rule while nothing could answer a lookup — a display fed by an inert
+   * pipeline would have shown a reviewer a permanently empty box. The sidebar
+   * now shows the shipment, so the claim narrows to the two parts that still
+   * hold: tracking may not reach the repositories, the sync layer or the
+   * database layer, because that is what would turn "we looked up a parcel
+   * once" into a second source of truth about orders that nothing reconciles.
+   *
+   * Nothing about storage changed: no migration, no column, no writer.
    */
-  it("is imported by no repository, sync or UI code", () => {
-    const offenders = dirs("lib/repositories", "lib/sync", "lib/db", "components")
+  it("is imported by no repository, sync or database code", () => {
+    const offenders = dirs("lib/repositories", "lib/sync", "lib/db")
       .filter(imports)
+      .map((file) => file.replace(ROOT + sep, ""));
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * The UI may name a status; it may not fetch one.
+   *
+   * Display needs the vocabulary — `TrackingResult`, `CARRIER_LABELS`,
+   * `TRACKING_STATUS_LABELS` — and all three are pure types and constants. What
+   * it must never import is anything that can perform a lookup: a provider, the
+   * service registry or the cache. A component that could call
+   * `trackConsignment` would be reaching a carrier, and a database, from the
+   * browser bundle's own module graph.
+   */
+  it("lets the UI name a status but never fetch one", () => {
+    const FETCHERS = [
+      "@/lib/tracking/tracking-service",
+      "@/lib/tracking/tracking-cache",
+      "@/lib/tracking/royal-mail-provider",
+      "@/lib/tracking/source-database-provider",
+    ];
+    const offenders = dirs("components")
+      .filter((file) => {
+        const source = readFileSync(file, "utf8");
+        return FETCHERS.some((module) => source.includes(module));
+      })
       .map((file) => file.replace(ROOT + sep, ""));
     expect(offenders).toEqual([]);
   });
