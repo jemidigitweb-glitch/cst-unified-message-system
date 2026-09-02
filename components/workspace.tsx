@@ -396,15 +396,12 @@ export function Workspace() {
     <div className="flex h-dvh flex-col">
       <header className="flex shrink-0 flex-col gap-2 border-b border-black/10 pt-3 dark:border-white/15">
         <div className="flex flex-col gap-0.5 px-5">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-            <h1 className="text-base font-semibold">CST Unified Message System</h1>
-            <span className="text-xs opacity-60">Review workspace — read only</span>
-          </div>
+          <h1 className="text-base font-semibold">CST Unified Message System</h1>
           {/* One plain sentence for a reviewer who has never opened this
-              screen before — where to look first, before anything else on
-              the page asks for a decision. */}
+              screen before — where to start, and what the screen is for,
+              before anything else on the page asks for a decision. */}
           <p className="text-xs opacity-70">
-            Pick a marketplace below, then a conversation that needs a reply.
+            Pick a marketplace and Generate Your Reply with AI
           </p>
         </div>
         <div className="flex items-end justify-between gap-3 pr-5">
