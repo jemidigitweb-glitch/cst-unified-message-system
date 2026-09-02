@@ -465,6 +465,140 @@ describe("reported: an after-sales request is never a pre-sales enquiry", () => 
   });
 });
 
+describe("reported: the customer's own selection is not our error", () => {
+  /**
+   * moopo_95 (conversations 75 and 76) — was Wrong item sent messages.
+   *
+   * "I've ordered wrong width size. Can I return" is a customer returning a
+   * size THEY chose. Two things hid that. `CUSTOMER_OWNS_THE_MISTAKE` was
+   * written as `ordered THE wrong`, and customers drop the article when an
+   * adjective follows — "ordered wrong width size" — while `I've` leaves no
+   * space for the `\s+` the pattern expected after the pronoun. So the
+   * wrong-item claim stood, and the thread read as us having shipped the wrong
+   * thing.
+   *
+   * With the claim correctly suppressed the message then landed on Pre sales,
+   * because "width" and "size" are product attributes and nothing recognised
+   * "Can I return" as a return: `RETURN_UNDER_WAY` knew "want to return" and
+   * "return it" but not the bare request, which the strict phrase table has
+   * always treated as Return and refunds.
+   */
+  it("reads a customer's own wrong size as a return", () => {
+    expect(
+      classifyConversationCategory(["I ordered wrong width size, can I return"]),
+    ).toBe("Return and refunds");
+  });
+
+  it("reads the reported thread as a return", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi\nUnfortunately as with other order\nI've ordered wrong width size\nCan I return\nThanks",
+        "Hi\nWe returned the above to you and it was delivered back on 30th July\nAwaiting refund\nThankyou",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  /**
+   * THE OTHER SIDE, AND THE WHOLE POINT OF THE BOUNDARY. Wrong item sent needs
+   * evidence that WE supplied something different: our verb, or a receipt set
+   * against what was ordered. Neither of these names the customer as the
+   * chooser, so neither may be softened.
+   */
+  it("still reads our verb as a wrong item", () => {
+    expect(classifyConversationCategory(["You sent wrong width size"])).toBe(
+      "Wrong item sent messages",
+    );
+    expect(classifyConversationCategory(["You sent the wrong size"])).toBe(
+      "Wrong item sent messages",
+    );
+  });
+
+  it("still reads a receipt of the wrong thing as a wrong item", () => {
+    expect(classifyConversationCategory(["I received wrong colour"])).toBe(
+      "Wrong item sent messages",
+    );
+    expect(classifyConversationCategory(["Received black instead of white"])).toBe(
+      "Wrong item sent messages",
+    );
+    expect(classifyConversationCategory(["Ordered 40cm but received 30cm"])).toBe(
+      "Wrong item sent messages",
+    );
+  });
+
+  /**
+   * `bekommen` is the German for the first of the three supply verbs and was
+   * the one missing. The mismatch itself is named in the second message —
+   * "Fotos vom falschen Netzteil" — while the RECEIPT that makes it ours rather
+   * than the customer's mis-order is in the first. Without `bekommen` the
+   * thread reached no supply at all, the wrong-item claim was discarded as a
+   * mis-order, and a seller error was filed as a plain refund.
+   *
+   * Both messages are needed, which is the point: the evidence for a wrong item
+   * is routinely spread across a thread rather than stated in one breath.
+   */
+  it("reads the German ordered-versus-received contrast as a wrong item", () => {
+    expect(
+      classifyConversationCategory([
+        "Guten Tag ich habe bei ihnen ein Netzteil 24v 20a bestellt aber ein Netzteil mit 12v und 40a bekommen",
+        "Hallo im Anhang sende ich ihnen die Fotos vom falschen Netzteil Mit freundlichen Grüßen",
+      ]),
+    ).toBe("Wrong item sent messages");
+  });
+
+  /** The supply verb on its own, at the layer that reads it. */
+  it("counts 'bekommen' as a receipt", () => {
+    expect(
+      semanticsOf("ich habe ein Netzteil 24v bestellt aber ein Netzteil mit 12v bekommen").journey,
+    ).not.toBe("prospective");
+  });
+
+  /** The claim itself, at the layer that decides it. */
+  it.each([
+    ["the customer chose it", "I ordered wrong width size, can I return", "not_stated"],
+    ["the customer chose it, with the article", "I ordered the wrong size", "not_stated"],
+    ["we sent it", "You sent wrong width size", "asserted"],
+    ["they received it", "I received wrong colour", "asserted"],
+  ])("%s", (_name, text, expected) => {
+    expect(semanticsOf(text).claims.wrong_item).toBe(expected);
+  });
+
+  /**
+   * WHAT MUST NOT MOVE WITH IT. A cancellation before dispatch is still an
+   * order change — the goods have not gone anywhere, so nothing is coming
+   * back — and a customer who simply does not like what arrived is still a
+   * return rather than a seller error.
+   */
+  it("keeps a pre-shipping cancellation asked for with the money", () => {
+    expect(
+      classifyConversationCategory([
+        "I purchased these by mistake. Could I cancel the order and get a refund please.",
+      ]),
+    ).toBe("Order change, before shipping queries");
+  });
+
+  it("keeps a change of mind as a return", () => {
+    expect(
+      classifyConversationCategory([
+        "Please can I return these? There's nothing wrong with them I just didn't understand the size codes and these are way too big.",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  /**
+   * A RETURN IS NOT A DELIVERY CHASE, and this is where that rule finally
+   * bites. Once "Can I return" is recognised, a thread arranging a return stops
+   * deferring to the pre-dispatch amendment rule that a mis-order otherwise
+   * triggers.
+   */
+  it("keeps a return label request as a return", () => {
+    expect(
+      classifyConversationCategory([
+        "Sorry, the instructions were not provided so we bought another locally. Please send us the returns label please",
+      ]),
+    ).toBe("Return and refunds");
+  });
+});
+
 /* ========================================================================= *
  * 3. THE TWO AXES
  *

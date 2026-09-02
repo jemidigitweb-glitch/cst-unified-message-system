@@ -1283,6 +1283,14 @@ const RETURN_UNDER_WAY = new RegExp(
     "\\breturns?\\s+(?:label|postage|parcel|address|slip|code|process)\\b",
     // "I want to return item", "is it possible to return these items".
     "\\b(?:want|wish|need|going|like|possible|able)\\s+to\\s+return\\b",
+    // "Can I return", asked with no object after the verb. The strict phrase
+    // table already treats this as Return and refunds — "can return" and "can i
+    // return" were measured at 209 and 61 live occurrences and read back as
+    // customer return requests throughout — and this pattern was the one place
+    // that did not know it. Without it "I've ordered wrong width size. Can I
+    // return" set no return at all, and the sizes in it reached the pre-sales
+    // attribute list instead, filing a returning customer as a buyer.
+    "\\b(?:can|could|may|shall)\\s+(?:i|we)\\s+(?:please\\s+)?(?:just\\s+)?return\\b",
     "\\breturn\\s+(?:it|them|this|these|the|item|items|my)\\b",
     "\\bsend\\s+(?:it|them|this|these)\\s+back\\b",
     // "send parcel straight back to Ledsone", "post the item back". Returns
@@ -1684,9 +1692,17 @@ const THE_ADDRESS_IS_WRONG =
  * narrower than `HAS_THE_GOODS`, which also counts `got` — "I got a different
  * one" is the customer describing their own purchase at least as often as ours,
  * and the ambiguity is the whole problem being fixed here.
+ *
+ * `bekommen` IS THE GERMAN FOR THE FIRST OF THE THREE and was missing, while
+ * `erhalten`, `geliefert` and `angekommen` were all present. It is the verb a
+ * German customer reaches for when they set what they ordered against what
+ * turned up — "ich habe ein Netzteil 24v 20a bestellt aber ein Netzteil mit 12v
+ * und 40a BEKOMMEN" — which is the wrong-item claim stated as plainly as it can
+ * be. Without it that message reached no supply at all and the claim was
+ * discarded as the customer's own mis-order.
  */
 const SOMETHING_DIFFERENT_WAS_SUPPLIED =
-  /\b(?:received|receive|recieved|arrived|delivered|dispatched|despatched|shipped|sent|came|erhalten|geliefert|angekommen)\b/i;
+  /\b(?:received|receive|recieved|arrived|delivered|dispatched|despatched|shipped|sent|came|erhalten|bekommen|zugeschickt|zugesandt|geliefert|angekommen)\b/i;
 
 /**
  * THE CUSTOMER BOUGHT A DIFFERENT ONE THEMSELVES.
@@ -1755,9 +1771,29 @@ function boughtADifferentOneThemselves(text: string): boolean {
  * Unlike `boughtADifferentOneThemselves` this needs no supply check: each shape
  * already names the customer as the actor, so a supply mentioned elsewhere in
  * the message cannot be what these describe.
+ *
+ * ------------------------------------------------------------------------
+ * THE ARTICLE IS OPTIONAL, AND SO IS THE AUXILIARY. BOTH COST A CONVERSATION.
+ * ------------------------------------------------------------------------
+ * The mis-order shape was written as `ordered THE wrong`, and customers do not
+ * reliably put the article in when an adjective follows the noun:
+ *
+ *   "Unfortunately as with other orders I've ordered wrong width size.
+ *    Can I return"
+ *
+ * `I've` is not `I have` to a regex either — the contraction leaves no space
+ * for `\s+` to match. So both halves of that sentence missed, the wrong-item
+ * claim was asserted, and a customer returning a size THEY chose was filed as
+ * us having sent the wrong thing.
+ *
+ * WHAT STAYS OUT IS UNCHANGED, and it is what makes this safe to widen: the
+ * actor must still be the customer and the verb must still be one of choosing.
+ * "You sent wrong width size" names our verb, and "I received wrong colour"
+ * names a receipt rather than a selection — neither can reach this, and both
+ * remain wrong-item cases.
  */
 const CUSTOMER_OWNS_THE_MISTAKE =
-  /\bsorry\b[^.!?]{0,20}\bit'?s\s+the\s+wrong\b|\b(?:i|we)\s+(?:have\s+|had\s+)?(?:ordered|bought|purchased|chose|chosen|picked|selected)\s+the\s+wrong\b|\b(?:i|we|my\s+[a-z]+)\s+(?:have\s+|has\s+|had\s+)?(?:returned|sent\s+back|posted\s+back)\s+(?:the\s+|a\s+)?wrong\b/i;
+  /\bsorry\b[^.!?]{0,20}\bit'?s\s+the\s+wrong\b|\b(?:i|we)\s*(?:'ve|'d)?\s*(?:have\s+|had\s+)?(?:ordered|order|bought|buy|purchased|chose|chosen|picked|selected)\s+(?:the\s+|a\s+|an\s+|my\s+)?wrong\b|\b(?:i|we|my\s+[a-z]+)\s+(?:have\s+|has\s+|had\s+)?(?:returned|sent\s+back|posted\s+back)\s+(?:the\s+|a\s+)?wrong\b/i;
 
 /**
  * Something that should be in the package is not — stated as an ABSENCE.
@@ -4800,6 +4836,16 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
    *
    * Checked across the whole thread, because the customer reports the delivery
    * in one message and the mismatch in another at least as often as not.
+   *
+   * A RETURN BEING ARRANGED WAS TRIED HERE AS EVIDENCE OF RECEIPT AND REMOVED
+   * AGAIN. It is true that nobody returns a parcel they never had, and it read
+   * one German seller error correctly — but it also re-armed the wrong-item
+   * claim for the whole class this gate exists to keep out. A customer sending
+   * something back because "sie passen nicht zur Ambiente", or because it is
+   * "leider die falsche Größe" with no actor named, is returning their own
+   * choice; measured over 180 days it turned four such returns into seller
+   * errors to correct one. Receipt is the right evidence, and arranging a
+   * return is not the same claim.
    */
   const somethingWasSupplied = texts.some(
     (text, index) =>
@@ -4859,7 +4905,22 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
     // this can never drift from the per-message rule it mirrors.
     const chasingTheMoney = spoken.some((text) => REFUND_NOT_RECEIVED.test(text));
     const arrived = spoken.some((text) => GOODS_CONFIRMED_ARRIVED.test(text));
-    if (!chasingTheMoney && !arrived) {
+    /*
+     * SENDING GOODS BACK IS NOT AMENDING AN ORDER, whatever the order's state.
+     *
+     * You can only return what you hold, so a message asking to return is on
+     * the post-delivery side of the line this deferral is drawing — even when
+     * nothing in the thread happens to say the parcel arrived. "I ordered the
+     * wrong size, can I return" is the customer's own mistake and a RETURN;
+     * without this it deferred to Order change on the mis-order wording alone.
+     *
+     * `RETURN_UNDER_WAY` rather than `returnIsUnderWay`, deliberately: the
+     * latter also counts a refund being asked for, and "could I cancel the
+     * order and get a refund please" is exactly the pre-dispatch cancellation
+     * this deferral exists to protect.
+     */
+    const goodsGoingBack = spoken.some((text) => RETURN_UNDER_WAY.test(text));
+    if (!chasingTheMoney && !arrived && !goodsGoingBack) {
       const intents = spoken.flatMap((text) => detectIntents(text));
       if (intents.includes("wants_order_change")) action = "order_amendment";
       else if (intents.includes("delivery_request")) action = "whereabouts";
