@@ -1,3 +1,4 @@
+import type { BundleContext } from "@/lib/domain/bundle-context";
 import { type VerifiedFact, ungroundedClaims } from "@/lib/domain/draft";
 import { type ConversationMessageView, displayBody } from "@/lib/domain/inbox";
 import {
@@ -57,7 +58,16 @@ export type DraftIssueType =
   /** The customer asked for one thing and the reply is about another. */
   | "intent_not_addressed"
   /** The reply asserts something no supplied fact supports. */
-  | "unsupported_claim";
+  | "unsupported_claim"
+  /**
+   * The reply states a specification that came from the SOT product sheet.
+   *
+   * NOT A DEFECT, and the odd one out in this list for that reason. Every other
+   * issue names something wrong with the draft; this one names where a correct
+   * statement came from, because that provenance is invisible in the finished
+   * text and a reviewer cannot ask for it.
+   */
+  | "specification_needs_confirmation";
 
 /**
  * Whether a finding is worth a second model call.
@@ -139,6 +149,14 @@ export type DraftUnderReview = {
    * and nothing beyond it.
    */
   readonly tracking?: TrackingResult | null;
+  /**
+   * A bundle listing's components, when the conversation had one.
+   *
+   * Read only by `sotProvenance`, which needs to know that a quoted
+   * specification came from the product sheet. Nothing else in this file
+   * consults it, and no check treats a bundle as an order or a return fact.
+   */
+  readonly bundle?: BundleContext | null;
   /**
    * Whether the CST knowledge base was reachable for this draft.
    *
@@ -709,6 +727,290 @@ function categoryCoverage(draft: DraftUnderReview, stated: readonly MessageInten
   ];
 }
 
+/* ------------------------------------------------------------------------- *
+ * WHERE A SPECIFICATION CAME FROM
+ * ------------------------------------------------------------------------- */
+
+/**
+ * WHICH FACTS CAME FROM THE PRODUCT SHEET — decided by exclusion.
+ *
+ * Only three resolvers produce facts, and two of them have CLOSED vocabularies:
+ * `resolveEbayOrderContext` emits exactly the eight names below, and
+ * `resolveEbayReturnContext` exactly the three after them. The SOT resolver's
+ * vocabulary is deliberately open — a new column in the sheet reaches a draft
+ * with no code change — so it cannot be enumerated here and must not be.
+ * Anything that is not one of the eleven known names therefore came from SOT.
+ *
+ * That is why this is a list of what SOT is NOT. An earlier version named the
+ * seventeen SOT attributes it knew about; the moment the resolver became
+ * extensible that list was silently incomplete, and a draft quoting a newly
+ * admitted specification would have carried no provenance note at all.
+ *
+ * Restated here rather than imported: the order resolver is `server-only` and
+ * pulls a database driver behind it, and this module is pure by design. Tests
+ * assert the lists stay in step.
+ */
+const NON_SOT_FACT_NAMES: ReadonlySet<string> = new Set([
+  // resolveEbayOrderContext
+  "order_number",
+  "order_status",
+  "order_date",
+  "tracking_number",
+  "delivery_courier",
+  "delivery_address",
+  "sku",
+  "product_title",
+  // resolveEbayReturnContext
+  "return_status",
+  "return_reason",
+  "return_evidence_available",
+]);
+
+/**
+ * SOT facts that NAME the product rather than specify it.
+ *
+ * A reply saying "your ceiling rose" is being polite, not quoting the sheet.
+ * Flagging that would make this finding fire on every SOT-backed draft, which
+ * is the always-flag behaviour it was asked not to be. `sku` needs no entry —
+ * it is already in the closed order vocabulary above.
+ */
+const SOT_IDENTITY_KEYS: ReadonlySet<string> = new Set(["product_name", "product_type"]);
+
+/** Whether a fact is a SOT-derived specification, as opposed to order data or a name. */
+function isSotSpecification(name: string): boolean {
+  return !NON_SOT_FACT_NAMES.has(name) && !SOT_IDENTITY_KEYS.has(name);
+}
+
+const REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/g;
+
+/** A literal, safe to interpolate. Values come from a spreadsheet, not from us. */
+function literal(value: string): string {
+  return value.replace(REGEX_SPECIALS, "\\$&");
+}
+
+/**
+ * The parts of a stored value that a reply could recognisably quote.
+ *
+ * SPLIT ON LIST SEPARATORS, because several SOT columns hold lists rather than
+ * single values — `bulb_base_compat` is "E26 / E27", `recommended_bulb_type` is
+ * "ST64,G95, G80,G125,T145,A60", `parts_list` is a semicolon-separated bill of
+ * materials. A reply quotes one item from those, never the whole string, so
+ * matching the value whole would find nothing.
+ *
+ * TWO CHARACTERS IS THE FLOOR for text. `reducer_ring_included` is stored as
+ * "Y", and a one-letter token appears in almost every English sentence — a
+ * check that fired on it would fire on everything. That attribute therefore
+ * cannot raise this finding on its own, which is correct: a reply cannot quote
+ * "Y" recognisably.
+ */
+function quotableParts(value: string): string[] {
+  return value
+    .split(/[;,/]|\s+[-–—]\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 2);
+}
+
+/** Whole numbers and decimals, matched as standalone values rather than digit runs. */
+function isNumeric(part: string): boolean {
+  return /^\d+(?:[.,]\d+)?$/.test(part);
+}
+
+/** A stored yes/no. The sheet writes these as single letters or short words. */
+function isBoolean(value: string): boolean {
+  return /^(?:y|n|yes|no)$/i.test(value.trim());
+}
+
+/** Prefixes and suffixes the sheet adds to a subject, which a reply never says. */
+const NAME_AFFIXES = /^(?:cap|is|has)_|_(?:incl|included|req|required|flag|compat|only)$/g;
+
+/**
+ * The SUBJECT a boolean attribute is about, as words a reply would use.
+ *
+ * WHY NAMES AND NOT VALUES, HERE ONLY. A finding normally proves a fact was used
+ * by finding its VALUE in the reply. That is impossible for the sheet's boolean
+ * columns: `dimmable` is stored as "N" and `table_lamp` as "Y", and a single
+ * letter appears in every English sentence. Measured live, a draft answering
+ * "No, this bulb is not dimmable" from `dimmable = N` reached the reviewer with
+ * no provenance note at all and `requiresReview: false` — a categorical product
+ * claim, sourced from a spreadsheet, marked as needing no human check.
+ *
+ * So for booleans the ATTRIBUTE NAME is matched instead: `table_lamp` becomes
+ * "table lamp", `reducer_ring_included` becomes "reducer ring". If the reply
+ * discusses that subject while holding a boolean fact about it, the fact was
+ * used.
+ *
+ * THIS DOES NOT INTERPRET Y OR N. It never decides that "Y" means yes, and the
+ * value still reaches the model exactly as stored — see
+ * `resolve-sot-product-context.ts`. The affixes stripped here are stripped for
+ * MATCHING ONLY and change nothing that is sent anywhere.
+ *
+ * A SINGLE-WORD SUBJECT MUST BE LONG to be used, and that threshold is not
+ * arbitrary. `led_only` reduces to "led" and `hook_included` to "hook", each of
+ * which appears in ordinary prose about lighting. `switch_included` reduces to
+ * "switch" — and "please switch off the power before fitting" is a sentence
+ * these drafts write constantly, which would have flagged the wrong fact on
+ * every ceiling-rose reply. "dimmable", "cordgrip" and "assembly" clear it;
+ * multi-word subjects like "table lamp" and "reducer ring" are distinctive
+ * enough on their own.
+ */
+function booleanSubject(key: string): string | null {
+  const subject = key.replace(NAME_AFFIXES, "").replace(/_+/g, " ").trim();
+  if (subject.includes(" ")) return subject.length >= 5 ? subject : null;
+  return subject.length >= 8 ? subject : null;
+}
+
+/**
+ * Whether the reply quotes this part of a stored value.
+ *
+ * A number is matched as a standalone value — `(?<![\d.,])100(?![\d.,])` — so
+ * "100" does not match inside "1002" or "10.0". Text is matched on word
+ * boundaries and case-insensitively, because the sheet writes "Easy Fit" and a
+ * reply writes "easy fit".
+ */
+function replyQuotes(reply: string, part: string): boolean {
+  const pattern = isNumeric(part)
+    ? new RegExp(`(?<![\\d.,])${literal(part)}(?![\\d.,])`)
+    : new RegExp(`\\b${literal(part)}\\b`, "i");
+  return pattern.test(reply);
+}
+
+/**
+ * A REVIEW FLAG on a draft that states a specification from the product sheet.
+ *
+ * MINOR, ALWAYS. Nothing here says the draft is wrong — the values came from a
+ * verified fact and the model quoted them correctly. What is missing is where
+ * they came from, and that is not recoverable from the finished text: "The
+ * ceiling rose is 100 mm in diameter" reads identically whether the number came
+ * from the order record or from a spreadsheet mirror that a human has not
+ * finished curating. The reviewer is the one who can check it against the
+ * listing, and they can only do that if they are told to.
+ *
+ * So this cannot make `regenerationWarranted` true, cannot reach `corrections`,
+ * and cannot change a word the model writes — the same confinement as
+ * `categoryCoverage`. It puts a sentence in front of the person who was going
+ * to read the draft anyway.
+ *
+ * POST-SALE NEVER REACHES HERE. The draft route asks for SOT facts only when no
+ * order resolved, so a conversation with a verified order carries none of these
+ * names and this returns on the first line.
+ *
+ * IDENTIFICATION IS FILTERED OUT, SPECIFICATION IS NOT. A part of a stored value
+ * that also appears in the product's own name is the product being named, not a
+ * specification being quoted — "Ceiling rose" is the first item of `parts_list`
+ * AND the whole of `product_type`, and a reply mentioning it is not making a
+ * claim about the goods. Numbers are deliberately exempt from that filter: a
+ * product called "100mm Metal Ceiling Rose" would otherwise hide its own
+ * diameter from this check, and missing a real specification matters more than
+ * flagging a draft that only named the product.
+ *
+ * ONE FINDING PER DRAFT, not one per attribute. A reply answering three
+ * questions would otherwise produce three near-identical notes for a reviewer
+ * to read past.
+ */
+function sotProvenance(draft: DraftUnderReview): DraftFinding[] {
+  /*
+   * BUNDLE ATTRIBUTES COUNT TOO.
+   *
+   * A bundle listing's facts do not travel in `facts` — they are structured per
+   * component, because component attribute names collide. Read flat here, and
+   * only here: provenance asks "was a sheet value quoted", which does not care
+   * which component it came from. Without this the finding would silently stop
+   * firing for exactly the listings the bundle resolver exists to answer.
+   */
+  const bundleAttributes: VerifiedFact[] = [
+    ...(draft.bundle?.common ?? []).flatMap((component) =>
+      component.attributes.map((attribute) => ({ name: attribute.key, value: attribute.value })),
+    ),
+    ...(draft.bundle?.varyingAgreement ?? []).map((attribute) => ({
+      name: attribute.key,
+      value: attribute.value,
+    })),
+  ];
+
+  const specifications = [...draft.facts, ...bundleAttributes].filter((fact) =>
+    isSotSpecification(fact.name),
+  );
+  if (specifications.length === 0) return [];
+
+  const identity = new Set(
+    draft.facts
+      .filter((fact) => SOT_IDENTITY_KEYS.has(fact.name))
+      .flatMap((fact) => fact.value.toLowerCase().match(/[a-z]{2,}/g) ?? []),
+  );
+
+  /** A part is identification when every word in it is part of the product's name. */
+  const namesTheProduct = (part: string): boolean => {
+    const words = part.toLowerCase().match(/[a-z]{2,}/g);
+    return words !== null && words.length > 0 && words.every((word) => identity.has(word));
+  };
+
+  const quoted: VerifiedFact[] = [];
+  const matchedParts: string[] = [];
+  for (const fact of specifications) {
+    const whole = fact.value.trim();
+
+    /*
+     * BOOLEANS ARE MATCHED ON THE ATTRIBUTE'S SUBJECT, not on "Y" or "N".
+     * See `booleanSubject` for why, and for why this is not an interpretation
+     * of the stored value.
+     */
+    if (isBoolean(whole)) {
+      const subject = booleanSubject(fact.name);
+      if (subject !== null && !namesTheProduct(subject) && replyQuotes(draft.reply, subject)) {
+        quoted.push(fact);
+        matchedParts.push(subject);
+      }
+      continue;
+    }
+
+    for (const part of quotableParts(fact.value)) {
+      /*
+       * THE IDENTITY FILTER APPLIES TO FRAGMENTS, NOT TO WHOLE VALUES.
+       *
+       * "Ceiling rose" is one item out of `parts_list` and also the entire
+       * `product_type`, so a reply mentioning it is naming the product. But
+       * `material_primary` is stored as exactly "Metal", and "Metal" also
+       * appears in "100mm Metal Ceiling Rose with Cord Grip" — filtering that
+       * would mean a reply answering "what is it made of?" never registered as
+       * quoting the material. When the whole stored value of a specification is
+       * what the reply used, that is the specification being quoted, whatever
+       * words the product name happens to share with it.
+       */
+      if (part !== whole && !isNumeric(part) && namesTheProduct(part)) continue;
+      if (!replyQuotes(draft.reply, part)) continue;
+      quoted.push(fact);
+      matchedParts.push(part);
+      break;
+    }
+  }
+
+  if (quoted.length === 0) return [];
+
+  return [
+    {
+      issue: "specification_needs_confirmation",
+      // NEVER critical. See the note above: this must not buy a model call.
+      severity: "minor",
+      /*
+       * The sentence to CHECK, not the sentence at fault.
+       *
+       * The field is named for the commoner case, where a finding quotes what
+       * went wrong. Here the quoted line is correct as written and simply needs
+       * confirming, and pointing the reviewer at it is worth more than the
+       * "in the reply as a whole" an empty string would render.
+       */
+      incorrectStatement:
+        sentences(draft.reply).find((sentence) =>
+          matchedParts.some((part) => replyQuotes(sentence, part)),
+        ) ?? "",
+      verifiedFact: quoted.map((fact) => `${fact.name} = ${fact.value}`).join("; "),
+      ruleThatApplies: "Product specifications come from the SOT product data sheet",
+      regenerationReason:
+        "Product specification is sourced from SOT product data. Confirm before use.",
+    },
+  ];
+}
+
 function intentCheck(draft: DraftUnderReview): DraftFinding[] {
   const findings: DraftFinding[] = [];
   const intents = customerIntents(draft.messages);
@@ -1105,6 +1407,19 @@ export function validateDraftAccuracy(draft: DraftUnderReview): DraftValidation 
      */
     ...(draft.knowledgeAvailable ? ruleCheck(draft) : []),
     ...(draft.knowledgeAvailable ? intentCheck(draft) : []),
+    /*
+     * LAST, and NOT gated on the knowledge base.
+     *
+     * Last because it is the mildest thing in the list: it names no defect at
+     * all, only where a correct statement came from, so a reviewer reading top
+     * to bottom meets it after everything that might actually be wrong.
+     *
+     * Ungated because it is a question about the FACTS, not about the rules —
+     * like `factCheck` and `hallucinationCheck` above it. A draft written in
+     * restricted mode can still quote a sheet-sourced dimension, and the
+     * reviewer needs to know that whether or not the corpus was reachable.
+     */
+    ...sotProvenance(draft),
   ];
 
   const critical = findings.filter((finding) => finding.severity === "critical");

@@ -1,3 +1,4 @@
+import type { BundleContext } from "@/lib/domain/bundle-context";
 import type { DraftResult, VerifiedFact } from "@/lib/domain/draft";
 import type { ConversationMessageView } from "@/lib/domain/inbox";
 import type { TrackingResult } from "@/lib/tracking/provider";
@@ -63,6 +64,17 @@ export type DraftRequest = {
    * omitted entirely rather than stating an empty one.
    */
   readonly tracking?: TrackingResult | null;
+  /**
+   * A bundle listing's verified components, when the listing is one.
+   *
+   * OPTIONAL AND USUALLY ABSENT, like `tracking`. Only a pre-sale eBay
+   * conversation whose listing has no single-SKU product record, and whose
+   * per-option SKUs decompose consistently in the order system's own combo
+   * table, gets one — see `lib/context/resolve-bundle-product-context.ts`.
+   * Absent means "not established", never "this is not a bundle", and the prompt
+   * block is omitted entirely rather than stating an empty one.
+   */
+  readonly bundle?: BundleContext | null;
 };
 
 /**

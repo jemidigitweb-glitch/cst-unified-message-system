@@ -65,6 +65,7 @@ function check(outcome: DraftOutcome, request: DraftRequest): DraftValidation {
     facts: request.facts,
     messages: request.messages,
     tracking: request.tracking,
+    bundle: request.bundle,
     knowledgeAvailable: outcome.knowledgeAvailable,
   });
 }

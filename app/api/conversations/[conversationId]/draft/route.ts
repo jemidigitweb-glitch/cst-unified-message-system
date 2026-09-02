@@ -9,8 +9,11 @@ import {
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
 import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
 import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
+import { resolveBundleProductContext } from "@/lib/context/resolve-bundle-product-context";
+import { resolveSotProductContext } from "@/lib/context/resolve-sot-product-context";
 import { resolveVerifiedTracking } from "@/lib/context/resolve-tracking-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
+import type { BundleContext } from "@/lib/domain/bundle-context";
 import type { VerifiedFact } from "@/lib/domain/draft";
 import type { ConversationDetail } from "@/lib/domain/inbox";
 import { loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
@@ -63,6 +66,11 @@ export const dynamic = "force-dynamic";
  * either just wrote or already found, so it never resolves a return against
  * an order this request has not itself already verified.
  *
+ * `resolveSotProductContext` adds catalogue attributes — dimensions, fitting,
+ * materials, never stock or price — and ONLY for a conversation that resolved no
+ * order, which in practice means a pre-sale enquiry. See the call site for why
+ * the two must not both contribute.
+ *
  * Resolution failure (a source-DB hiccup, an unexpected row shape) must not
  * fail the draft over a context lookup — logged and treated as no context,
  * the same "never fails the caller" discipline as the rule-analysis and
@@ -72,7 +80,7 @@ export const dynamic = "force-dynamic";
 async function verifiedFactsFor(
   conversation: ConversationDetail["conversation"],
   selectedOrderNumber: string | null,
-): Promise<VerifiedFact[]> {
+): Promise<{ facts: VerifiedFact[]; bundle: BundleContext | null }> {
   const sourcePool = getSourcePool();
   const appPool = getAppPool();
 
@@ -118,7 +126,61 @@ async function verifiedFactsFor(
     console.error("[draft] return context resolution failed", cause);
   }
 
-  return [...orderFacts, ...returnFacts];
+  /**
+   * The SOT catalogue, and ONLY where no order resolved.
+   *
+   * SAME PRECEDENCE RULE AS THE SELECTED-ORDER FALLBACK ABOVE, for a sharper
+   * reason. A resolved order names the SKU the customer actually bought; the SOT
+   * lookup names the SKU on the listing's PARENT row, which on a multi-variation
+   * listing is one specific variant and not necessarily theirs. Contributing both
+   * would put two `sku` facts and two product descriptions in front of the model
+   * with no way to tell which describes the item in the customer's hands — a
+   * contradiction dressed as two verified facts.
+   *
+   * So this answers exactly the case that has no answer today: a pre-sale
+   * enquiry, where there is no order to be more specific than the listing. Every
+   * conversation with a resolved order is untouched, and so is every marketplace
+   * other than eBay.
+   *
+   * Guarded separately, like the two above, so a SOT lookup failure cannot
+   * discard order or return facts that already resolved.
+   */
+  let productFacts: VerifiedFact[] = [];
+  if (orderFacts.length === 0) {
+    try {
+      productFacts = await resolveSotProductContext(sourcePool, conversation);
+    } catch (cause) {
+      console.error("[draft] SOT product context resolution failed", cause);
+    }
+  }
+
+  /**
+   * THE BUNDLE FALLBACK, and only where the direct lookup found nothing.
+   *
+   * A listing sold as a bundle has no single product record to resolve — its
+   * parent row carries either a placeholder or a combo SKU that no product sheet
+   * indexes. The components are described individually, and the order system's
+   * own combo table says which they are. See
+   * `lib/context/resolve-bundle-product-context.ts`.
+   *
+   * SECOND, NEVER INSTEAD. A listing that resolved to one product is fully
+   * answered already, and asking again could only add a second, competing
+   * description of the same thing. Ordered this way, a conversation that works
+   * today is byte-identical tomorrow.
+   *
+   * Guarded separately, like the three above, so a bundle lookup failure cannot
+   * discard facts that already resolved.
+   */
+  let bundle: BundleContext | null = null;
+  if (orderFacts.length === 0 && productFacts.length === 0) {
+    try {
+      bundle = await resolveBundleProductContext(sourcePool, conversation);
+    } catch (cause) {
+      console.error("[draft] bundle context resolution failed", cause);
+    }
+  }
+
+  return { facts: [...orderFacts, ...returnFacts, ...productFacts], bundle };
 }
 
 export async function GET(
@@ -297,7 +359,7 @@ export async function POST(
     // Gemini is handed the rendered corpus. Both are asked for the same
     // behaviour and both return the same validated shape, so nothing here
     // changes when the provider does.
-    const facts = await verifiedFactsFor(detail.conversation, selectedOrderNumber);
+    const { facts, bundle } = await verifiedFactsFor(detail.conversation, selectedOrderNumber);
 
     /**
      * Carrier tracking, on EVERY category rather than delivery queries alone.
@@ -336,6 +398,7 @@ export async function POST(
       marketplace: detail.conversation.marketplace,
       listingItemRef: detail.conversation.listingItemRef,
       tracking: trackingContext.tracking,
+      bundle,
     });
 
     /*
