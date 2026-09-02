@@ -441,7 +441,14 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     // "shattered" was the gap this entry closes: the classifier knew "smashed"
     // and "broken" and had never been given the third word the same CST row
     // uses for the same thing.
-    pattern: /\b(?:smash\w*|shatter\w*|broken|breakage|zerbrochen|zersplittert)\b/i,
+    //
+    // INFLECTIONS SPELLED OUT. `shatter\w*` also matched SHATTERPROOF — a
+    // product feature, and the exact opposite of the claim this rule exists to
+    // recognise. "Is the glass shatterproof?" is a pre-sales safety question
+    // and it was reaching Damage queries. See `IS_DAMAGED` in
+    // `message-category.ts` for the sweep that found it.
+    pattern:
+      /\b(?:smash|smashes|smashed|smashing|shatter|shatters|shattered|shattering|broken|breakage|zerbrochen|zersplittert)\b/i,
   },
   {
     id: "DMG-CRACK",
@@ -451,7 +458,11 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     sheet: "🔵 Glass Lampshade · 🔌 Lamp Holders · ⚡ LED Driver – Metal Case",
     condition: "Damage Type 'Crack / fracture' — Severity Significant, conditional on whether it affects use",
     phrases: ["cracked glass / line crack / fracture", "cracked holder / crack in socket", "cover cracked / diffuser cracked / plastic cover damaged"],
-    pattern: /\b(?:crack\w*|fractur\w*|gesprungen)\b/i,
+    // INFLECTIONS SPELLED OUT. `crack\w*` matched CRACKLE, which is a glass
+    // FINISH we sell — "Do you have this in a crackle finish?" is a catalogue
+    // question, and it was reaching Damage queries.
+    pattern:
+      /\b(?:crack|cracks|cracked|cracking|fracture|fractures|fractured|fracturing|gesprungen)\b/i,
   },
   {
     id: "DMG-DENT",
@@ -461,7 +472,10 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     sheet: "🔩 Metal Lampshade · 🪔 Wall & Pipe Lights · ⚡ LED Driver – Metal Case",
     condition: "Damage Type 'Small dent' (cosmetic) through 'badly dented / crushed / collapsed' (severe)",
     phrases: ["small dent / slight indent", "badly dented / crushed / collapsed", "case crushed / badly dented / collapsed"],
-    pattern: /\b(?:dent\w*|crush\w*|verbeult|zerdr(?:ü|ue)ckt)\b/i,
+    // INFLECTIONS SPELLED OUT, NOT `dent\w*`. The open stem matched `Denton`
+    // inside a customer's postal address and filed a delivery case as damage —
+    // see the note on `IS_DAMAGED` in `message-category.ts` for the full sweep.
+    pattern: /\b(?:dent|dents|dented|denting|crush|crushes|crushed|crushing|verbeult|zerdr(?:ü|ue)ckt)\b/i,
   },
   {
     id: "DMG-SURFACE",
@@ -474,7 +488,11 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     // "chipped" and "scuffed" are the additions. Bounded to the damage senses:
     // `chip` alone would fire on a chip shop, and `chipped` on a chipped tooth,
     // but neither is a thing this inbox discusses.
-    pattern: /\b(?:scratch\w*|chipped|chip\s+(?:on|off|out\s+of)|scuff\w*|zerkratzt)\b/i,
+    // Inflections spelled out, for the same reason as DMG-BREAKAGE and
+    // DMG-CRACK: an open stem in a damage vocabulary is a standing bet that no
+    // product will ever be named after the way it fails.
+    pattern:
+      /\b(?:scratch|scratches|scratched|scratching|scratchy|chipped|chip\s+(?:on|off|out\s+of)|scuff|scuffs|scuffed|scuffing|zerkratzt)\b/i,
   },
   {
     id: "DMG-GENERAL",
@@ -484,7 +502,10 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     sheet: "🪔 Wall & Pipe Lights · 🔗 Fabric  Cables",
     condition: "Damage Type 'Item damaged' across product sheets — severity decided by the Severity column",
     phrases: ["paint chipped off / paint missing patch", "plastic broken / can see inside / parts falling out"],
-    pattern: /\b(?:damag\w*|besch(?:ä|ae)digt)\b/i,
+    // Inflections spelled out, as above. `damag\w*` is the least dangerous of
+    // the five — no product word begins with it — but leaving one open stem
+    // behind invites the next one back.
+    pattern: /\b(?:damage|damages|damaged|damaging|besch(?:ä|ae)digt)\b/i,
   },
 
   /* ---------------- Delivery ---------------- */

@@ -79,9 +79,38 @@ export type ClaimStatus =
  * question in one sentence, and without the split the question mark at the end
  * makes the whole thing read as a question — which turned a genuine parts case
  * into an enquiry.
+ *
+ * ------------------------------------------------------------------------
+ * A REASON IS ITS OWN CLAUSE, AND IT IS A STATEMENT EVEN WHEN THE REQUEST IS
+ * A QUESTION.
+ * ------------------------------------------------------------------------
+ * The commonest shape in this inbox is a polite request with the reason for it
+ * attached:
+ *
+ *   "Could you send me another screw on piece that holds shade to pendant
+ *    AS one on pendant was broken"
+ *   "Can you send another part BECAUSE the item arrived broken"
+ *
+ * With no boundary between the two halves, the whole sentence was one clause,
+ * `INTERROGATIVE_FRAME` matched "Could you" at the front of it, and the
+ * breakage — stated as flat fact in the subordinate clause — came back as
+ * `asked` rather than `asserted`. A problem the customer has REPORTED then read
+ * as a problem they were ENQUIRING about, and the message was filed as a
+ * pre-sales question from somebody who already owns the product.
+ *
+ * `because` and `cos` are unambiguous and split on the word alone. `as` is NOT:
+ * it is a preposition far more often than a subordinator, and splitting a bare
+ * `as` would cut "not AS described" and "AS per the photograph" in half —
+ * destroying the wrong-description claim, which is built out of exactly that
+ * phrase. So `as` splits only where a subject follows it, which is what makes
+ * it a clause: "as ONE on pendant was broken", "as IT is not working", "as THE
+ * item arrived damaged".
+ *
+ * `since` is deliberately absent. It is temporal at least as often as causal —
+ * "since receiving it" — and nothing measured needs it.
  */
 const CLAUSE_BOUNDARY =
-  /[.!?;]+|\n+|\s[-–—]+\s|,\s*(?:and|or|so|then|plus)\b|,\s*(?=(?:can|could|would|will|shall|may|please|do|does|is|are|any)\b)|\b(?:but|however|although|though|whereas|except\s+that|aber|jedoch|allerdings)\b/gi;
+  /[.!?;]+|\n+|\s[-–—]+\s|,\s*(?:and|or|so|then|plus)\b|,\s*(?=(?:can|could|would|will|shall|may|please|do|does|is|are|any)\b)|\b(?:but|however|although|though|whereas|except\s+that|aber|jedoch|allerdings)\b|\b(?:because|cos|'cause|weil)\b|\bas\s+(?=(?:one|it|its|they|this|that|these|those|the|my|our|his|her|their|i|we|you|he|she|there)\b)/gi;
 
 /** The message split into clauses, with their offsets in the original text. */
 export type Clause = { readonly text: string; readonly start: number; readonly end: number };
@@ -150,9 +179,28 @@ const INTERROGATIVE_FRAME =
  * question. It is not a claim about the goods at all, and anything matching
  * inside it is stray vocabulary rather than evidence — which is precisely how
  * "nothing to do with my actual question" became a missing part.
+ *
+ * TWO KINDS OF CORRECTION, AND THE SECOND WAS MISSING.
+ *
+ * The shapes above all correct US. A customer also corrects THEMSELVES, and
+ * that turned out to matter just as much:
+ *
+ *   "Hello does the big rustic refund (36cm diameter) come with a reduced plate?"
+ *   "Refund = red colour, apologies predictive text strikes again"
+ *
+ * The buyer typed "refund" where they meant "red", noticed, and said so. The
+ * word is a product colour in a pre-sales question, and the classifier read a
+ * refund request out of both messages — out of the typo, and then again out of
+ * the retraction of the typo. A message whose subject is its own wording is not
+ * evidence about the goods, however the mistyped word happens to read.
+ *
+ * DELIBERATELY THE EXPLICIT VOCABULARY ONLY — predictive text, autocorrect,
+ * typo, spellcheck. Bare "I meant" is NOT here: "I meant to order two of them"
+ * is a real order amendment, and reading it as a correction would throw the
+ * amendment away.
  */
 const CORRECTION =
-  /\bnothing\s+to\s+do\s+with\b|\bnot\s+(?:my|the)\s+(?:actual\s+)?question\b|\b(?:did\s?n[o']?t|do\s?n[o']?t|was\s?n[o']?t)\s+ask(?:ing)?\b|\bthat\s+(?:is|was)\s?n[o']?t\s+what\s+i\b|\bmisunderstood\b|\bnicht\s+meine\s+frage\b/i;
+  /\bnothing\s+to\s+do\s+with\b|\bnot\s+(?:my|the)\s+(?:actual\s+)?question\b|\b(?:did\s?n[o']?t|do\s?n[o']?t|was\s?n[o']?t)\s+ask(?:ing)?\b|\bthat\s+(?:is|was)\s?n[o']?t\s+what\s+i\b|\bmisunderstood\b|\bnicht\s+meine\s+frage\b|\bpredictive\s+text\b|\bauto[-\s]?correct(?:ed|ion|s)?\b|\btypo\b|\bspell\s?check(?:er)?\b|\btippfehler\b|\bautokorrektur\b/i;
 
 /**
  * A negator standing in front of the concept, inside the same clause.

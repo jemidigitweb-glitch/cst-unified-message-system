@@ -1,6 +1,11 @@
 import { type VerifiedFact, ungroundedClaims } from "@/lib/domain/draft";
 import { type ConversationMessageView, displayBody } from "@/lib/domain/inbox";
-import { type MessageIntent, detectIntents } from "@/lib/knowledge/message-category";
+import {
+  type MessageIntent,
+  detectIntents,
+  intentOwningCategory,
+  readConversation,
+} from "@/lib/knowledge/message-category";
 import type { TrackingResult } from "@/lib/tracking/provider";
 
 /**
@@ -638,11 +643,70 @@ function allCustomerText(messages: readonly ConversationMessageView[]): string |
  * answers. A newest message carrying no intent at all — "any update?" — falls
  * back to the whole thread, so a follow-up is graded against the problem it is
  * following up on rather than against nothing.
+ *
+ * UNCHANGED, AND DELIBERATELY SO. The conversation-level category is checked
+ * separately by `categoryCoverage` below rather than being mixed in here,
+ * because this list also drives `ruleCheck` and the critical/minor decision.
+ * See that function for what it may and may not do.
  */
 function customerIntents(messages: readonly ConversationMessageView[]): MessageIntent[] {
   const newest = detectIntents(newestCustomerText(messages));
   if (newest.length > 0) return newest;
   return detectIntents(allCustomerText(messages));
+}
+
+/**
+ * THE CATEGORY THE REVIEWER IS LOOKING AT, GRADED TOO — AND ONLY EVER AS A
+ * MINOR FINDING.
+ *
+ * THE DRIFT THIS CLOSES. `customerIntents` above reads ONE message. The
+ * category shown beside the conversation is now read from the WHOLE THREAD,
+ * with the issue outranking the remedy. Those are different questions and they
+ * came apart: over the 5,806 live conversations that carry a category, the
+ * intents raised did not include the displayed category in 313 of them. A
+ * reviewer opening a Damage case could be handed a draft that had only ever
+ * been checked for a delivery answer.
+ *
+ * WHY MINOR, ALWAYS, AND WHY IT IS NOT MERGED INTO `customerIntents`. That list
+ * decides two other things: whether `ruleCheck` fires, and whether a reply that
+ * covers none of it is CRITICAL — and critical is what buys a second model
+ * call and rewrites the reply. Adding a thread-derived intent there would let a
+ * classifier change alter generated customer-facing text, which is not what an
+ * accuracy check is for.
+ *
+ * So this is a REVIEW FLAG and nothing else. It cannot make
+ * `regenerationWarranted` true, it cannot reach `corrections`, and it cannot
+ * change a single word the model writes. It puts the gap in front of the person
+ * who was going to read the draft anyway.
+ */
+function categoryCoverage(draft: DraftUnderReview, stated: readonly MessageIntent[]): DraftFinding[] {
+  const category = readConversation(
+    draft.messages.map((message) => {
+      const body = displayBody(message);
+      return {
+        direction: message.direction === "inbound" ? ("inbound" as const) : ("outbound" as const),
+        text: body.available ? body.text : null,
+      };
+    }),
+  ).category;
+
+  const owning = intentOwningCategory(category);
+  if (owning === null || stated.includes(owning)) return [];
+
+  const coverage = INTENT_COVERAGE[owning];
+  if (coverage === undefined || coverage.topic.test(draft.reply)) return [];
+
+  return [
+    {
+      issue: "intent_not_addressed",
+      // NEVER critical. See the note above: this must not buy a model call.
+      severity: "minor",
+      incorrectStatement: "",
+      verifiedFact: null,
+      ruleThatApplies: coverage.rule,
+      regenerationReason: `The conversation is categorised as ${category} — ${coverage.label} — and the reply never addresses it.`,
+    },
+  ];
 }
 
 function intentCheck(draft: DraftUnderReview): DraftFinding[] {
@@ -688,6 +752,10 @@ function intentCheck(draft: DraftUnderReview): DraftFinding[] {
    * vocabulary: someone who has not bought anything has no order number, so the
    * request cannot be met and the question stays unanswered.
    */
+  // The thread's own category, as a review flag only — never critical, so it
+  // can neither buy a regeneration nor alter the reply.
+  findings.push(...categoryCoverage(draft, intents));
+
   if (intents.includes("pre_sale_question") && ASKS_FOR_ORDER_NUMBER.test(draft.reply)) {
     findings.push({
       issue: "intent_not_addressed",

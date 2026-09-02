@@ -620,8 +620,94 @@ const REFUND_INTENT =
 const REFUND_DECLINED =
   /\b(?:do\s?n[o']?t|does\s?n[o']?t|did\s?n[o']?t|not)\s+(?:want|wanting|need|require|after|looking\s+for|seeking|expecting|asking\s+for)\s+(?:a\s+|any\s+|the\s+|my\s+)?refund\b/i;
 
+/**
+ * THE MONEY HAS TO BE ASKED FOR, NOT MERELY PRESENT.
+ *
+ * `REFUND_INTENT` above is a lexicon: it answers "does this message contain a
+ * money word". That is not the same question as "is this customer asking for
+ * their money", and the gap produced the worst misreading in the audit:
+ *
+ *   "Hello does the big rustic refund (36cm diameter) come with a reduced plate?"
+ *   "Refund = red colour, apologies predictive text strikes again"
+ *
+ * The buyer's phone had turned "red" into "refund". They are asking whether a
+ * 36cm shade comes with a reducer plate — a pre-sales question about a product
+ * they have not bought — and the conversation was filed as Return and refunds
+ * on the strength of the typo. The second message, in which the customer says
+ * in as many words that they did not write "refund", raised the intent AGAIN.
+ *
+ * WHY NOT SIMPLY REQUIRE THE CLAIM TO BE ASSERTED. That was the obvious fix and
+ * it is wrong. Measured with `claimStatus`:
+ *
+ *   "does the big rustic refund (36cm) come with a reduced plate?"  -> asked
+ *   "Can I please return it and receive a refund?"                  -> asked
+ *   "still have not received my refund"                             -> negated
+ *
+ * British customers ask for their money politely, so a genuine refund request
+ * is a QUESTION as often as a statement, and a refund CHASE carries a negator
+ * in front of the word. `asserts` would have fixed the typo and broken both.
+ *
+ * WHAT ACTUALLY SEPARATES THEM IS GRAMMATICAL ROLE. In "receive a refund" the
+ * money is the object of a request; in "the big rustic refund (36cm)" it is a
+ * noun modifier inside a product phrase. So the test is whether the message
+ * asks for the money or chases money already owed — never whether the word is
+ * there.
+ *
+ * MONEY ONLY, WHICH IS WHY THIS IS NOT `EXPLICIT_REMEDY_REQUEST`. That pattern
+ * covers returns as well, and "you sent the wrong one, I can return it if you
+ * send the right one" asks for no money at all — reusing it here would make
+ * every offered return a refund request and hand the wrong-item cases to
+ * Return. This is its money-only half, plus the German and Italian that
+ * `REFUND_INTENT` already recognises.
+ */
+const MONEY_REQUEST = new RegExp(
+  [
+    // A DETERMINER AND UP TO ONE ADJECTIVE, and the slot has to hold both.
+    // Written as `(?:a|my|the|full|partial)?` at first, which allows exactly one
+    // word — so "I would like a FULL refund", the commonest phrasing there is,
+    // matched nothing at all. The regression set caught it.
+    //
+    // Stating the want: "I want a refund", "we would like a full refund".
+    "(?:want|wants|wish|wishes|need|needs|like|expect|demand)\\s+(?:(?:a|an|my|the|full|partial|complete|total)\\s+){0,2}refund",
+    "(?:'d|would)\\s+like\\s+(?:(?:a|an|my|the|full|partial|complete|total)\\s+){0,2}refund",
+    // Asking for it: "can I have a refund", "and receive a refund".
+    "(?:receive|have|get|obtain|claim)\\s+(?:(?:a|an|my|the|full|partial|complete|total)\\s+){0,2}refund",
+    // Asking us to do it: "please refund me", "issue a refund", "refund please".
+    "(?:send|provide|issue|email|give|process|arrange)\\s+(?:me\\s+)?(?:(?:a|an|my|the|full|partial|complete|total)\\s+){0,2}refund",
+    "refund\\s+(?:me|my|it|this|the|us)",
+    "refund\\s+please",
+    "please\\s+refund",
+    // The idiom, which is a request wherever it appears.
+    "money\\s+back",
+    // Chasing money already agreed.
+    "(?:waiting|wait|chasing)\\s+for\\s+(?:my|the|a)\\s+refund",
+    // German and Italian. Each is a request noun in ordinary use, matching the
+    // treatment they already get in `EXPLICIT_REMEDY_REQUEST`.
+    "r(?:ü|ue)ckerstattung",
+    "geld\\s+zur(?:ü|ue)ck",
+    "erstattung",
+    "erstatten",
+    "rimborso",
+    "rimborsare",
+  ].join("|"),
+  "i",
+);
+
+/**
+ * The money is named, AND it is being asked for or chased, AND not declined.
+ *
+ * `REFUND_NOT_RECEIVED` is the chase half — "I posted the return last week and
+ * still have not received my refund" — which no request pattern can match
+ * because the customer is reporting an absence rather than making an ask. It is
+ * declared further down the file; that is safe because every caller runs after
+ * module initialisation.
+ */
 function wantsMoneyBack(text: string): boolean {
-  return REFUND_INTENT.test(text) && !REFUND_DECLINED.test(text);
+  return (
+    REFUND_INTENT.test(text) &&
+    (MONEY_REQUEST.test(text) || REFUND_NOT_RECEIVED.test(text)) &&
+    !REFUND_DECLINED.test(text)
+  );
 }
 
 /**
@@ -1177,14 +1263,21 @@ const ASKING_FOR_PAPERWORK =
  */
 const RETURN_UNDER_WAY = new RegExp(
   [
-    // "my returning parcel", "I returned it", "refund the difference".
+    // "my returning parcel", "I returned it".
     // "RETURNING CUSTOMER" IS EXCLUDED, and it is not an edge case: it is
     // INT-PS02 (REGULAR CUSTOMER RECOGNITION), a pre-sales family in its own
     // right — "Returning customer. Do you sell rubber grommets?" is a buyer
     // introducing themselves, not a parcel going back.
     "\\breturning\\b(?!\\s+customer)",
     "\\breturned\\b",
-    "\\brefund\\w*",
+    // `\brefund\w*` USED TO BE HERE AND HAS BEEN MOVED INTO `returnIsUnderWay`,
+    // behind `wantsMoneyBack`. As a bare token it said only that the message
+    // contains a money word, and a customer whose phone turned "red" into
+    // "refund" — "does the big rustic refund (36cm diameter) come with a
+    // reduced plate?" — was recorded as having a return under way, which set
+    // the journey to `returning` and the action to `refund_or_return` on a
+    // pre-sales question about a lampshade. The money still counts here; it
+    // just has to be asked for or chased first.
     "\\br(?:ü|ue)cksend\\w*|\\bretoure\\w*",
     // "send me a returns label", "a return postage label".
     "\\breturns?\\s+(?:label|postage|parcel|address|slip|code|process)\\b",
@@ -1213,7 +1306,10 @@ const RETURN_DECLINED =
   /\b(?:do\s?n[o']?t|does\s?n[o']?t|did\s?n[o']?t|not|no)\s+(?:\w+\s+){0,2}?(?:want|wish|need|intend|going|like)\s+to\s+return\b/i;
 
 function returnIsUnderWay(text: string): boolean {
-  return RETURN_UNDER_WAY.test(text) && !RETURN_DECLINED.test(text);
+  // The money route, gated: see the note where `\brefund\w*` used to sit in
+  // `RETURN_UNDER_WAY`. "please refund me" and "still waiting for my refund"
+  // both still put a return in progress; a mistyped product colour does not.
+  return (RETURN_UNDER_WAY.test(text) || wantsMoneyBack(text)) && !RETURN_DECLINED.test(text);
 }
 
 /**
@@ -1559,8 +1655,26 @@ const HAS_THE_GOODS = new RegExp(
  * almost always says "wrong" too, which is the first alternative here and is
  * untouched.
  */
+/**
+ * "BELONGS TO ANOTHER TYPE OF LIGHT" is a mismatch stated without the word
+ * `wrong` and without the word `different` in the shape this pattern knew.
+ * Added because a customer who identifies the part we sent as belonging to a
+ * DIFFERENT PRODUCT is making the wrong-item claim as precisely as it can be
+ * made — and `A_MISMATCH` read nothing at all in it.
+ */
 const A_MISMATCH =
-  /\b(?:wrong|incorrect|not\s+what\s+i\s+(?:(?:'ve|have|had)\s+)?(?:ordered|order|asked|requested|bought|purchased|paid|chose|chosen|selected)|not\s+the\s+one|different\s+(?:item|product|one|model|type|thing)|(?:completely|totally|entirely)\s+different|(?:the\s+)?(?:correct|right)\s+one|falsch\w*|nicht\s+das\s+was)\b/i;
+  /\b(?:wrong|incorrect|not\s+what\s+i\s+(?:(?:'ve|have|had)\s+)?(?:ordered|order|asked|requested|bought|purchased|paid|chose|chosen|selected)|not\s+the\s+one|different\s+(?:item|product|one|model|type|thing)|(?:completely|totally|entirely)\s+different|(?:the\s+)?(?:correct|right)\s+one|belongs?\s+to\s+(?:another|a\s+different)|(?:another|a\s+different)\s+(?:type|kind|model|version)\s+of|falsch\w*|nicht\s+das\s+was)\b/i;
+
+/**
+ * The thing that is wrong is WHERE IT IS GOING, not what was sent.
+ *
+ * `wrong address` is already an Order-change phrase in the table above, and the
+ * mismatch pattern has no way to tell it from a wrong product — both are the
+ * bare word `wrong`. Named here so the wrong-item CLAIM can decline it, which
+ * is the only place early enough to matter.
+ */
+const THE_ADDRESS_IS_WRONG =
+  /\b(?:wrong|incorrect)\s+(?:delivery\s+|billing\s+|postal\s+|shipping\s+)?(?:address|postcode|post\s?code|zip)\b|\b(?:delivery\s+|billing\s+|postal\s+|shipping\s+)?(?:address|postcode|post\s?code)\s+(?:is|was|are|were)\s+(?:wrong|incorrect)\b|\bfalsche\s+adresse\b|\badresse\s+ist\s+falsch\b/i;
 
 /**
  * SOMETHING DIFFERENT WAS SUPPLIED TO THE CUSTOMER.
@@ -2159,9 +2273,36 @@ const BARE_SHORTFALL = new RegExp(
  * `sprung` is DELIBERATELY ABSENT while `gesprungen`, `zersprungen` and
  * `Sprünge` are present. As a bare stem it is an English word ("sprung a
  * leak"), and this pattern runs against every message in every language.
+ *
+ * ------------------------------------------------------------------------
+ * EVERY VERB IS SPELLED OUT. NO `\w*` STEM SURVIVES HERE, AND THAT IS THE FIX.
+ * ------------------------------------------------------------------------
+ * `dent\w*`, `crack\w*`, `shatter\w*` and the rest were written as open stems
+ * on the assumption that whatever follows the stem is an inflection of it. It
+ * is not. Swept over every inbound message of the last 180 days, the open stems
+ * matched five words that are not damage at all, and every one of them made
+ * this pattern report a breakage that nobody had described:
+ *
+ *   Denton         a town, inside a customer's own postal address. It is how
+ *   Dentallabor    conversation 32274 — a parcel marked delivered and not
+ *   dental         received — was filed as a Damage case: we asked the customer
+ *                  to confirm their address, they did, and `dent\w*` matched the
+ *                  town in it.
+ *   shatterproof   a PRODUCT FEATURE. The buyer is asking whether the glass is
+ *                  safe, and the word for "cannot break" was read as "broken".
+ *   crackle        a GLASS FINISH we sell. "Do you have this in a crackle
+ *                  finish?" is a pre-sales question about a catalogue option.
+ *
+ * The last two are the ones that will keep happening: lighting vocabulary and
+ * damage vocabulary share roots, so an open stem in this pattern is a standing
+ * bet that no product will ever be named after the way it fails. Enumerating
+ * the inflections costs a few characters and settles it — `dented` and `dents`
+ * still match, `Denton` and `dental` cannot.
+ *
+ * The German nouns below were already enumerated and are unchanged.
  */
 const IS_DAMAGED =
-  /\b(?:damag\w*|broken|smash\w*|crack\w*|dent\w*|scratch\w*|besch(?:ä|ae)digt|(?:zer|ge)brochen|zerkratzt|shatter\w*|chipped|chip\s+(?:on|off)|crush\w*|scuff\w*|fractur\w*)\b|\b(?:slightly\s+)?(?:bent|buckled|warped|misshapen)\b|\b(?:burn\s+marks?|melted|melting|heat\s+damage|discolour\w*|discolor\w*|blemish\w*|fray\w*|loose\s+threads?)\b|\b(?:not\s+perfectly\s+round|shape\s+(?:is\s+)?off|slight\s+wobble)\b|\b(?:riss|risse|rissen|spr(?:ü|ue)nge|delle|dellen|kratzer|bruchstelle|gesprungen|zersprungen|angeschlagen)\b/i;
+  /\b(?:damage|damages|damaged|damaging|broken|smash|smashes|smashed|smashing|crack|cracks|cracked|cracking|dent|dents|dented|denting|scratch|scratches|scratched|scratching|scratchy|besch(?:ä|ae)digt|(?:zer|ge)brochen|zerkratzt|shatter|shatters|shattered|shattering|chipped|chip\s+(?:on|off)|crush|crushes|crushed|crushing|scuff|scuffs|scuffed|scuffing|fracture|fractures|fractured|fracturing)\b|\b(?:slightly\s+)?(?:bent|buckled|warped|misshapen)\b|\b(?:burn\s+marks?|melted|melting|heat\s+damage|discolour|discolours|discoloured|discolouring|discolouration|discolor|discolors|discolored|discoloring|discoloration|blemish|blemishes|blemished|fray|frays|frayed|fraying|loose\s+threads?)\b|\b(?:not\s+perfectly\s+round|shape\s+(?:is\s+)?off|slight\s+wobble)\b|\b(?:riss|risse|rissen|spr(?:ü|ue)nge|delle|dellen|kratzer|bruchstelle|gesprungen|zersprungen|angeschlagen)\b/i;
 
 /**
  * The goods are intact and they do not work.
@@ -2231,8 +2372,40 @@ const REALITY_DIFFERS =
  * halves keeps the measured breadth of the old rule while insisting that
  * somewhere in the message the customer made the claim.
  */
-const LISTING_MISMATCH =
-  /\bnot\s+as\s+(?:described|advertised|listed|shown|pictured)\b|\bas\s+(?:shown|depicted|portrayed|pictured|illustrated|described|advertised)\b|\b(?:listing|description|advert\w*|website|photo\w*|picture|image|spec\w*)\b[^.!?;\n]{0,40}?\b(?:says?|said|states?|stated|shows?|showed|claims?|promised|portray\w*|depict\w*|illustrat\w*)\b|\b(?:described|advertised|listed|sold)\s+as\b|\bdescription\s+(?:is\s+)?(?:wrong|incorrect|inaccurate|misleading)\b|\bdoes\s?n[o']?t\s+match\s+(?:the\s+)?(?:listing|description|photo\w*|picture|advert\w*)\b|\bnicht\s+wie\s+beschrieben\b|\blaut\s+beschreibung\b/i;
+/**
+ * "SOLD AS NEW" IS A CONDITION, NOT A DESCRIPTION CLAIM.
+ *
+ * `(?:described|advertised|listed|sold)\s+as` is the right shape for "advertised
+ * as dimmable" and "sold as 6mm" — the listing promised an attribute the goods
+ * do not have. It is the wrong shape for the marketplace's own condition
+ * vocabulary, which follows the same two words:
+ *
+ *   "the items were sold AS NEW and under the ebay guarantee they should have
+ *    arrived free from damage and defects"
+ *
+ * That customer is arguing about a discount on scratched shades and citing the
+ * sale terms. Nothing about the listing is being disputed, and reading it as a
+ * description mismatch took a ten-message DAMAGE case away from Damage queries.
+ *
+ * `as seen` and `as is` are on the list for the same reason: both are terms of
+ * sale. `as described` is NOT — it is a genuine description reference, and it is
+ * matched by the first alternative above in its negated form.
+ */
+const CONDITION_NOT_DESCRIPTION = "(?!\\s+(?:new|used|seen|is|refurbished|pre-?owned|spares?|faulty|described))";
+
+const LISTING_MISMATCH = new RegExp(
+  [
+    "\\bnot\\s+as\\s+(?:described|advertised|listed|shown|pictured)\\b",
+    "\\bas\\s+(?:shown|depicted|portrayed|pictured|illustrated|described|advertised)\\b",
+    "\\b(?:listing|description|advert\\w*|website|photo\\w*|picture|image|spec\\w*)\\b[^.!?;\\n]{0,40}?\\b(?:says?|said|states?|stated|shows?|showed|claims?|promised|portray\\w*|depict\\w*|illustrat\\w*)\\b",
+    `\\b(?:described|advertised|listed|sold)\\s+as\\b${CONDITION_NOT_DESCRIPTION}`,
+    "\\bdescription\\s+(?:is\\s+)?(?:wrong|incorrect|inaccurate|misleading)\\b",
+    "\\bdoes\\s?n[o']?t\\s+match\\s+(?:the\\s+)?(?:listing|description|photo\\w*|picture|advert\\w*)\\b",
+    "\\bnicht\\s+wie\\s+beschrieben\\b",
+    "\\blaut\\s+beschreibung\\b",
+  ].join("|"),
+  "i",
+);
 
 /** Wants the right thing sent, rather than the money. */
 const WANTS_A_REPLACEMENT =
@@ -2289,6 +2462,43 @@ const GOODS_HAVE_ARRIVED = new RegExp(
   ].join("|"),
   "i",
 );
+
+/**
+ * TRACKING SAYS DELIVERED; THE CUSTOMER SAYS IT IS NOT HERE.
+ *
+ * `DELIVERED_NOT_RECEIVED` is a declared concept in `CONCEPT_OWNER`, owned by
+ * Delivery queries, and until now nothing could reach it. Conversation 32274
+ * opens with the plainest possible statement of it —
+ *
+ *   "my item is saying delivered, but picture is not at my house, could you
+ *    please check the address you sent it too"
+ *
+ * — and every route declined: `HAS_NOT_ARRIVED` wants a negated arrival verb
+ * and this customer's arrival verb is POSITIVE (the courier says it arrived);
+ * `CHASING_A_CONSIGNMENT` wants "where is" plus a consignment noun. The corpus
+ * did propose Delivery, on the word "address", and the category gate refused it
+ * as `NO_DELIVERY_MATTER` because none of its five conditions held. The message
+ * fell to the admin catch-all.
+ *
+ * BOTH HALVES ARE REQUIRED, and that is what keeps it narrow. A carrier status
+ * of "delivered" is not a problem on its own — most of them are good news — and
+ * "not at my house" on its own is a sentence about somebody's whereabouts. It
+ * is the CONTRADICTION between the two that is the case, which is exactly what
+ * `Delivery_Master_Rules final.xlsx` § 2 is about.
+ *
+ * A message reporting damage or a fault is unaffected: those are issues in
+ * their own right and outrank a delivery reading wherever both appear.
+ */
+const MARKED_DELIVERED =
+  /\b(?:say(?:s|ing)?|show(?:s|ing|n)?|marked|state(?:s|d)?|stating|claim(?:s|ing)?|tracking|status)\b[^.!?;\n]{0,30}?\bdeliver(?:ed|y)\b/i;
+
+/** The customer saying the parcel is not with them, however they phrase it. */
+const NOT_AT_THE_ADDRESS =
+  /\bnot\s+(?:at|in|been\s+(?:to|delivered\s+to))\s+(?:my|our|the)\b|\bnot\s+(?:here|mine|my\s+(?:house|home|door|address|property))\b|\bno\s+(?:sign|sight|trace)\s+of\b|\bha(?:s|ve)\s?n[o']?t\s+(?:got|had|received|arrived)\b|\bnothing\s+(?:has\s+)?(?:arrived|been\s+delivered|came)\b|\bwrong\s+(?:house|address|property)\b|\bnicht\s+(?:bei\s+mir|angekommen|erhalten)\b/i;
+
+function deliveredButNotReceived(text: string): boolean {
+  return MARKED_DELIVERED.test(text) && NOT_AT_THE_ADDRESS.test(text);
+}
 
 /** The same words in the negative — a non-arrival, which is the opposite claim. */
 const HAS_NOT_ARRIVED =
@@ -3626,7 +3836,14 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
   const text = normalise(customerText?.trim() ?? "");
 
   const claims: Record<ClaimName, ClaimStatus> = {
-    physical_damage: claimStatus(text, IS_DAMAGED),
+    // DAMAGE TO THE BOX IS NOT DAMAGE TO THE GOODS, and this is the same
+    // judgement `damage_is_on_the_goods` already applies to the CST evidence —
+    // applied here too, because this claim now decides the conversation's issue
+    // and "The box arrived crushed." / "Everything inside seems fine though."
+    // is a transit case, not a damaged product.
+    physical_damage: damageIsOnlyOnThePackaging(text)
+      ? "not_stated"
+      : claimStatus(text, IS_DAMAGED),
     functional_fault: claimStatus(text, IS_DEFECTIVE),
     // "uns fehlt die Rechnung" is an absent INVOICE, not an absent component.
     // ADMIN.xlsx sheet A owns it, and reading it as a component claim is what
@@ -3639,8 +3856,17 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
     // here rather than only in the category predicate because this claim sets
     // `event = "wrong_item_supplied"` a few lines below, which routes the
     // message before that predicate is consulted.
+    //
+    // A WRONG ADDRESS IS NOT A WRONG ITEM, and that has to be checked in the
+    // same place for the same reason. "Please cancel my order, the address is
+    // wrong" reaches `A_MISMATCH` on the bare word `wrong`, and once the claim
+    // is set the conversation is a wrong-item case before the amendment request
+    // is ever read. What is wrong there is a delivery detail on an order the
+    // customer is cancelling — Order change owns it.
     wrong_item:
-      boughtADifferentOneThemselves(text) || CUSTOMER_OWNS_THE_MISTAKE.test(text)
+      boughtADifferentOneThemselves(text) ||
+      CUSTOMER_OWNS_THE_MISTAKE.test(text) ||
+      (THE_ADDRESS_IS_WRONG.test(text) && !SOMETHING_DIFFERENT_WAS_SUPPLIED.test(text))
         ? "not_stated"
         : claimStatus(text, A_MISMATCH),
   };
@@ -3683,7 +3909,9 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
           ? "report_problem"
           : ASKING_FOR_PAPERWORK.test(text)
             ? "documentation"
-            : CHASING_A_CONSIGNMENT.test(text) || HAS_NOT_ARRIVED.test(text)
+            : CHASING_A_CONSIGNMENT.test(text) ||
+                HAS_NOT_ARRIVED.test(text) ||
+                deliveredButNotReceived(text)
               ? "whereabouts"
               : asksOrRequests(text) && namesAProductAttribute(text)
                 ? "technical_specification"
@@ -3707,7 +3935,17 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
             ? "physical_damage"
             : asserted("functional_fault")
               ? "functional_failure"
-              : HAS_NOT_ARRIVED.test(text) || CHASING_A_CONSIGNMENT.test(text)
+              : // WHAT HAS NOT ARRIVED HAS TO BE THE PARCEL. "I still have not
+                // received my refund" satisfies `HAS_NOT_ARRIVED` word for word
+                // — a negated `received` — and the thing that has not turned up
+                // is the money. Reading it as a non-delivery handed a refund
+                // chase to Delivery, which is the one category that cannot help
+                // with it. `REFUND_NOT_RECEIVED` is predicated on the money, so
+                // it is exactly the test that separates the two.
+                (HAS_NOT_ARRIVED.test(text) ||
+                  CHASING_A_CONSIGNMENT.test(text) ||
+                  deliveredButNotReceived(text)) &&
+                  !REFUND_NOT_RECEIVED.test(text)
                 ? "parcel_not_received"
                 : "none";
 
@@ -4348,10 +4586,408 @@ const PLEASANTRY_ONLY =
  */
 const CASE_CATEGORIES: readonly MessageCategory[] = [...PROBLEM_CATEGORIES, "Return and refunds"];
 
+/* ------------------------------------------------------------------------- *
+ * THE CONVERSATION AS THE UNIT OF CLASSIFICATION
+ *
+ * WHAT CHANGED AND WHY. Below this point the thread used to be decided by a
+ * POSITIONAL VOTE: every message was classified alone, and the earliest one to
+ * name a "case" category won. Measured over 1,229 live multi-message threads,
+ * 361 of them (29.4%) produced three or more different categories that way, and
+ * the answer was whichever happened to come first. Three of the four
+ * conversations the audit reported were lost exactly there — a message carrying
+ * no request at all outvoted the message that carried the customer's actual
+ * one, because the first had brushed against a "case" vocabulary and the second
+ * had only asked for an invoice.
+ *
+ * SO THE THREAD IS NOW READ ON TWO AXES, ACROSS ALL OF ITS MESSAGES:
+ *
+ *   ISSUE   what went wrong, from `semanticsOf(...).event`. It persists once
+ *           asserted, and the earliest message to assert the owning issue is
+ *           what the conversation is about.
+ *   ACTION  what the customer wants done, from `semanticsOf(...).requestedAction`.
+ *           The LATEST message to state one wins, because that is what the
+ *           reply has to answer.
+ *
+ * AND THE ISSUE OUTRANKS THE ACTION, always. "It arrived broken, please refund
+ * me" is a Damage case; "it is unsuitable, please refund me" is a Return. The
+ * remedy asked for never takes a conversation away from the problem behind it —
+ * which is the rule the previous code stated in three separate places and
+ * enforced in none of them consistently.
+ *
+ * WHAT IS DELIBERATELY UNCHANGED. Where neither axis names anything, the
+ * positional reading below runs exactly as it did, so every measured result
+ * that depended on it survives: an enquiry thread still gets its enquiry tag, a
+ * closing "found it, all sorted" still cannot cost a conversation the category
+ * its opening message earned, and a thread of pure pleasantries is still null.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * One turn of the conversation, in the order it was sent.
+ *
+ * OUR OWN REPLIES ARE ACCEPTED AND NEVER CLASSIFIED. They are history — useful
+ * for reading what a customer's "Yes, it is..." is answering — and letting them
+ * contribute an issue or an action would mean grading a customer's case on
+ * words we wrote ourselves. `readConversation` filters them out before anything
+ * is read, so that cannot happen by accident later.
+ */
+export type ConversationTurn = {
+  readonly direction: "inbound" | "outbound";
+  readonly text: string | null;
+};
+
+/** What the conversation is about, on both axes, with the category they imply. */
+export type ConversationReading = {
+  readonly category: MessageCategory | null;
+  /** What went wrong. `none` when the customer reports no problem. */
+  readonly issue: MessageEvent;
+  /** What the customer wants done about it. */
+  readonly requestedAction: RequestedAction;
+};
+
+/** The category each issue belongs to. One row per `MessageEvent`. */
+const ISSUE_CATEGORY: Readonly<Record<Exclude<MessageEvent, "none">, MessageCategory>> = {
+  wrong_item_supplied: "Wrong item sent messages",
+  component_missing: "Parts missing queries",
+  quantity_mismatch: "Wrong quantity sent issues",
+  listing_mismatch: "Wrong description issues",
+  physical_damage: "Damage queries",
+  functional_failure: "Defective items",
+  parcel_not_received: "Delivery queries",
+};
+
+/**
+ * Which issue owns the conversation when the customer reported more than one.
+ *
+ * The same order as `CORPUS_OWNERSHIP`, restated over events so there is one
+ * ownership rule for the thread rather than a second opinion: the more specific
+ * problem outranks the more general one.
+ */
+const ISSUE_OWNERSHIP: readonly Exclude<MessageEvent, "none">[] = [
+  "wrong_item_supplied",
+  "component_missing",
+  "quantity_mismatch",
+  "listing_mismatch",
+  "physical_damage",
+  "functional_failure",
+  "parcel_not_received",
+];
+
+/**
+ * The category each requested action implies, where no issue was reported.
+ *
+ * `report_problem` is absent on purpose: it is not a remedy, it is what a
+ * message does when it has an ISSUE, and that axis has already decided by the
+ * time this is consulted.
+ */
+const ACTION_CATEGORY: Readonly<Partial<Record<RequestedAction, MessageCategory>>> = {
+  whereabouts: "Delivery queries",
+  refund_or_return: "Return and refunds",
+  exchange_or_replacement: "Return and refunds",
+  order_amendment: "Order change, before shipping queries",
+  technical_specification: "Pre sales queries",
+  availability: "Pre sales queries",
+  documentation: "Admin related issues",
+};
+
+/**
+ * A message that is only an address, a reference or a name — sent because WE
+ * asked for it.
+ *
+ * THIS IS THE SHAPE THAT COST TWO OF THE FOUR REPORTED CONVERSATIONS. We ask a
+ * customer to confirm their address; they send it; the reply contains a town, a
+ * company name and a postcode, and it is matched against vocabularies built to
+ * describe damaged goods and delivery exceptions:
+ *
+ *   "Motor parts depot, Unit A16 ..."   -> `depot` fired a collection-point rule
+ *   "... haughton green, Denton, M34"   -> `dent` fired a damage rule
+ *
+ * In both, the message that carried the customer's actual request — an invoice,
+ * a parcel marked delivered and missing — lost the thread to the message that
+ * carried nothing at all. A confirmation of an address asserts no problem and
+ * asks for nothing, so it may not carry a category.
+ *
+ * THREE CONDITIONS, ALL REQUIRED, and the third is what keeps it honest:
+ *
+ *   an address marker      a postcode, a numbered street, a unit number.
+ *   nothing is asked       no question mark.
+ *   nothing substantive    once the address itself is removed, no word about
+ *      remains             arrival, absence, damage, money, an order or a
+ *                          request survives. "My parcel has not arrived, my
+ *                          address is 8 High Street, M0 0AA" keeps "arrived"
+ *                          and is therefore NOT reference-only.
+ */
+const ADDRESS_SPAN = new RegExp(
+  [
+    // UK postcode.
+    "\\b[a-z]{1,2}\\d[a-z\\d]?\\s*\\d[a-z]{2}\\b",
+    // "8 Ventnor Close", "Unit A16 Champions Business Park".
+    "\\b(?:unit\\s+)?\\d+[a-z]?\\s+(?:[\\w'-]+\\s+){0,4}(?:close|road|rd|street|st|lane|ln|avenue|ave|drive|way|court|crescent|terrace|gardens|grove|place|park|square|hill|row|walk|rise|view|str|stra(?:ß|ss)e|weg|gasse|platz|allee)\\b",
+    // German "50997 Köln".
+    "\\b\\d{5}\\s+[a-zäöü][\\wäöüß-]+",
+  ].join("|"),
+  "gi",
+);
+
+const ADDRESS_MARKER = new RegExp(ADDRESS_SPAN.source + "|\\b(?:unit|flat|apartment)\\s+[a-z]?\\d", "i");
+
+/**
+ * A word that would make a message about something other than where to send it.
+ *
+ * THE DELIVERY-INSTRUCTION WORDS ARE NOT OPTIONAL. Without them "Hi if post
+ * office ask for flat number it is flat 2" reads as a bare address — it names a
+ * flat number, asks nothing, and reports no problem — and it is a genuine
+ * delivery instruction that belongs to Delivery queries. A customer telling us
+ * where to leave a parcel is telling us something; a customer answering "what
+ * is your address?" is not.
+ */
+const SUBSTANTIVE_CONTENT =
+  /\b(?:arriv\w*|receiv\w*|deliver\w*|dispatch\w*|missing|broken|damaged|faulty|fault|work\w*|want\w*|need\w*|send|sent|refund\w*|return\w*|cancel\w*|order\w*|replace\w*|invoice|receipt|tracking|wrong|late|when|where|why|how|which|what|please\s+(?:send|advise|confirm|check|help|let))\b|\b(?:post\s+office|safe\s+place|neighbour|neighbor|courier|driver|porch|doorstep|shed|garage|buzzer|gate\s+code|leave|collect|pick\s+up|packstation|filiale)\b/i;
+
+function isReferenceOnly(text: string): boolean {
+  if (!ADDRESS_MARKER.test(text)) return false;
+  if (text.includes("?")) return false;
+  return !SUBSTANTIVE_CONTENT.test(text.replace(ADDRESS_SPAN, " "));
+}
+
+/**
+ * Reads a whole conversation and names what it is about.
+ *
+ * The customer's messages are read in the order they were sent; our replies are
+ * discarded before anything is decided. See the block comment above for the two
+ * axes and why the issue outranks the action.
+ */
+export function readConversation(turns: readonly ConversationTurn[]): ConversationReading {
+  const texts = turns
+    .filter((turn) => turn.direction === "inbound")
+    .map((turn) => normalise(turn.text?.trim() ?? ""))
+    .filter((text) => text !== "" && !NOT_FROM_A_CUSTOMER.test(text));
+
+  if (texts.length === 0) return { category: null, issue: "none", requestedAction: "none" };
+
+  // A message that is only an address contributes to neither axis, and cannot
+  // carry a category in the positional reading either.
+  const speaks = texts.map((text) => !isReferenceOnly(text));
+  const semantics = texts.map((text, index) => (speaks[index] ? semanticsOf(text) : null));
+
+  /*
+   * THE WINDOW. Identical in spirit to the positional reading below: a case the
+   * customer has since closed is not what the thread is about, so the search
+   * starts after the last resolution confirmation. When that window names
+   * nothing, the whole thread is read — which is the previous behaviour exactly.
+   */
+  const lastResolved = texts.reduce(
+    (latest, text, index) => (looksResolved(text) ? index : latest),
+    -1,
+  );
+
+  /*
+   * WE CANNOT HAVE SENT THE WRONG ITEM BEFORE WE SENT ANYTHING.
+   *
+   * `A_MISMATCH` fires on the bare word `wrong`, and a customer cancelling an
+   * order they placed by mistake uses it constantly:
+   *
+   *   "hi ordered the wrong item."
+   *   "bitte um Kaufabbruch da ich versehentlich falsch bestellt habe"
+   *   "I bought it by mistake wrong voltage and wattage. Would be possible to
+   *    cancel the order."
+   *
+   * `CUSTOMER_OWNS_THE_MISTAKE` catches the English shapes that name the buyer
+   * ("I ordered the wrong"), and misses these: the first drops the pronoun, the
+   * second is German, the third puts the mistake and the mismatch in different
+   * clauses. Rather than chase the wording, this asks the question the wording
+   * is evidence for — has anything been supplied at all? A wrong-item case
+   * needs a receipt, and before dispatch there is none.
+   *
+   * Checked across the whole thread, because the customer reports the delivery
+   * in one message and the mismatch in another at least as often as not.
+   */
+  const somethingWasSupplied = texts.some(
+    (text, index) =>
+      speaks[index] && (SOMETHING_DIFFERENT_WAS_SUPPLIED.test(text) || hasTakenDelivery(text)),
+  );
+
+  const axesFrom = (start: number): { issue: MessageEvent; action: RequestedAction } => {
+    const events = semantics
+      .slice(start)
+      .map((entry) => entry?.event ?? "none")
+      .filter((event) => event !== "wrong_item_supplied" || somethingWasSupplied);
+    const issue = ISSUE_OWNERSHIP.find((candidate) => events.includes(candidate)) ?? "none";
+
+    // The LATEST stated action wins: it is what the reply has to answer.
+    let action: RequestedAction = "none";
+    for (let index = semantics.length - 1; index >= start; index--) {
+      const stated = semantics[index]?.requestedAction ?? "none";
+      if (stated !== "none" && stated !== "report_problem") {
+        action = stated;
+        break;
+      }
+    }
+    return { issue, action };
+  };
+
+  let { issue, action } = axesFrom(lastResolved + 1);
+  if (issue === "none" && action === "none") ({ issue, action } = axesFrom(0));
+
+  /*
+   * A REFUND ASKED FOR ALONGSIDE A CANCELLATION OR A CHASE IS STILL THE REMEDY.
+   *
+   * This is `deferRefund` from `ownedIntentCategory`, restated on the action
+   * axis so the thread reading reaches the same measured answer: "I purchased
+   * these by mistake. Could I cancel the order and get a refund please" is an
+   * ORDER CHANGE, and a parcel that never came stays a DELIVERY case however
+   * the customer says they would now like their money:
+   *
+   *   "What's happening with these as we're waiting on them to finish a job"
+   *   "You could just refund it as I need this urgently so I'll just buy some
+   *    out of CEF"
+   *
+   * THE THREAD IS SEARCHED, NOT THE ASKING MESSAGE. The customer states the
+   * delivery problem in one message and gives up in the next, so the two halves
+   * are never in the same breath — which is precisely why this belongs at
+   * conversation level and not in a per-message rule.
+   *
+   * Once the goods have arrived neither deferral applies — that is the
+   * before-shipping / post-delivery line — and a refund being CHASED is Return's
+   * own case, never a delivery matter.
+   */
+  if (issue === "none" && action === "refund_or_return") {
+    const spoken = texts.filter((_, index) => speaks[index]);
+    // The same three tests `deferRefund` applies, and the same witnesses:
+    // `GOODS_CONFIRMED_ARRIVED` rather than the looser arrival test, because
+    // "one I've got from B&Q" is a substitute bought elsewhere and not our
+    // parcel turning up; and the intent layer rather than a fresh pattern, so
+    // this can never drift from the per-message rule it mirrors.
+    const chasingTheMoney = spoken.some((text) => REFUND_NOT_RECEIVED.test(text));
+    const arrived = spoken.some((text) => GOODS_CONFIRMED_ARRIVED.test(text));
+    if (!chasingTheMoney && !arrived) {
+      const intents = spoken.flatMap((text) => detectIntents(text));
+      if (intents.includes("wants_order_change")) action = "order_amendment";
+      else if (intents.includes("delivery_request")) action = "whereabouts";
+    }
+  }
+
+  /*
+   * TRACKING A RETURN IS NOT A DELIVERY QUERY.
+   *
+   * A return runs its own parcel journey, and the customer narrates it in
+   * exactly the words an inbound chase uses — "here's the tracking number",
+   * "Here is the Royal Mail tracking info", "die Rücksendung ist unterwegs".
+   * Taking the LATEST action then hands a settled return to Delivery on its
+   * final message:
+   *
+   *   "I'd like to return my purchase, nothing wrong with the item at all"
+   *   "Here is the Royal Mail tracking info"        -> still Return and refunds
+   *
+   * This is `CORPUS_CONDITIONS["Delivery queries"]` — which refuses a delivery
+   * reading outright while a return is in progress — applied to the action axis
+   * so both routes agree. The exception is the same one: a consignment the
+   * COURIER sent back is Delivery sheet 8's own subject, and so is a parcel that
+   * genuinely never arrived.
+   */
+  if (action === "whereabouts") {
+    const spoken = texts.filter((_, index) => speaks[index]);
+    const returning = spoken.some((text) => returnIsUnderWay(text));
+    const ourParcelIsMissing = spoken.some(
+      (text) => HAS_NOT_ARRIVED.test(text) || COURIER_SENT_IT_BACK.test(text),
+    );
+    if (returning && !ourParcelIsMissing) action = "none";
+  }
+
+  if (issue !== "none") {
+    return { category: ISSUE_CATEGORY[issue], issue, requestedAction: action };
+  }
+
+  /*
+   * A QUESTION ASKED AT THE END DOES NOT REPLACE THE CASE IT WAS ASKED INSIDE.
+   *
+   * "Latest message wins" is right for remedies — what the customer now wants
+   * done is what the reply must answer — and wrong for enquiries. A customer
+   * sorting out a wrong-colour delivery ends with "Do you have that colour in
+   * stock?", and that is how they are choosing the replacement, not a fresh
+   * pre-sales enquiry:
+   *
+   *   "The lamp arrived, I need the deeper copper one."
+   *   "Do you have that colour in stock?"          -> Return and refunds
+   *
+   * A REPORTED PROBLEM IS NEVER OVERRIDDEN. If any message in the thread names
+   * a PROBLEM — a wrong item, a missing part, damage — a later product question
+   * is part of sorting it out, and no test of the goods' whereabouts is needed:
+   *
+   *   "I ordered 2 blue lampshades, why have you sent me one green and one blue"
+   *   "Please send second blue shade, what to do with spare green one!!!"
+   *
+   * A REMEDY IS OVERRIDDEN UNLESS THE GOODS ARE WITH THE CUSTOMER. "Return and
+   * refunds" is an outcome rather than a problem, and a product question from
+   * somebody holding nothing is a pre-sales enquiry however the words fall.
+   * That is what the reported conversation 36855 turns on: a buyer asks whether
+   * a 36cm shade comes with a reducer plate, their phone types "refund" for
+   * "red", and without this the enquiry would be handed back to Return by a
+   * remedy nobody asked for.
+   */
+  const enquiry = action === "technical_specification" || action === "availability";
+  const positional = positionalConversationCategory(texts, speaks);
+  if (enquiry && positional !== null && CASE_CATEGORIES.includes(positional)) {
+    const holdsTheGoods = texts.some(
+      (text, index) => speaks[index] && (hasTakenDelivery(text) || returnIsUnderWay(text)),
+    );
+    if (PROBLEM_CATEGORIES.includes(positional) || holdsTheGoods) {
+      return { category: positional, issue, requestedAction: action };
+    }
+  }
+
+  const fromAction = ACTION_CATEGORY[action];
+  if (fromAction !== undefined) return { category: fromAction, issue, requestedAction: action };
+
+  // Neither axis named anything. The positional reading is unchanged.
+  return { category: positional, issue, requestedAction: action };
+}
+
+/**
+ * The intent that OWNS a category — `INTENT_OWNERSHIP` read backwards.
+ *
+ * WHY THIS IS EXPORTED. `lib/ai/draft-validation.ts` grades a reply against the
+ * intents `detectIntents` finds in the customer's messages, and its own comment
+ * states the invariant it depends on: "the category a reviewer sees and the
+ * intent a draft is graded against can never disagree".
+ *
+ * Making the conversation the unit of classification broke that quietly.
+ * `detectIntents` still reads ONE message; `readConversation` reads the thread
+ * and resolves an issue axis against an action axis. Measured over the 5,806
+ * live conversations that carry a category, the two disagreed on 220 before the
+ * change and 313 after it — 93 conversations where the reviewer would see one
+ * category and the draft would be graded against something else.
+ *
+ * This is the join that puts them back in step: the category's owning intent is
+ * added to the graded set, so a reply that ignores what the inbox says the
+ * conversation is about is always reported.
+ */
+export function intentOwningCategory(category: MessageCategory | null): MessageIntent | null {
+  if (category === null) return null;
+  return INTENT_OWNERSHIP.find(([, owns]) => owns === category)?.[0] ?? null;
+}
+
 /**
  * The category for a whole conversation, from its customer messages in order.
  *
- * THE ORDER OF PREFERENCE, and what each step is protecting:
+ * Retained with its original signature: every existing caller passes inbound
+ * customer text and expects a category back. It now delegates to
+ * `readConversation`, which is where the reading actually happens.
+ */
+export function classifyConversationCategory(
+  customerMessages: readonly (string | null)[],
+): MessageCategory | null {
+  return readConversation(
+    customerMessages.map((text) => ({ direction: "inbound" as const, text })),
+  ).category;
+}
+
+/**
+ * THE POSITIONAL READING, UNCHANGED.
+ *
+ * This is what decided every conversation before the two axes above existed,
+ * and it still decides every conversation where neither axis names anything —
+ * pre-sales enquiries, admin matters and the corpus-only categories that
+ * `semanticsOf` has no event or action for. Its order of preference:
  *
  *   1. The earliest CASE category any single message names. This is the rule
  *      that stops a closing "found it, everything is fine" from costing the
@@ -4367,19 +5003,21 @@ const CASE_CATEGORIES: readonly MessageCategory[] = [...PROBLEM_CATEGORIES, "Ret
  * Each message is read on its own, so no signal is invented by two unrelated
  * sentences landing next to each other.
  */
-export function classifyConversationCategory(
-  customerMessages: readonly (string | null)[],
+function positionalConversationCategory(
+  texts: readonly string[],
+  speaks: readonly boolean[],
 ): MessageCategory | null {
-  const texts = customerMessages
-    .map((message) => normalise(message?.trim() ?? ""))
-    .filter((text) => text !== "" && !NOT_FROM_A_CUSTOMER.test(text));
-
   if (texts.length === 0) return null;
 
   // Intent first, message by message, in the order they were sent. Each message
   // is read on its own so no signal is invented by two unrelated sentences
   // landing next to each other.
-  const perMessage = texts.map((text) => {
+  const perMessage = texts.map((text, index) => {
+    // An address confirmation carries no category here either — see
+    // `isReferenceOnly`. Without this the positional rule below would still
+    // hand the thread to a town name that reached a delivery or damage rule.
+    if (!speaks[index]) return null;
+
     const intents = detectIntents(text);
     const owned = ownedIntentCategory(intents, text);
     if (owned !== null) return owned;
@@ -4539,3 +5177,23 @@ export function classifyConversationCategory(
  */
 void detectIntents("warm up the patterns");
 void classifyMessageCategory("warm up the patterns");
+
+/*
+ * AND THE CONVERSATION PATH, which is now the one every caller reaches.
+ *
+ * The two calls above warm the per-message layers. They do not touch
+ * `semanticsOf`, `readCorpus` or the two-axis resolution, and those carry a few
+ * hundred patterns of their own — so the first CONVERSATION to be classified
+ * paid a cold compile that no later one did. `lib/ai/draft-validation.ts` reads
+ * the conversation to keep its graded intents in step with the displayed
+ * category, and its cost test measures the very first call in the process:
+ * without this the compile showed up there as a 51ms verdict against a 50ms
+ * budget, which is a warm-up problem being reported as a validation cost.
+ *
+ * Two turns rather than one, so the thread-level resolution runs as well as the
+ * per-message reading. Pure, and the result is deliberately discarded.
+ */
+void readConversation([
+  { direction: "inbound", text: "warm up the patterns" },
+  { direction: "outbound", text: "warm up the patterns" },
+]);

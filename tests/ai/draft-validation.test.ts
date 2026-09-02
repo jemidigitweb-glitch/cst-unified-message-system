@@ -459,3 +459,71 @@ describe("the report", () => {
     expect(block).toMatch(/without inventing|not be done by inventing/i);
   });
 });
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE CONVERSATION CATEGORY IS A REVIEW FLAG, NOT A SECOND MODEL CALL.
+ *
+ * `categoryCoverage` was added so the category a reviewer sees and the draft
+ * they are handed cannot be about different things — the two had drifted apart
+ * on 313 of the 5,806 live conversations that carry a category.
+ *
+ * It is confined on purpose, and these tests are the confinement. A category is
+ * derived by a classifier; letting a classifier change rewrite customer-facing
+ * text would make every future tuning decision a content decision. So a finding
+ * from this source may flag a draft for a human and may do nothing else:
+ *
+ *   never critical            so `regenerationWarranted` cannot become true
+ *   never in `corrections`    so nothing reaches the provider's second call
+ *
+ * `corrections` is built from critical findings alone, so the first guarantee
+ * implies the second; both are asserted because they are separate promises.
+ */
+describe("the conversation category flags for review and never regenerates", () => {
+  /**
+   * THE DIVERGENCE, IN THE SHAPE IT ACTUALLY TAKES.
+   *
+   * A damage case whose last message is a stock question. `detectIntents` reads
+   * the newest message and raises `pre_sale_question` — which has no coverage
+   * entry, deliberately — while the thread reads as Damage queries because the
+   * issue outranks the enquiry. Without `categoryCoverage` a reply that answers
+   * only the stock question is reported as having nothing wrong with it.
+   */
+  const DAMAGE_THEN_STOCK = [
+    message({ id: "1", bodyText: "One of the shades arrived smashed" }),
+    message({ id: "2", bodyText: "Do you have that colour in stock?" }),
+  ];
+
+  const review = (reply: string) =>
+    validateDraftAccuracy({ reply, facts: [], messages: DAMAGE_THEN_STOCK, knowledgeAvailable: true });
+
+  const fromCategory = (result: ReturnType<typeof review>) =>
+    result.findings.filter((finding) => finding.regenerationReason.includes("categorised as"));
+
+  it("raises the gap the per-message intents miss", () => {
+    const result = review("Yes, that colour is back in stock next week.");
+    expect(fromCategory(result).length).toBeGreaterThan(0);
+  });
+
+  it("raises it as minor, never critical", () => {
+    for (const finding of fromCategory(review("Yes, that colour is back in stock next week."))) {
+      expect(finding.severity).toBe("minor");
+    }
+  });
+
+  it("never buys a regeneration and never reaches the corrections", () => {
+    const result = review("Yes, that colour is back in stock next week.");
+    // Nothing else flagged this draft, so the category finding stands alone.
+    expect(result.findings.filter((finding) => finding.severity === "critical")).toEqual([]);
+    expect(result.regenerationWarranted).toBe(false);
+    expect(result.corrections).toEqual([]);
+  });
+
+  it("says nothing when the reply already addresses the category", () => {
+    const result = review(
+      "We are sorry the shade arrived damaged — we will send a replacement. That colour is back in stock next week.",
+    );
+    expect(fromCategory(result)).toEqual([]);
+  });
+});
