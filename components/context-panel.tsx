@@ -20,6 +20,7 @@ import {
   type InboxItem,
   formatSourceTimestamp,
 } from "@/lib/domain/inbox";
+import type { ListingLinkResponse } from "@/lib/domain/listing-link";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
 import {
   ORDER_DETAIL_FIELDS,
@@ -84,6 +85,71 @@ import { StatusBadge } from "./status-badge";
  * confirmed purchase, so it never appears as "Order No", and the
  * unresolved-grouping sentinel is not a reference at all and is never shown.
  */
+
+/**
+ * The item reference, linked to the listing it names when one can be resolved.
+ *
+ * FETCHES ITS OWN ANSWER, and is remounted per conversation by the caller so
+ * switching conversations cannot carry one conversation's link into another's
+ * row — the same discipline, and for the same reason, as `OrderContextFacts`
+ * below.
+ *
+ * NOT PART OF THE ORDER CONTEXT REQUEST, deliberately. The link needs only the
+ * item reference, so it is just as available on a pre-sales enquiry that
+ * matched no order — which is the conversation where a reviewer most often
+ * wants to open the listing.
+ *
+ * THE ROW IS THE SAME ROW WHETHER OR NOT A LINK ARRIVES. Loading, a marketplace
+ * whose listings cannot be resolved from a reference, nothing recorded, and a
+ * failed request all render exactly what this panel rendered before there were
+ * links: the reference, as text. There is no "unavailable" message, because the
+ * absence of a link is not news to a reviewer — and no placeholder link, which
+ * is the one outcome that could send them to the wrong product.
+ */
+function ListingReference({
+  conversationId,
+  itemRef,
+  marketplaceLabel,
+  resolvable,
+}: {
+  conversationId: string;
+  itemRef: string;
+  marketplaceLabel: string;
+  /** Whether this marketplace's item reference names exactly one listing. */
+  resolvable: boolean;
+}) {
+  const [listingUrl, setListingUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!resolvable) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/conversations/${conversationId}/listing`);
+        if (!response.ok) throw new Error("request failed");
+        const payload = (await response.json()) as ListingLinkResponse;
+        if (!cancelled) setListingUrl(payload.listingUrl);
+      } catch {
+        // A failed lookup is reported as no link, never as a guessed one.
+        if (!cancelled) setListingUrl(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, resolvable]);
+
+  return (
+    <Row
+      label="Item reference"
+      value={itemRef}
+      href={listingUrl ?? undefined}
+      linkTitle={
+        listingUrl === null ? undefined : `Open the ${marketplaceLabel} listing for ${itemRef}`
+      }
+    />
+  );
+}
 
 /**
  * Fetches and renders every matching order for one conversation.
@@ -833,7 +899,16 @@ export function ContextPanel({
       <section className="flex flex-col gap-2">
         <SectionHeading>Context</SectionHeading>
         {conversation.listingItemRef !== null && (
-          <Row label="Item reference" value={conversation.listingItemRef} />
+          <ListingReference
+            // Prefixed, because `OrderContextFacts` below is a sibling in this
+            // same section and is keyed by the same conversation id. Two
+            // siblings sharing a key is a React error, not a style point.
+            key={`item-ref-${conversation.id}`}
+            conversationId={conversation.id}
+            itemRef={conversation.listingItemRef}
+            marketplaceLabel={capability.label}
+            resolvable={capability.listingLinkResolvable}
+          />
         )}
         {capability.referenceNoun !== undefined &&
           !isUnresolvedReference(conversation.counterpartyRef) && (
@@ -894,10 +969,51 @@ function SectionHeading({ children }: { children: string }) {
   );
 }
 
-function Row({ label, value }: { label: string; value: string | null }) {  return (
+function Row({
+  label,
+  value,
+  href,
+  linkTitle,
+}: {
+  label: string;
+  value: string | null;
+  /**
+   * Makes the VALUE the link, rather than adding a second control beside it.
+   *
+   * A reference and a "view listing" button next to it would be two things to
+   * read where there is one thing to know: this reference names that listing.
+   * The row keeps its layout either way, so a linked row and a plain one still
+   * line up with every other row in the section.
+   */
+  href?: string;
+  linkTitle?: string;
+}) {
+  return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="shrink-0 text-xs opacity-70">{label}</dt>
-      <dd className="truncate text-right text-sm">{value ?? ""}</dd>
+      <dd className="truncate text-right text-sm">
+        {href === undefined || value === null ? (
+          (value ?? "")
+        ) : (
+          <a
+            href={href}
+            target="_blank"
+            // noreferrer as well as noopener, matching the customer-image links
+            // above: the marketplace does not need to be told which internal
+            // page the agent opened it from.
+            rel="noopener noreferrer"
+            title={linkTitle}
+            // Light blue, and the only coloured value in the sidebar: every
+            // other row is body text, so the colour is what says "this one is
+            // clickable" before a reviewer has hovered anything. Underlined as
+            // well, because colour alone is not an affordance for a reader who
+            // cannot distinguish it.
+            className="text-sky-500 underline decoration-sky-500/40 underline-offset-2 hover:decoration-sky-500 dark:text-sky-300 dark:decoration-sky-300/40 dark:hover:decoration-sky-300"
+          >
+            {value}
+          </a>
+        )}
+      </dd>
     </div>
   );
 }

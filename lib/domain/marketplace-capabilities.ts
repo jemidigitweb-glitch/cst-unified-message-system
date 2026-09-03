@@ -57,6 +57,16 @@ export type MarketplaceCapability = {
   readonly groupingVerified: boolean;
   /** Whether the stored conversation reference is a real customer identity. */
   readonly counterpartyIdentityVerified: boolean;
+  /**
+   * Whether a conversation's item reference alone identifies ONE listing URL.
+   *
+   * Not "does this marketplace have listings" — all of them do. The question is
+   * whether the reference CST stores is enough to name a single one of them.
+   * See `resolve-listing-link.ts` for the measurements behind each answer;
+   * Amazon's is false because an ASIN resolves to one URL per regional site and
+   * nothing in the conversation says which site the customer bought from.
+   */
+  readonly listingLinkResolvable: boolean;
 
   readonly conversationReferenceKind: ConversationReferenceKind;
   /**
@@ -97,6 +107,10 @@ export const MARKETPLACE_CAPABILITIES: Readonly<Record<Marketplace, MarketplaceC
     hasOutboundHistory: true,
     groupingVerified: true,
     counterpartyIdentityVerified: true,
+    // `listings.ebay_listings` holds the URL against the item id. Measured over
+    // every eBay conversation CST holds: 867 of 890 item references resolve to
+    // exactly one URL, 23 have none recorded, none is ambiguous.
+    listingLinkResolvable: true,
     conversationReferenceKind: "customer_handle",
   },
   amazon: {
@@ -114,6 +128,12 @@ export const MARKETPLACE_CAPABILITIES: Readonly<Record<Marketplace, MarketplaceC
     // The conversation reference is an order reference, not a person: the
     // sender addresses are shared relays and would merge unrelated customers.
     counterpartyIdentityVerified: false,
+    // An ASIN names a product, not a listing on one site: 21,167 of 49,828
+    // ASINs carry a URL for each of amazon.co.uk, .de, .fr, .ie and the rest,
+    // and all 616 Amazon conversations sit under one sub-account, so nothing
+    // here says which site the customer bought from. A link would be a guess
+    // between real alternatives, so none is offered.
+    listingLinkResolvable: false,
     conversationReferenceKind: "source_reference",
     referenceNoun: "Order",
   },
@@ -132,6 +152,9 @@ export const MARKETPLACE_CAPABILITIES: Readonly<Record<Marketplace, MarketplaceC
     // The source carries suppliers, couriers and platform mail beside
     // customers, so an address here is not a verified customer identity.
     counterpartyIdentityVerified: false,
+    // The adapter records no item reference on a Shopify message, so there is
+    // nothing to resolve a listing from.
+    listingLinkResolvable: false,
     conversationReferenceKind: "source_reference",
     referenceNoun: "Order",
   },
@@ -146,6 +169,8 @@ export const MARKETPLACE_CAPABILITIES: Readonly<Record<Marketplace, MarketplaceC
     hasOutboundHistory: false,
     groupingVerified: false,
     counterpartyIdentityVerified: false,
+    // No item reference on a B&Q message, so nothing to resolve a listing from.
+    listingLinkResolvable: false,
     conversationReferenceKind: "source_reference",
     // Titled "B&Q Order <ref>". The reference is the order number B&Q itself
     // puts on the message, so an agent will recognise it; the panel still says
@@ -163,6 +188,8 @@ export const MARKETPLACE_CAPABILITIES: Readonly<Record<Marketplace, MarketplaceC
     hasOutboundHistory: false,
     groupingVerified: false,
     counterpartyIdentityVerified: false,
+    // No item reference on a Temu message, so nothing to resolve a listing from.
+    listingLinkResolvable: false,
     conversationReferenceKind: "source_reference",
     // No reference to title with, so every Temu conversation is titled
     // "Temu enquiry". See `conversationTitle`.
