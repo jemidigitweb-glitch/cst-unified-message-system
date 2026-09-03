@@ -15,7 +15,8 @@
     "backfill:attachments": "node scripts/backfill-attachments.mjs",
     "sync:messages": "node --import ./scripts/register-hooks.mjs scripts/sync-messages.mjs",
     "sync:auto": "node scripts/run-message-sync.mjs",
-    "sync:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-message-sync.ps1"
+    "sync:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-message-sync.ps1",
+    "test:coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=text"
   },
   "dependencies": {
     "next": "16.3.1",
@@ -31,6 +32,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9",
     "eslint-config-next": "16.3.1",
     "tailwindcss": "^4",
