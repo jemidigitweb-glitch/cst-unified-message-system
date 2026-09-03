@@ -251,8 +251,34 @@ export function ConversationView({
                     <p className="mb-1 text-[10px] font-medium tracking-wide uppercase opacity-55">
                       {side === "left" ? "Customer" : "CST reply"}
                     </p>
+                    {/*
+                      `wrap-anywhere` (overflow-wrap: anywhere), and the choice
+                      between the three wrapping rules is load-bearing.
+
+                      `whitespace-pre-wrap` alone keeps the customer's own line
+                      breaks — which is why it is here — but it only ever wraps
+                      at a space. A message carrying one long unbroken token has
+                      no space to wrap at, and customers send them constantly:
+                      an eBay or Royal Mail tracking URL, a combo SKU
+                      (`PSHYOS4BRBM+SPUPBM+LSDO210BM`), a 20-digit consignment
+                      number, a German compound. The bubble is a flex item, so
+                      its min-content width was that token's full width, and
+                      `max-w-[78%]` cannot shrink a box below min-content — the
+                      text ran out of the bubble and the panel scrolled sideways.
+
+                      NOT `break-words` (overflow-wrap: break-word): it wraps the
+                      token but is NOT counted when the browser computes
+                      min-content, so the flex item stays too wide and the bubble
+                      still overflows. `anywhere` is the one that does both.
+
+                      NOT `break-all` (word-break: break-all): that breaks EVERY
+                      word at the margin, including ordinary prose, which is a
+                      worse read than the bug. `anywhere` breaks a word only when
+                      it cannot fit on a line by itself, so normal sentences wrap
+                      exactly as they did before this.
+                    */}
                     <p
-                      className={`text-sm whitespace-pre-wrap ${body.available ? "" : "italic opacity-55"}`}
+                      className={`text-sm wrap-anywhere whitespace-pre-wrap ${body.available ? "" : "italic opacity-55"}`}
                     >
                       {body.text}
                     </p>

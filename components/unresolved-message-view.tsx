@@ -55,8 +55,12 @@ export function UnresolvedMessageView({
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {/* Full width and no alignment: see the component note above. */}
         <div className="rounded-lg border border-black/10 bg-black/[0.03] px-4 py-3 dark:border-white/15 dark:bg-white/[0.05]">
+          {/* `wrap-anywhere`, as in the thread bubbles — see
+              `conversation-view.tsx`. This feed carries the messages whose
+              direction could not be established, which includes machine-sent
+              notifications: the longest unbroken tokens in the system. */}
           <p
-            className={`text-sm whitespace-pre-wrap ${body.available ? "" : "italic opacity-55"}`}
+            className={`text-sm wrap-anywhere whitespace-pre-wrap ${body.available ? "" : "italic opacity-55"}`}
           >
             {body.text}
           </p>

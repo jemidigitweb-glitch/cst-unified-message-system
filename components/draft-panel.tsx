@@ -598,7 +598,13 @@ export function DraftPanel({
                 className="w-full resize-y rounded border border-black/20 bg-transparent px-2 py-1.5 text-sm dark:border-white/25"
               />
             ) : (
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">{bodyText}</p>
+              // `wrap-anywhere` for the same reason as the thread bubbles: a
+              // draft quoting a tracking URL or a combo SKU must not push the
+              // card wider than the panel. See `conversation-view.tsx` for why
+              // it is this rule and not `break-words` or `break-all`.
+              <p className="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">
+                {bodyText}
+              </p>
             )}
           </div>
 
