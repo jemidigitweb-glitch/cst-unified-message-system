@@ -89,14 +89,58 @@ const DEFECTIVE: readonly GoldenCase[] = [
   },
   {
     thread: ["How do I proceed with warranty for broken item?"],
-    expectedCategory: "Damage queries",
+    expectedCategory: "Defective items",
     reason:
-      "TAXONOMY BOUNDARY, and it disagrees with the brief that asked for it. " +
-      "`IS_DEFECTIVE` matches `broke` but deliberately excludes `broken` " +
-      "(`\\bbroke\\b(?!n)`), which `IS_DAMAGED` owns — the same split the brief " +
-      "itself applies under DAMAGE, where 'One part is broken' is Damage. Both " +
-      "cannot hold; the shipped taxonomy governs.",
-    regressionSource: "brief: defective boundary (contradicts brief: damage)",
+      "A WARRANTY IS A CLAIM ABOUT IN-SERVICE FAILURE, never about transit. " +
+      "`broken` belongs to `IS_DAMAGED`, and `physical_damage` outranks " +
+      "`functional_failure` in `ISSUE_OWNERSHIP`, so this read as Damage. " +
+      "Invoking a warranty with no arrival or transit damage stated now " +
+      "suppresses the damage claim, exactly as packaging-only damage does.",
+    regressionSource: "brief: warranty/failure gap",
+  },
+  {
+    thread: ["My LED driver broke after 2 years and has warranty"],
+    expectedCategory: "Defective items",
+    reason: "A part that worked and then stopped, with the warranty named outright.",
+    regressionSource: "brief: warranty/failure gap",
+  },
+  {
+    thread: ["Product stopped working"],
+    expectedCategory: "Defective items",
+    reason: "The plainest in-service failure there is, carrying no damage word at all.",
+    regressionSource: "brief: warranty/failure gap",
+  },
+  {
+    thread: ["How do I proceed with warranty for failed product?"],
+    expectedCategory: "Defective items",
+    reason:
+      "`failed` was absent from `IS_DEFECTIVE` altogether, so a warranty claim " +
+      "on a failed product reached no fault signal and fell to Admin.",
+    regressionSource: "brief: warranty/failure gap",
+  },
+  {
+    thread: ["The product has failed"],
+    expectedCategory: "Defective items",
+    reason:
+      "Failure stated OF THE PRODUCT, which is what binds the word — see the " +
+      "negative controls for why a bare `failed` cannot be admitted.",
+    regressionSource: "brief: warranty/failure gap",
+  },
+  {
+    thread: ["It failed after 6 months"],
+    expectedCategory: "Defective items",
+    reason: "The same shape with a pronoun subject and an in-service interval.",
+    regressionSource: "brief: warranty/failure gap",
+  },
+  {
+    thread: [
+      "I purchased multiple drivers a few months back, 1 of the drivers has failed. What is the warranty on this item?",
+    ],
+    expectedCategory: "Defective items",
+    reason:
+      "A live customer message, and the exact shape the failure vocabulary is " +
+      "for: a plural subject, an auxiliary, and a warranty question after it.",
+    regressionSource: "live inbound message",
   },
   {
     thread: [
@@ -331,6 +375,34 @@ const CUSTOMER_MISTAKE: readonly GoldenCase[] = [
     reason: "The same customer-owns-it shape, on a different attribute.",
     regressionSource: "brief: wrong-item boundary",
   },
+  {
+    thread: ["I ordered wrong size"],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "THE ARTICLE WAS LOAD-BEARING AND SHOULD NOT HAVE BEEN. The phrase table " +
+      "held 'ordered the wrong' and 'selected the wrong' and nothing without " +
+      "the article, so this reached no order-change signal and fell to Admin — " +
+      "one word from a case that already worked.",
+    regressionSource: "brief: ordering-mistake gap",
+  },
+  {
+    thread: ["I have ordered wrong size"],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "The same gap with an auxiliary between the pronoun and the verb.",
+    regressionSource: "brief: ordering-mistake gap",
+  },
+  {
+    thread: ["I ordered wrong colour"],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "The article-free form on a different attribute.",
+    regressionSource: "brief: ordering-mistake gap",
+  },
+  {
+    thread: ["I selected wrong item"],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "The selection verb, article-free, matching its 'selected the wrong' pair.",
+    regressionSource: "brief: ordering-mistake gap",
+  },
 ];
 
 /* ── 5. DAMAGE vs RETURN ────────────────────────────────────────────────── */
@@ -353,8 +425,37 @@ const DAMAGE: readonly GoldenCase[] = [
   {
     thread: ["One part is broken"],
     expectedCategory: "Damage queries",
-    reason: "`broken` is Damage's word, not Defective's. See the DEFECTIVE group.",
+    reason:
+      "`broken` is Damage's word. No warranty is invoked, so the suppression " +
+      "that moves 'warranty for broken item' to Defective does not apply here.",
     regressionSource: "brief: damage boundary",
+  },
+  {
+    thread: ["It arrived broken"],
+    expectedCategory: "Damage queries",
+    reason: "Damage on arrival — the case Damage is to remain reserved for.",
+    regressionSource: "brief: damage boundary",
+  },
+  {
+    thread: ["The glass was cracked on arrival"],
+    expectedCategory: "Damage queries",
+    reason: "Cracked on arrival, stated in the brief's own words.",
+    regressionSource: "brief: damage boundary",
+  },
+  {
+    thread: ["Damaged in transit"],
+    expectedCategory: "Damage queries",
+    reason: "Physical damage during delivery, named as transit.",
+    regressionSource: "brief: damage boundary",
+  },
+  {
+    thread: ["The shade arrived broken, is it still under warranty?"],
+    expectedCategory: "Damage queries",
+    reason:
+      "BOTH SIGNALS AT ONCE, and arrival wins. A warranty question asked about " +
+      "goods that arrived damaged is still a damage case; the suppression is " +
+      "conditional on no arrival or transit damage being stated.",
+    regressionSource: "bound on the warranty suppression",
   },
 ];
 
@@ -461,6 +562,32 @@ const NEGATIVE: readonly GoldenCase[] = [
     reason: "A remedy with no problem behind it is the remedy's own case.",
     regressionSource: "over-classification control",
   },
+  /*
+   * `failed` IS A DELIVERY WORD FAR MORE OFTEN THAN A FAULT WORD, and these
+   * three are why the failure vocabulary is bound to a product subject rather
+   * than admitted bare. Measured across live inbound messages: 50 use "failed",
+   * and the commonest by a distance is a courier failing to deliver.
+   */
+  {
+    thread: ["Royal Mail failed to deliver the order."],
+    expectedCategory: "Admin related issues",
+    reason:
+      "A courier failing is not a product failing, and what is pinned here is " +
+      "that `failed` does NOT reach Defective. It lands on the Admin residue " +
+      "rather than Delivery, which is a separate delivery-detection gap and not " +
+      "this change's to close.",
+    regressionSource: "live inbound message",
+  },
+  {
+    thread: [
+      "The dispute is because you failed to deliver on time, did not communicate, and provided terrible service.",
+    ],
+    expectedCategory: "Admin related issues",
+    reason:
+      "'you failed' names US as the actor, not the goods, so no fault is " +
+      "claimed. Again the guarantee is that it is not Defective.",
+    regressionSource: "live inbound message",
+  },
   {
     thread: ["Please send me an invoice", "Yes it is 8 Sample Close, Denton, M00 0AA"],
     expectedCategory: "Admin related issues",
@@ -549,34 +676,11 @@ describe("the dataset is well formed", () => {
   });
 });
 
-/**
- * DOCUMENTED GAPS — cases the classifier gets wrong today.
- *
- * `it.fails` rather than a skipped test or a comment: the expectation is
- * written the way it SHOULD read, and the test passes only while the classifier
- * still gets it wrong. Fixing the classifier turns this red, which is the
- * prompt to move the row into the table above.
+/*
+ * The `documented gaps` block that stood here held two `it.fails` rows for the
+ * article-free ordering mistake. Both are fixed and have been promoted into the
+ * CUSTOMER_MISTAKE table above, which is what that block existed to prompt.
  */
-describe("documented gaps", () => {
-  /**
-   * `CUSTOMER_OWNS_THE_MISTAKE` already treats the article as optional, and the
-   * evidence corpus lists both "ordered wrong" and "wrong size" under order
-   * change — but with no article the thread reaches neither, and falls to the
-   * Admin catch-all. One word apart from a case that works:
-   * "I ordered THE wrong size" is Order change today.
-   */
-  it.fails("'I ordered wrong size' — no article, so no order-change reading", () => {
-    expect(classifyConversationCategory(["I ordered wrong size"])).toBe(
-      "Order change, before shipping queries",
-    );
-  });
-
-  it.fails("'I have ordered wrong size' — same gap with an auxiliary", () => {
-    expect(classifyConversationCategory(["I have ordered wrong size"])).toBe(
-      "Order change, before shipping queries",
-    );
-  });
-});
 
 /**
  * DEGENERATE INPUT — the classifier declining, rather than guessing.

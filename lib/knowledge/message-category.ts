@@ -259,6 +259,14 @@ export const SIGNALS: readonly { readonly label: MessageCategory; readonly phras
       "when i placed",
       "selected the wrong",
       "ordered the wrong",
+      // THE ARTICLE WAS LOAD-BEARING AND SHOULD NOT HAVE BEEN. Customers drop
+      // it constantly — "I ordered wrong size", "I have ordered wrong size" —
+      // and with only the two entries above those reached no order-change
+      // signal at all and fell to the Admin catch-all, one word from a case
+      // that already worked. `CUSTOMER_OWNS_THE_MISTAKE` had the article
+      // optional from the start; this brings the phrase table into line.
+      "selected wrong",
+      "ordered wrong",
     ],
   },
   {
@@ -2646,7 +2654,30 @@ const IS_DEFECTIVE =
   // could find no fault concept in a German defect report at all — see the
   // `defective_product` rule in `refine`, which depends on this expression
   // knowing the vocabulary before it may drop anything (thread 131).
-  /\b(?:faulty|defect\w*|defekt\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\bbroke\b(?!n)|\bsmell(?:s|ing|t)?\s+of\s+(?:\w+\s+){0,2}burning\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b(?!\s*(?:camera|cam|doorbell|bell|app)\b)|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
+  /*
+   * FAILURE, BOUND TO THE THING THAT FAILED.
+   *
+   * `failed` is a delivery word far more often than a fault word. Across live
+   * inbound messages 50 use it, and the commonest by a distance is a courier:
+   * "Royal Mail failed to deliver the order", "you failed to deliver on time",
+   * "It was marked return failed not cancelled". A bare `\bfailed\b` would make
+   * every one of those a defective product.
+   *
+   * So the subject is named. The list is the goods and the pronouns that stand
+   * for them — never an actor, a service or a process — which is what lets
+   * "1 of the drivers has failed" through and keeps "Royal Mail failed" out.
+   */
+  /*
+   * A WARRANTY IS A CLAIM ABOUT IN-SERVICE FAILURE.
+   *
+   * Nobody claims under warranty for a parcel the courier crushed — that is a
+   * damage case and a different process. So a breakage word sitting beside a
+   * warranty is describing something that worked and then stopped, and reads as
+   * a fault. `physical_damage` still wins where the customer says the goods
+   * arrived that way; see `warrantyRatherThanTransit`, which is what stops this
+   * from turning "arrived broken, is it under warranty?" into a fault.
+   */
+  /\b(?:it|this|that|item|product|unit|driver|bulb|lamp|light|transformer|shade|fitting|part)s?\s+(?:ha(?:s|ve|d)\s+)?fail(?:ed|s)\b|\bfail(?:ed|ing)\s+(?:product|item|unit|driver|bulb|lamp|light|transformer|part)s?\b|\bwarrant(?:y|ies)\b[^.!?]{0,40}\b(?:broken|broke|failed|faulty|damaged)\b|\b(?:broken|broke|failed|faulty)\b[^.!?]{0,40}\bwarrant(?:y|ies)\b|\b(?:faulty|defect\w*|defekt\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\bbroke\b(?!n)|\bsmell(?:s|ing|t)?\s+of\s+(?:\w+\s+){0,2}burning\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b(?!\s*(?:camera|cam|doorbell|bell|app)\b)|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
 
 /**
  * WHAT ARRIVED IS THE WRONG SIZE — the other half of "wrong item sent".
@@ -3945,6 +3976,67 @@ export type EvidenceRejection =
 /** Every packaging-damage clause, so they can be removed in one pass. */
 const EVERY_PACKAGING_DAMAGE = new RegExp(PACKAGING_DAMAGE.source, "gi");
 
+/** A warranty or guarantee being invoked, in either language the source carries. */
+const INVOKES_A_WARRANTY =
+  /\b(?:warrant(?:y|ies)|guarantee[ds]?|garantie|gew[äa]hrleistung)\b/i;
+
+/**
+ * The customer saying the goods ARRIVED harmed, rather than failed in service.
+ *
+ * This is the bound on the warranty rule below, and the whole of it. Damage is
+ * to remain what it has always been — arrived broken, cracked on arrival,
+ * harmed in transit — so a warranty question asked ABOUT such goods must not be
+ * converted into a fault.
+ */
+const DAMAGE_ON_ARRIVAL =
+  /\barriv\w+\s+(?:\w+\s+){0,3}(?:broken|cracked|smashed|shattered|damaged|chipped|bent|dented|crushed)\b|\b(?:broken|cracked|smashed|shattered|damaged|chipped|bent|dented|crushed)\s+(?:on|upon)\s+(?:arrival|delivery)\b|\b(?:in|during)\s+(?:transit|shipping|delivery|the\s+post)\b|\bin\s+the\s+box\s+(?:it\s+)?was\s+(?:broken|cracked|damaged)\b/i;
+
+/**
+ * Harm that can only have been done to the object, never to its function.
+ *
+ * `broken` is ambiguous — a clip snapped in the box and a driver that died in
+ * service are both "broken" — and that ambiguity is exactly what the warranty
+ * rule below resolves. These words carry no such ambiguity: nothing scratches
+ * or scuffs because it failed. Their presence means the customer is describing
+ * the state of the object, so the warranty rule must keep its hands off.
+ *
+ * MEASURED. Without this the rule moved conversation 937 — four shades with
+ * "scratches and scuff marks" and one with "a broken clip fastening", where the
+ * customer had already said the damage did NOT happen in transit — out of
+ * Damage on the strength of one warranty mention.
+ */
+const UNAMBIGUOUS_PHYSICAL_HARM =
+  /\b(?:scratch|scuff|dent|crack|smash|shatter|chip|bent|buckle|crush|marked|scrape)\w*\b/i;
+
+/**
+ * A WARRANTY CLAIM IS ABOUT SOMETHING THAT WORKED AND THEN STOPPED.
+ *
+ * Two things follow from that, and both are needed to move the brief's cases.
+ *
+ * THE DAMAGE READING IS SUPPRESSED. `broken` belongs to `IS_DAMAGED`, and
+ * `physical_damage` sits above `functional_failure` in `ISSUE_OWNERSHIP`, so
+ * "warranty for broken item" read as Damage. Nobody claims under warranty for a
+ * parcel the courier crushed — that is a damage case with a different process —
+ * so where a warranty is invoked and the customer has NOT said the goods
+ * arrived harmed, the breakage is describing a failure in service.
+ *
+ * THE FAULT IS TREATED AS STATED even though the sentence is a question.
+ * `claimStatus` reads "How do I proceed with warranty for a failed product?" as
+ * `asked`, which is right for "is it broken?" and wrong here: the question is
+ * about the PROCESS, and the failure is its premise. You do not ask how to
+ * claim under warranty for a hypothetical fault.
+ *
+ * Deliberately requires BOTH a warranty and a fault word. A warranty question
+ * with no fault in it ("what warranty do these come with?") is a pre-sales
+ * enquiry and reaches neither branch.
+ */
+function warrantyClaimOnAFault(text: string): boolean {
+  if (!INVOKES_A_WARRANTY.test(text)) return false;
+  if (DAMAGE_ON_ARRIVAL.test(text)) return false;
+  if (UNAMBIGUOUS_PHYSICAL_HARM.test(text)) return false;
+  return IS_DEFECTIVE.test(text) || IS_DAMAGED.test(text);
+}
+
 function damageIsOnlyOnThePackaging(text: string): boolean {
   if (!PACKAGING_DAMAGE.test(text)) return false;
   // `replace` with a global regex resets `lastIndex` itself, so the shared
@@ -4473,10 +4565,13 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
     // applied here too, because this claim now decides the conversation's issue
     // and "The box arrived crushed." / "Everything inside seems fine though."
     // is a transit case, not a damaged product.
-    physical_damage: damageIsOnlyOnThePackaging(text)
-      ? "not_stated"
-      : claimStatus(text, IS_DAMAGED),
-    functional_fault: claimStatus(text, IS_DEFECTIVE),
+    physical_damage:
+      damageIsOnlyOnThePackaging(text) || warrantyClaimOnAFault(text)
+        ? "not_stated"
+        : claimStatus(text, IS_DAMAGED),
+    functional_fault: warrantyClaimOnAFault(text)
+      ? "asserted"
+      : claimStatus(text, IS_DEFECTIVE),
     // "uns fehlt die Rechnung" is an absent INVOICE, not an absent component.
     // ADMIN.xlsx sheet A owns it, and reading it as a component claim is what
     // put six live invoice requests into Parts missing.
