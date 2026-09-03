@@ -1408,3 +1408,187 @@ describe("negative controls: an address confirmation carries no category", () =>
     ).toBe("Delivery queries");
   });
 });
+
+/**
+ * DEFECTIVE ITEMS REQUIRES AN ASSERTED PRODUCT FAULT.
+ *
+ * Four routes reached this category without one, and each is pinned below with
+ * the thread that exposed it. The common shape: a word associated with faults
+ * appeared, nothing checked whether the customer was CLAIMING a fault, and the
+ * defect outranked the return, delivery or question the thread was really about.
+ */
+describe("Defective items requires a fault the customer actually reported", () => {
+  /**
+   * 36983 — was Defective items, ten messages, every one about the return.
+   *
+   * `INT-DF05` is a CST rule whose own condition reads "TRANSFORMER / DRIVER Not
+   * working", and it matched "it won't work for the item I wanted it for" — a
+   * statement about SUITABILITY. `semanticsOf` recorded `functional_fault:
+   * "not_stated"` all along; nothing consulted it, so `defective_product`
+   * survived and outranked the return.
+   */
+  it("36983 — a part that is simply unsuitable, returned for a refund", () => {
+    const thread = [
+      "Hi. I have received my order but only just opened it because I have been away. I had no idea that it would be so thick and because it is, it won't work for the item I wanted it for. Can I please return it and receive a refund?",
+      "Hi. Thanks for getting back to me. As requested, here is a photo. Many thanks.",
+      "I would prefer to send it back please. Thanks",
+      "Thank you. Can I drop it off at the post office?",
+    ];
+    expect(classifyConversationCategory(thread)).toBe("Return and refunds");
+    expect(detectIntents(thread[0]!)).not.toContain("defective_product");
+  });
+
+  /**
+   * 37520 — was Defective items. The customer is chasing an undelivered parcel
+   * and cites their doorbell camera as evidence nobody called. `blink\w*` in
+   * `IS_DEFECTIVE` reads a flashing light; "Blink" is the camera's brand.
+   */
+  it("37520 — a Blink doorbell camera is not a flickering light", () => {
+    expect(
+      classifyConversationCategory([
+        "hi when will i recieve this please i looked on my blink camera noone tried to deliver on day it says",
+        "and my address is accessible so im not understanding could i please just have a refund if its lost",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  it("still reads a light that genuinely blinks as a fault", () => {
+    expect(classifyConversationCategory(["The bulb blinks constantly since I fitted it"])).toBe(
+      "Defective items",
+    );
+    expect(classifyConversationCategory(["the lamp keeps flashing on and off"])).toBe(
+      "Defective items",
+    );
+  });
+
+  /**
+   * 145 — a specification question, mistaken for an Admin matter.
+   *
+   * "not sure if X is Y" is a customer naming the gap they want filled, and with
+   * no "?", no "can you" and no "please" nothing recognised it as a request at
+   * all, so a plain product question fell past pre-sales to the Admin catch-all.
+   */
+  it("145 — 'not sure if the bulbs are dimmable' is a product question", () => {
+    expect(
+      classifyConversationCategory([
+        "Not sure if the bulbs you sent are dimmable because there is no tick on the box for it and I need them dimmable.",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  it.each([
+    ["a question about dimming", "Are these dimmable?"],
+    ["a question about fit", "Will this fit a 42mm holder?"],
+    ["an uncertainty about a spec", "I'm not sure whether these bulbs are 60W or 40W"],
+  ])("does not read %s as a defect", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Pre sales queries");
+  });
+});
+
+/**
+ * A CASE THE CUSTOMER HAS FINISHED SENDING BACK IS A RETURN.
+ *
+ * Issue still outranks action — this is the action axis's own "latest statement
+ * wins" applied to the one statement that closes a problem case.
+ */
+describe("a reported problem follows the goods back", () => {
+  /**
+   * 33150 — was Defective items. A genuine and serious fault, a refund request,
+   * a return label, and a customer whose last word is that the parcel is back.
+   */
+  it("33150 — a burning smell, returned, signed off by the customer", () => {
+    const thread = [
+      "Hi received and used today - the smell of electric burning and the best off the switch was horrendous. If I hadn't of been at home there would of been a fire",
+      "Please could I have a refund",
+      "Hi I've managed to print it. Will post tomorrow or Tuesday",
+      "Hi parcel has been returned",
+    ];
+    const reading = readConversation(
+      thread.map((text) => ({ direction: "inbound" as const, text })),
+    );
+    expect(reading.category).toBe("Return and refunds");
+    // The fault is still ON the reading — only the category follows the goods.
+    expect(reading.issue).toBe("functional_failure");
+  });
+
+  /**
+   * 145 — stays Defective items, and the distinction is the point. The customer
+   * re-asserts the flickering late, is still chasing the refund, and signs off
+   * about a missing receipt rather than about the goods going back.
+   */
+  it("145 — a live defect claim is not closed by mentioning a return label", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi, I am sorry, but these bulbs are not dimmable. They flicker badly and hardly any light comes out of them.",
+        "Hi, I have not received a refund for the bulbs. Please advise.",
+        "Hi, I used your return label. The shop where I took the parcel said that you would send me an email as receipt but I did not received one.",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  it("a defect mentioned mid-thread beside an older return is still the defect", () => {
+    expect(
+      classifyConversationCategory([
+        "I returned the other one last month",
+        "This one flickers badly and hardly any light comes out",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  it.each([
+    ["a returned parcel", "Hi parcel has been returned"],
+    ["goods sent back", "I sent it back on Monday"],
+    ["a refund being chased", "Still waiting for my refund"],
+  ])("reads %s as Return and refunds", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Return and refunds");
+  });
+});
+
+/** The taxonomy's own split between a fault and breakage is unchanged. */
+describe("genuine product failures still land where they always did", () => {
+  it.each([
+    ["bulbs not working", "These bulbs are not working", "Defective items"],
+    ["stopped working", "The light stopped working after two days", "Defective items"],
+    ["dead on arrival", "The driver was dead on arrival", "Defective items"],
+    ["arrived broken", "The glass shade arrived broken", "Damage queries"],
+    ["smashed in transit", "One of the shades arrived smashed", "Damage queries"],
+  ])("reads %s as %s", (_name, text, expected) => {
+    expect(classifyConversationCategory([text])).toBe(expected);
+  });
+});
+
+/**
+ * GERMAN FAULT REPORTS.
+ *
+ * `IS_DEFECTIVE` knew `funktioniert nicht` and `kaputt` but not `defekt` — the
+ * German spelling, and the commonest German fault word there is. Nothing
+ * noticed while the phrase table was the only witness that mattered; it became
+ * load-bearing the moment `refine` started asking whether a fault was stated at
+ * all, because a concept the expression cannot see reads as "never mentioned".
+ */
+describe("a defect reported in German is a defect", () => {
+  /** 131 — a warranty replacement that fell to the Admin catch-all. */
+  it("131 — 'der Trafo defekt ist' is a fault, not an admin matter", () => {
+    expect(
+      classifyConversationCategory([
+        "Hallo, ich habe im November einen 12V Trafo 120 Watt bei Ihnen gekauft. Heute musste ich feststellen das der Trafo defekt ist kommt keine 12Volt mehr raus.",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  it.each([
+    ["a dead transformer", "Leider ist der Artikel defekt, hatte aber keine Funktion"],
+    ["a defective bulb", "ich möchte das defekte Leuchtmittel zurücksenden"],
+  ])("reads %s as Defective items", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Defective items");
+  });
+
+  /**
+   * `flackern` is NOT in `IS_DEFECTIVE` and is deliberately not added here. The
+   * German vocabulary gap is real but wider than this change, and closing it one
+   * word at a time is how an expression stops being reviewable. Thread 32086
+   * moved Pre sales -> Defective on the live sample once `defekt` was known;
+   * that movement is recorded in the measurement, not asserted from a truncated
+   * copy of the thread here.
+   */
+});

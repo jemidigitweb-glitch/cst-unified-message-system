@@ -996,6 +996,22 @@ const REQUESTS_INFORMATION = new RegExp(
     // "I need to know if it will work with my", "I would like to see",
     // "just need to confirm it would work".
     "\\bi\\s*(?:'d|\\s+would)?\\s*(?:want|need|like|just\\s+need)\\s+to\\s+(?:know|see|check|confirm|ask|find\\s+out)\\b",
+    /*
+     * "NOT SURE IF THE BULBS ARE DIMMABLE" — a question with no question in it.
+     *
+     * A customer stating what they do not know is asking to be told, and they
+     * write it this way constantly: "not sure if the bulbs you sent me are
+     * dimmable because there is no tick on the box". With no "?", no "can you"
+     * and no "please", nothing here recognised it as a request at all, so a
+     * plain specification question fell past pre-sales to the Admin catch-all.
+     *
+     * ANCHORED TO THE THING NOT KNOWN. "not sure" alone is a hedge that
+     * qualifies half of all polite English ("not sure this is the right
+     * address"); followed by if/whether/which/what it is the customer naming
+     * the gap they want filled. And like every alternative in this expression it
+     * is never sufficient on its own — a product attribute must be present too.
+     */
+    "\\b(?:not\\s+sure|unsure|wondering|do\\s?n[o']?t\\s+know)\\s+(?:if|whether|which|what)\\b",
     // "I was wondering", "just wondering".
     "\\b(?:was|am|just)\\s+wondering\\b",
     // "do you sell", "does it come with a bulb", "have you got this".
@@ -2625,7 +2641,12 @@ const IS_DAMAGED =
  * all.
  */
 const IS_DEFECTIVE =
-  /\b(?:faulty|defect\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\bbroke\b(?!n)|\bsmell(?:s|ing|t)?\s+of\s+(?:\w+\s+){0,2}burning\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
+  // `defekt` is not a typo for `defect`: it is the German spelling, and the
+  // commonest German fault word there is. Its absence here meant `claimStatus`
+  // could find no fault concept in a German defect report at all — see the
+  // `defective_product` rule in `refine`, which depends on this expression
+  // knowing the vocabulary before it may drop anything (thread 131).
+  /\b(?:faulty|defect\w*|defekt\w*|not\s+work\w*|does\s?n[o']?t\s+work|stopped\s+working|dead\s+on\s+arrival|flicker\w*|funktioniert\s+nicht|kaputt)\b|\bbroke\b(?!n)|\bsmell(?:s|ing|t)?\s+of\s+(?:\w+\s+){0,2}burning\b|\b(?:does\s?n[o']?t|do\s?n[o']?t|wo\s?n[o']?t|will\s+not|did\s?n[o']?t)\s+(?:switch|turn|come|light)\s+(?:on|up)\b|\bnot\s+(?:switching|turning|coming|lighting)\s+(?:on|up)\b|\b(?:gone|went|goes|with\s+a|a\s+loud)\s+bang\b|\b(?:blew|blown)\s+(?:up|out)\b|\b(?:capacitor|fuse|bulb)\s+(?:blew|has\s+blown)\b|\bit\s+burst\b|\bburn(?:t|ed)\s+out\b|\b(?:puls\w*|flash\w*|strob\w*|blink\w*)\b(?!\s*(?:camera|cam|doorbell|bell|app)\b)|\b(?:on\s+off|on\s+and\s+off)\s+(?:per\s+sec|every|constantly|repeatedly)\b|\b(?:not|never)\s+soldered\b|\b(?:wires|cables?)\s+(?:are\s+)?not\s+(?:connected|soldered|joined)\b|\bnot\s+connecting\b|\b(?:arm|bracket|frame)\s+(?:is\s+)?not\s+(?:straight|flush|level)\b|\bkeeps\s+rotating\b|\bshort\s+circuit\b/i;
 
 /**
  * WHAT ARRIVED IS THE WRONG SIZE — the other half of "wrong item sent".
@@ -3563,6 +3584,44 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
     if (!found.includes(intent)) continue;
     const status = claimStatus(text, concept);
     if (status === "asked" || status === "negated") found = drop(intent);
+    /*
+     * A DEFECT MUST BE STATED, NOT MERELY WORD-MATCHED — and `not_stated`
+     * disqualifies it where for the other two problems it does not.
+     *
+     * The exemption above is real but narrow: `missing_component` also arrives
+     * by ARITHMETIC ("only two arrived but I ordered three" names no absence
+     * word), so a clause reading has nothing to find and must not veto it.
+     * `defective_product` has no such route. Every witness that raises it — the
+     * phrase table and the CST evidence map — raises it from WORDS, so a
+     * message with no asserted functional fault has no defect evidence at all.
+     *
+     * MEASURED. `INT-DF05` is a CST rule whose own condition reads "TRANSFORMER
+     * / DRIVER Not working", and it matched "it won't work for the item I wanted
+     * it for" — a statement about SUITABILITY, from a customer returning a
+     * perfectly working part that was thicker than they expected (thread 36983,
+     * ten messages, every one of them about the return). `semanticsOf` had
+     * recorded `functional_fault: "not_stated"` for that sentence all along;
+     * nothing consulted it, so the intent survived and outranked the return the
+     * customer was actually asking for.
+     *
+     * AND ONLY WHERE THE FAULT VOCABULARY IS ABSENT ALTOGETHER, which is the
+     * bound that keeps this honest. `not_stated` conflates two things: the
+     * concept is not in the text, and the concept is there but this clause
+     * reader could not judge it. The reader is English, so a German customer
+     * writing "Heute musste ich feststellen das der Trafo defekt ist" is the
+     * second case — and without this test the rule dropped a plainly asserted
+     * defect and sent a warranty replacement to the Admin catch-all (thread
+     * 131). Asking `IS_DEFECTIVE` directly separates them: no fault word at all
+     * means the phrase table matched something that is not a fault, which is
+     * exactly the 36983 shape and exactly what should be dropped.
+     */
+    else if (
+      intent === "defective_product" &&
+      status === "not_stated" &&
+      !IS_DEFECTIVE.test(text)
+    ) {
+      found = drop(intent);
+    }
   }
 
   // A REFUND ASKED FOR ABOUT A PROBLEM DOES NOT BECOME THE CASE.
@@ -3793,6 +3852,29 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
  * ("does not match the listing", "not as described"), and it carries its own
  * `negationReverses: false` reading at the point it is raised.
  */
+/**
+ * THE GOODS ARE PHYSICALLY BACK, OR ON THEIR WAY.
+ *
+ * Deliberately narrower than `RETURN_UNDER_WAY`, which is the right test for
+ * "a return is happening" and the wrong one for "the customer has finished
+ * sending it". `RETURN_UNDER_WAY` matches a bare `returning`/`returned`, so it
+ * fires on "I used your return label" and on "please send a returns form" —
+ * arranging a return, not completing one.
+ *
+ * The difference decides two live threads that otherwise read identically.
+ * Thread 33150 signs off "parcel has been returned" and is a return; thread 145
+ * signs off "I used your return label… the shop said you would send me an email
+ * as receipt but I did not received one", which is a customer still chasing a
+ * refund on bulbs they have twice said flicker badly — a defect that is still
+ * the live subject.
+ *
+ * SHAPES ONLY, no bare tokens. Every alternative names WHO did WHAT to the
+ * goods, so "Sent from Outlook for Android" — which ends a great many of these
+ * messages — cannot be read as the customer sending anything back.
+ */
+const GOODS_HAVE_GONE_BACK =
+  /\b(?:parcel|item|items|order|goods|package|shade|bulbs?|light)s?\s+(?:has|have)\s+(?:now\s+)?been\s+(?:returned|sent\s+back|posted\s+back)\b|\bi\s+(?:have\s+|'ve\s+)?(?:returned|posted|sent|dropped)\s+(?:it|them|the\s+\w+)\b|\b(?:sent|posted|shipped|dropped)\s+(?:it|them)\s+(?:back|off)\b|\bit\s+was\s+(?:sent|posted)\s+back\b|\bdropped\s+(?:it|them|the\s+\w+)\s+off\b/i;
+
 const CLAIMED_PROBLEMS: readonly (readonly [MessageIntent, RegExp])[] = [
   ["damaged_product", IS_DAMAGED],
   ["defective_product", IS_DEFECTIVE],
@@ -5493,7 +5575,43 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
     if (returning && !ourParcelIsMissing) action = "none";
   }
 
+  /*
+   * A CASE THE CUSTOMER HAS FINISHED SENDING BACK IS A RETURN.
+   *
+   * ISSUE OUTRANKS ACTION, and it still does — this is not that rule being
+   * softened. It is the same "the latest thing the customer said is what the
+   * reply must answer" principle the action axis already runs on, applied to
+   * the one statement that ends a problem case: the goods have gone back. A
+   * thread that opened "the smell of electric burning was horrendous… if I
+   * hadn't been at home there would have been a fire", ran through a refund
+   * request and a return label, and whose last word from the customer is "parcel
+   * has been returned" is a return in progress. Answering it as a fresh defect
+   * report asks a reviewer to open a safety case the customer has already
+   * closed by posting the item back to us (thread 33150).
+   *
+   * THE LAST SPOKEN MESSAGE, AND ONLY THAT. Anywhere else in the thread this
+   * would be wrong, and measurably so: a customer who says "I returned the other
+   * one last month, and THIS one flickers badly" is reporting a defect, and a
+   * thread carrying a return statement somewhere in its middle is still the
+   * problem it was. Requiring it to be the customer's closing statement is what
+   * separates "this case is now a return" from "a return is mentioned".
+   *
+   * Measured over every live eBay conversation: of 45 that read as a reported
+   * problem with a return statement in them, this moves the ones whose customer
+   * signed off on the return, and leaves the rest — including thread 145, where
+   * the flickering is re-asserted late and the customer is still chasing the
+   * refund, so the defect is still the live subject.
+   *
+   * THE ISSUE IS STILL REPORTED on the reading, not erased. Callers that ask
+   * what went wrong still get `functional_failure`; only the category the
+   * reviewer is shown follows the customer to the return.
+   */
   if (issue !== "none") {
+    const spoken = texts.filter((_, index) => speaks[index]);
+    const lastSpoken = spoken[spoken.length - 1] ?? "";
+    if (GOODS_HAVE_GONE_BACK.test(lastSpoken)) {
+      return { category: "Return and refunds", issue, requestedAction: action };
+    }
     return { category: ISSUE_CATEGORY[issue], issue, requestedAction: action };
   }
 
