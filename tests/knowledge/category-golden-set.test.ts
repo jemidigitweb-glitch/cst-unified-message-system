@@ -702,6 +702,42 @@ const ADDRESS_STILL_CHANGEABLE: readonly GoldenCase[] = [
       "`dispatched` read that as proof the order had shipped.",
     regressionSource: "live conversation 1297",
   },
+  {
+    thread: ["My old address is saved on eBay. Can you change the delivery address before you send it?"],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "NAMING THE PLATFORM IS CONTEXT, NOT A REQUEST. The customer mentions " +
+      "eBay only to explain WHY the address is stale; what they ask for is an " +
+      "amendment, from us, before dispatch. The self-service pattern matched " +
+      "`address is saved on eBay` and took the whole message.",
+    regressionSource: "brief: test 1",
+  },
+  {
+    thread: [
+      "Hi, I placed my order yesterday but noticed my old address is saved on eBay. Can you please change the delivery address before you send it?",
+    ],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "The audit's case 1, in full, with the order placed the day before.",
+    regressionSource: "audit case 1",
+  },
+  {
+    thread: ["My eBay address is wrong. Please update the delivery address before dispatch."],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "The platform, a wrong address and a direct request in one breath. " +
+      "`change THE delivery address` is this order's; the saved-address shape " +
+      "requires a determiner naming the account.",
+    regressionSource: "brief: test 3",
+  },
+  {
+    thread: ["My eBay address is wrong. Can you change it before you send the parcel?"],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "The brief's precedence example. A direct request to us plus an explicit " +
+      "pre-dispatch moment outranks any platform mention — it names something " +
+      "we can actually do.",
+    regressionSource: "brief: precedence rule",
+  },
 ];
 
 const ADDRESS_IS_THE_MARKETPLACE_S: readonly GoldenCase[] = [
@@ -746,6 +782,35 @@ const ADDRESS_IS_THE_MARKETPLACE_S: readonly GoldenCase[] = [
       "no amendment left for us to make.",
     regressionSource: "brief: order-change lifecycle",
   },
+  {
+    thread: ["Where can I change my delivery address on my eBay account?"],
+    expectedCategory: "Admin related issues",
+    reason:
+      "`WHERE` WAS MISSING FROM THE QUESTION FRAME, which only knew `how do/can " +
+      "I`, so the plainest account-settings question in the set read as an " +
+      "order change — the exact opposite failure to the one above it.",
+    regressionSource: "brief: test 2 / audit case 5",
+  },
+  {
+    thread: ["How do I update my saved eBay address?"],
+    expectedCategory: "Admin related issues",
+    reason: "The saved address named as the thing to change: account management.",
+    regressionSource: "brief: test 5",
+  },
+  {
+    thread: ["How do I change my saved address?"],
+    expectedCategory: "Admin related issues",
+    reason:
+      "The same shape with no platform named at all. `saved` is what makes it " +
+      "the account's address rather than this order's.",
+    regressionSource: "brief: admin examples",
+  },
+  {
+    thread: ["Where can I change my eBay address?"],
+    expectedCategory: "Admin related issues",
+    reason: "The shortest form of the question, and the brief's first admin example.",
+    regressionSource: "brief: admin examples",
+  },
 ];
 
 /** A completed delivery to the wrong place is ours, not an account setting. */
@@ -770,6 +835,16 @@ const ADDRESS_IS_A_DELIVERY_FAILURE: readonly GoldenCase[] = [
     expectedCategory: "Delivery queries",
     reason: "A completed delivery to somewhere else is a delivery failure.",
     regressionSource: "brief: delivery-complaint protection",
+  },
+  {
+    thread: ["My parcel was delivered to an address I don't recognise."],
+    expectedCategory: "Delivery queries",
+    reason:
+      "THE ADDRESS THEY CANNOT PLACE — the same complaint judged neither by " +
+      "`wrong` nor by naming an alternative. The customer simply does not know " +
+      "where it went, and the message carried an address, a completed delivery " +
+      "and no delivery signal at all, so it landed on the Admin residue.",
+    regressionSource: "brief: test 4",
   },
   {
     thread: ["My parcel went to the wrong address"],

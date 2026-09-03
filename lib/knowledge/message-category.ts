@@ -3102,6 +3102,15 @@ const DELIVERY_PROBLEM = new RegExp(
      * delivery failure rather than an account setting.
      */
     "\\bdeliver(?:ed|y)\\s+(?:to|at)\\s+(?:a\\s+|an\\s+|the\\s+)?(?:another|different|wrong|incorrect|someone\\s+else|somebody\\s+else)\\w*\\b",
+    /*
+     * AND THE ADDRESS THEY CANNOT PLACE. "Delivered to an address I don't
+     * recognise" and "gone to an address I don't recognise" are the same
+     * complaint again, judged neither by "wrong" nor by naming an alternative —
+     * the customer simply does not know where it went. Without this the message
+     * carried an address, a completed delivery and no delivery signal at all,
+     * which put it on the Admin residue: the one place that cannot help.
+     */
+    "\\baddress\\s+(?:that\\s+)?i\\s+(?:do\\s?n[o']?t|did\\s?n[o']?t|cannot|can\\s?not|ca\\s?n[o']?t)\\s+(?:recognise|recognize|know|live)\\w*\\b",
     "\\b(?:missed\\s+(?:delivery\\s+)?attempt|attempted\\s+delivery|delivery\\s+attempt|failed\\s+delivery|missed\\s+delivery|delivery\\s+(?:was\\s+)?missed|(?:incorrect|wrong)\\s+(?:post\\s?code|postcode|address)|stranded|held\\s+(?:at|in)\\s+(?:the\\s+)?(?:depot|customs|sorting)|collection\\s+point|for\\s+pick\\s?-?\\s?up|pick\\s+(?:it|them)\\s+up|delivery\\s+office)\\b",
     // THE SAME COMPLAINT IN GERMAN. "(incorrect|wrong) address" has been a
     // delivery matter here since this pattern was written; the German for it
@@ -5486,12 +5495,48 @@ const ORDER_HAS_NOT_GONE_YET =
  *
  * Admin whatever the order's state, because it is not an amendment anybody here
  * performs — the answer is where to click in their account, which is what the
- * ADMIN rules cover. Distinguished from a real amendment by naming either the
- * platform ("my eBay address", "address on eBay") or the how-to frame ("how do
- * I change...") rather than asking US to do it ("can you update my address").
+ * ADMIN rules cover.
+ *
+ * IT MUST BE A SELF-SERVICE QUESTION, NOT AN ADDRESS NEAR A PLATFORM NAME.
+ * The first version tested `address … on (ebay|…)`, which fires on any mention
+ * of the two together — including a customer explaining WHY their address is
+ * stale. "I placed my order yesterday but noticed my old address is saved on
+ * eBay. Can you please change the delivery address before you send it?" is a
+ * pre-dispatch amendment we can perform, and it read as Admin on the strength
+ * of "address is saved on eBay". Naming the platform is context, not a request.
+ *
+ * SO THE CUSTOMER HAS TO BE ASKING HOW, or naming their SAVED address as the
+ * thing to be changed. Two shapes, and nothing else qualifies:
+ *
+ *   a question frame    where/how + do|can|could|would + I … change … address.
+ *                       `where` was missing and cost the opposite failure:
+ *                       "Where can I change my delivery address on my eBay
+ *                       account?" matched nothing and read as an order change.
+ *   the stored address  change|update … (my|the) saved|stored|default|account|
+ *                       <platform> … address — "update my eBay address",
+ *                       "change my saved address". The determiner is what keeps
+ *                       it apart from "change THE delivery address", which is
+ *                       this order's and ours to change.
+ *
+ * `[il1]` FOR THE PRONOUN, and it is not indulgence: the live instance of this
+ * whole case is "How do l change delivery address on ebay" — a lowercase L for
+ * a capital I, adjacent on the keyboard and indistinguishable in most sans
+ * faces. The old expression caught it only by accident, through the loose
+ * platform alternative this replaces.
  */
 const PLATFORM_ADDRESS_SELF_SERVICE =
-  /\bhow\s+(?:do|can)\s+i\b[^.!?]{0,40}\b(?:change|update|amend|edit|alter)\b[^.!?]{0,40}\baddress\b|\bhow\s+to\b[^.!?]{0,40}\b(?:change|update|amend|edit)\b[^.!?]{0,40}\baddress\b|\b(?:change|update|amend|edit|alter)\b[^.!?]{0,25}\b(?:ebay|amazon|paypal|etsy|account)\b[^.!?]{0,25}\baddress\b|\baddress\b[^.!?]{0,25}\bon\s+(?:ebay|amazon|paypal|etsy|my\s+account)\b/i;
+  /\b(?:how|where)\s+(?:do|can|could|would)\s+[il1]\b[^.!?]{0,40}\b(?:change|update|amend|edit|alter)\b[^.!?]{0,40}\baddress\b|\bhow\s+to\b[^.!?]{0,40}\b(?:change|update|amend|edit)\b[^.!?]{0,40}\baddress\b|\b(?:change|update|amend|edit|alter)\s+(?:my\s+|the\s+)?(?:saved|stored|default|account|ebay|amazon|paypal|etsy)\s+(?:\w+\s+){0,2}address\b/i;
+
+/**
+ * The customer asking US to change it, in so many words.
+ *
+ * Second person or an imperative — "can you change", "please update" — as
+ * opposed to asking how to do it themselves. Paired with a pre-dispatch
+ * statement it is the clearest amendment request there is, and it outranks any
+ * mention of the platform in the same breath.
+ */
+const ASKS_US_TO_CHANGE_IT =
+  /\b(?:can|could|would|will)\s+(?:you|we)\b[^.!?]{0,40}\b(?:change|update|amend|alter|correct)\b|\bplease\s+(?:can\s+you\s+)?(?:change|update|amend|alter|correct)\b|\bis\s+it\s+possible\s+to\s+(?:change|update|amend)\b/i;
 
 const ACTION_CATEGORY: Readonly<Partial<Record<RequestedAction, MessageCategory>>> = {
   whereabouts: "Delivery queries",
@@ -5621,6 +5666,23 @@ function marketplaceAddressAdmin(
 
   // Checked first, and it outranks both routes below.
   if (inbound.some((text) => DELIVERY_PROBLEM.test(text) || HAS_NOT_ARRIVED.test(text))) {
+    return false;
+  }
+
+  /*
+   * AN AMENDMENT WE CAN STILL MAKE OUTRANKS THE PLATFORM WORDING.
+   *
+   * "My eBay address is wrong. Can you change it before you send the parcel?"
+   * names the platform and asks US to act, before dispatch, in one breath. The
+   * tightened self-service pattern already declines it — it is neither a
+   * how/where question nor a change to a saved address — and this is the belt
+   * to that braces: a direct request plus an explicit pre-dispatch moment is an
+   * order change whatever else the message mentions, because it names something
+   * we can actually do.
+   */
+  if (
+    inbound.some((text) => ASKS_US_TO_CHANGE_IT.test(text) && ORDER_HAS_NOT_GONE_YET.test(text))
+  ) {
     return false;
   }
 
