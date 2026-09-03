@@ -4,9 +4,12 @@ import {
   classifyConversationCategory,
   classifyMessageCategory,
   classifyMessageCategoryWithFallback,
+  detectIntents,
+  quantityShortfallEvidence,
   readConversation,
   semanticsOf,
 } from "@/lib/knowledge/message-category";
+import { speechActOf } from "@/lib/knowledge/message-semantics";
 
 /**
  * THE CATEGORY REGRESSION SET.
@@ -379,6 +382,160 @@ describe("reported: conversations the audit found miscategorised", () => {
   });
 });
 
+/* ------------------------------------------------------------------------- *
+ * THE TWO CONVERSATIONS REPORTED ON 2026-09-03
+ * ------------------------------------------------------------------------- */
+
+describe("reported: a delivery problem that gets located is still a delivery query", () => {
+  /**
+   * THE LIVE THREAD, AND WHY ONLY ONE MESSAGE OF IT COUNTS.
+   *
+   * The customer raised the delivery problem as an eBay case rather than as a
+   * message, so the stored thread is our reply followed by their answer to it.
+   * `readConversation` discards outbound turns before anything is decided —
+   * deliberately, so a customer's case is never graded on words we wrote — which
+   * left the whole conversation resting on the one inbound sentence. It named
+   * nothing and the thread went to the admin catch-all.
+   *
+   * It does name something: where the parcel went. A consignment left somewhere
+   * other than the delivery address is Delivery's subject, and the customer
+   * having since walked to the petrol station and collected it is the ANSWER to
+   * the query, not a different query.
+   */
+  const FOUND_AT_THE_PETROL_STATION =
+    "Thanks for the reply they missed placed it at the petrol station good product thank you!";
+
+  it("reads the live thread as a delivery query, from the customer's turn alone", () => {
+    expect(
+      readConversation([
+        {
+          direction: "outbound",
+          text: "Hello,\n\nThank you for your message.\n\nAccording to the courier tracking, the parcel is showing as delivered.\n\nPlease check the attached delivery images for proof and have another look around the indicated delivery location, any safe places, or with nearby staff/neighbours if applicable.\n\nKind regards,\nJames",
+        },
+        { direction: "inbound", text: FOUND_AT_THE_PETROL_STATION },
+      ]).category,
+    ).toBe("Delivery queries");
+  });
+
+  it("reads the customer's confirmation on its own as a delivery query", () => {
+    expect(classifyMessageCategoryWithFallback(FOUND_AT_THE_PETROL_STATION)).toBe(
+      "Delivery queries",
+    );
+    expect(detectIntents(FOUND_AT_THE_PETROL_STATION)).toContain("delivery_request");
+  });
+
+  /**
+   * THE RULE, STATED OVER A WHOLE THREAD. A parcel delivered to the wrong place
+   * and later found is a delivery query from the first message to the last: the
+   * customer confirming they have it does not move the conversation to another
+   * category, and it does not empty it either.
+   */
+  it("keeps the category when the customer later confirms they found it", () => {
+    expect(
+      classifyConversationCategory([
+        "Hello, my item is saying delivered but it is not at my house, it must have been left somewhere else.",
+        FOUND_AT_THE_PETROL_STATION,
+      ]),
+    ).toBe("Delivery queries");
+
+    expect(
+      classifyConversationCategory([
+        "My parcel has not arrived, the tracking says it was delivered on Tuesday.",
+        "All sorted, I found it round at the neighbour's. Thanks!",
+      ]),
+    ).toBe("Delivery queries");
+  });
+
+  /** The same thing said by a customer who is still looking for it. */
+  it.each([
+    "The driver left it at the petrol station",
+    "The courier left it with a neighbour and never told us",
+    "It looks like they misplaced it at the sorting office",
+    "The parcel was misdelivered",
+  ])("reads %s as a delivery query", (text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Delivery queries");
+  });
+
+  /**
+   * NEGATIVE CONTROLS. "Misplaced" and "left it somewhere" are ordinary English
+   * about the customer's own belongings, and neither is a delivery matter until
+   * a delivery location is named.
+   */
+  it.each([
+    ["the customer losing their own paperwork", "I have misplaced the instructions that came with it"],
+    ["the customer putting it away", "I left it in the loft for now"],
+  ])("does not read %s as a delivery problem", (_name, text) => {
+    expect(detectIntents(text)).not.toContain("delivery_request");
+    expect(classifyMessageCategoryWithFallback(text)).not.toBe("Delivery queries");
+  });
+});
+
+describe("reported: only one of the units ordered was delivered", () => {
+  /**
+   * THE REPORTED CONVERSATION. One message, and every counting rule declined it:
+   * one count, so there is no arithmetic; the count is the subject rather than
+   * the object of the verb, so the "only received one X" shape misses; and the
+   * customer never writes missing, short or absent. It fell to the admin
+   * catch-all, so an agent saw no case at all on a shipment that is short.
+   */
+  const ONLY_ONE_PENDANT = "Hi\nOnly 1 pendant was delivered.";
+
+  it("names a quantity error, not an admin matter", () => {
+    expect(classifyConversationCategory([ONLY_ONE_PENDANT])).toBe("Wrong quantity sent issues");
+    expect(semanticsOf(ONLY_ONE_PENDANT).event).toBe("quantity_mismatch");
+    expect(quantityShortfallEvidence(ONLY_ONE_PENDANT)).toBe(
+      "ORDERED_QUANTITY_GREATER_THAN_RECEIVED",
+    );
+  });
+
+  /**
+   * IT IS NOT ANY OF THE THREE CATEGORIES IT COULD PLAUSIBLY DRIFT TO. The
+   * delivery happened, so it is not a Delivery query; the customer asks for
+   * nothing back, so it is not a Return; and nothing is broken.
+   */
+  it.each(["Delivery queries", "Return and refunds", "Damage queries"])(
+    "is not %s",
+    (category) => {
+      expect(classifyConversationCategory([ONLY_ONE_PENDANT])).not.toBe(category);
+    },
+  );
+
+  /** The shapes a shortfall against the order is stated in, confirmed together. */
+  it.each([
+    ["only X delivered", "Only 1 pendant was delivered"],
+    ["only X delivered, plural", "Only 2 of the lights have been delivered"],
+    ["counted against the order", "I ordered 6 bulbs but only received 3."],
+    ["the count named both ways", "I ordered two transformers and only one arrived."],
+    ["received fewer than ordered", "I have received fewer than I ordered"],
+    ["part of the order", "Only half of my order arrived"],
+    ["German", "Ich habe 6 Lampen bestellt. Es ist nur eine Lampe angekommen."],
+  ])("reads %s as a quantity error", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Wrong quantity sent issues");
+  });
+
+  /**
+   * THE PARTS CASES ARE UNTOUCHED, and this is the line the fix had to not cross.
+   * A count measured against what the BOX should hold is a component absent from
+   * goods that did arrive, and stays one — whether the expectation is stated in
+   * English, in German, or not counted at all.
+   */
+  it.each([
+    ["a shade short of the set", "Only two lampshades arrived but should be three"],
+    ["the same in German", "Leider sind nur 2 Lampenschirme dabei. Es sollten aber 3 dabei sein."],
+    ["a component named, not counted", "I received my lampshades but there was only one white plastic reducer."],
+  ])("still reads %s as a parts case", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Parts missing queries");
+  });
+
+  /** Neither a delivery still to come nor a delivery date is a shortfall. */
+  it.each([
+    ["a future delivery", "Only 1 will be delivered next week"],
+    ["a delivery date", "Only 2 days ago the parcel was delivered"],
+  ])("does not read %s as a short one", (_name, text) => {
+    expect(quantityShortfallEvidence(text)).toBeNull();
+  });
+});
+
 describe("reported: an after-sales request is never a pre-sales enquiry", () => {
   /**
    * hairt_89 (conversation 37026) — was Pre sales queries.
@@ -624,6 +781,507 @@ describe("issue and requested action are read separately", () => {
     expect(reading.issue).toBe("none");
     expect(reading.requestedAction).toBe("refund_or_return");
     expect(reading.category).toBe("Return and refunds");
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * THE ISSUE OUTRANKS THE REMEDY EVEN WHERE ONLY THE OTHER WITNESSES SAW IT
+   *
+   * The issue axis reads ONE witness — `semanticsOf(...).event`. Three others
+   * can name a problem and reach the thread only through the positional
+   * reading, which used to sit BELOW `ACTION_CATEGORY`: the moment a customer
+   * said what they wanted done, the layers that had seen the problem were never
+   * asked. Measured over 1,335 live eBay threads, 51 of the 362 messages
+   * carrying a problem intent had `event: "none"`.
+   * ----------------------------------------------------------------------- */
+
+  it("keeps damage when the refund is asked for in a later message", () => {
+    expect(classifyConversationCategory(["The item arrived with two dents.", "I want a refund."])).toBe(
+      "Damage queries",
+    );
+    expect(classifyConversationCategory(["The item arrived with two dents. I want a refund."])).toBe(
+      "Damage queries",
+    );
+  });
+
+  it("keeps a late parcel when the refund is asked for alongside it", () => {
+    expect(classifyConversationCategory(["My parcel is late. Please refund me."])).toBe(
+      "Delivery queries",
+    );
+    expect(classifyConversationCategory(["My parcel is late.", "Please refund me."])).toBe(
+      "Delivery queries",
+    );
+  });
+
+  it("keeps a wrong item when the customer asks to return it", () => {
+    expect(
+      classifyConversationCategory(["You sent the wrong colour. I want to return it."]),
+    ).toBe("Wrong item sent messages");
+    expect(
+      classifyConversationCategory(["You sent the wrong colour.", "I want to return it."]),
+    ).toBe("Wrong item sent messages");
+  });
+
+  /**
+   * THE CASE THE ISSUE AXIS CANNOT SEE AT ALL. German fault vocabulary reaches
+   * the intent layer and not `semanticsOf`'s claim concepts, so before this the
+   * refund in the second message took the thread.
+   */
+  it("keeps a fault only the intent layer saw, over a refund asked for later", () => {
+    expect(
+      classifyConversationCategory([
+        "Nach kurzer Betriebsdauer ist der Led Treiber defekt.",
+        "Ich bitte um Rückerstattung.",
+      ]),
+    ).toBe("Defective items");
+  });
+
+  /**
+   * THE BOUND THAT MAKES THE PROMOTION SAFE. A problem named and a remedy asked
+   * for in the SAME message is already arbitrated by `refine`,
+   * `ownedIntentCategory` and the strict table's own Return gate, and those
+   * judgements are measured. Promoting the positional reading there would
+   * promote its false positives with it — both of these are goods that are
+   * perfectly fine and unsuitable for the buyer, and both name a "problem" that
+   * `semanticsOf` had already refused.
+   */
+  it("does not promote a same-message problem the claim reading refused", () => {
+    // `INT-DF05` reads "won't work" as a fault; `functional_fault` is not_stated.
+    expect(
+      classifyConversationCategory([
+        "Hi. I have received my order but only just opened it because I have been away. I had no idea that it would be so thick and because it is, it won't work for the item I wanted it for. Can I please return it and receive a refund?",
+      ]),
+    ).toBe("Return and refunds");
+    // The measurement-mismatch rows read "too big" as a wrong item.
+    expect(
+      classifyConversationCategory([
+        "I have received it and it is simply too big for the space. Can I have a refund?",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  /** A remedy with no problem behind it anywhere is still the remedy's case. */
+  it.each([
+    ["a plain refund request", "Please refund me"],
+    ["a plain return request", "I want to return this item"],
+    ["a return with nothing wrong", "I'd like to return my purchase, nothing wrong with the item at all"],
+    ["the customer's own mis-order", "I ordered the wrong size by mistake, can I return it"],
+  ])("gives %s to Return and refunds", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Return and refunds");
+  });
+
+  /**
+   * A REFUND CHASED IS RETURN'S OWN CASE, however it is phrased. "When will my
+   * refund arrive?" is word for word the shape of a parcel chase, and the thing
+   * being chased is the money — Delivery is the one category that cannot answer
+   * it. The past tense of sending goods back was missing outright.
+   */
+  it.each([
+    ["a refund chased as a question", "When will my refund arrive?"],
+    ["a refund chased by location", "Where is my refund?"],
+    ["a refund chased by duration", "How long does a refund take?"],
+    ["a return already posted", "I sent it back already"],
+    ["a return posted last week", "I posted it back last week"],
+    ["a return announced", "Hello. No thank you. All goods will be sent back. Thanks"],
+  ])("gives %s to Return and refunds", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Return and refunds");
+  });
+
+  /** And a parcel chase is still a parcel chase — the money test is predicated. */
+  it.each([
+    ["a parcel chased as a question", "When will my parcel arrive?"],
+    ["a dispatch chase", "When will you dispatch my order?"],
+    ["a plain non-arrival", "My parcel has not arrived"],
+    ["a late parcel", "My parcel is late"],
+  ])("gives %s to Delivery queries", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Delivery queries");
+  });
+
+  /** Lateness is bounded to the consignment: neither a reply nor the money. */
+  it("does not read a late reply or a late refund as a delivery problem", () => {
+    expect(detectIntents("Sorry for the late reply. Is this suitable for a bathroom?")).not.toContain(
+      "delivery_request",
+    );
+    expect(
+      classifyConversationCategory(["I posted the return last week and my refund is late"]),
+    ).toBe("Return and refunds");
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * TWO CONVERSATIONS REPORTED FROM THE LIVE INBOX, 2026-09-03
+   * ----------------------------------------------------------------------- */
+
+  /**
+   * A DING IS A DENT. The whole thread turned on one word nobody had written
+   * down: `dents` was in the damage vocabulary and `dings` was not, so the
+   * opening report named nothing and the thread was decided by the customer's
+   * closing message — where they say they will get a local replacement — and
+   * came out as Return and refunds.
+   */
+  it("reads two dings as damage, and keeps the thread on it", () => {
+    expect(
+      readConversation([
+        {
+          direction: "inbound",
+          text: "Hi, one of the items came with two dings (see photo). How do you want to proceed this?",
+        },
+        {
+          direction: "outbound",
+          text: "Hello,\n\nWe're sorry to hear that one of the items arrived with two dents. If you are happy to keep the item, we can offer you a 12% partial refund as a goodwill gesture.\n\nKind regards,\nJames",
+        },
+        {
+          direction: "inbound",
+          text: "Hi James, don't worry about it. I shall get a local replacement, ok. Cheers.",
+        },
+      ]).category,
+    ).toBe("Damage queries");
+    expect(semanticsOf("one of the items came with two dings").claims.physical_damage).toBe(
+      "asserted",
+    );
+  });
+
+  /** A chime is not a dent. */
+  it("does not read a ding dong as damage", () => {
+    expect(semanticsOf("Does this come with a ding dong chime?").claims.physical_damage).toBe(
+      "not_stated",
+    );
+  });
+
+  /**
+   * THE MISMATCH STATED AS A SUBSTITUTION, with neither "wrong" nor
+   * "different" in it. The second message on its own was an admin catch-all.
+   */
+  it("reads a finish supplied in place of the one ordered as a wrong item", () => {
+    expect(
+      classifyConversationCategory([
+        "I ordered 2 of these fittings whilst i decorate a bedrooms. I used the first one but have just got around to opening the other one for the next bedroom and the bulb holder is black instead of being chrome",
+        "should have had satin nikel lamp holder but was sent black on one of them",
+      ]),
+    ).toBe("Wrong item sent messages");
+
+    for (const text of [
+      "the bulb holder is black instead of being chrome",
+      "should have had satin nikel lamp holder but was sent black on one of them",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Wrong item sent messages");
+    }
+  });
+
+  /**
+   * "SHOULD HAVE" IS HOW EVERY CATEGORY STATES WHAT WAS DUE. These three are the
+   * pinned conversations the first version of the substitution rule broke, and
+   * they are what the contrast bound exists for.
+   */
+  it.each([
+    ["a count short of the order", "I should have received 4 but only got 2.", "Wrong quantity sent issues"],
+    [
+      "a component that should have been in the box",
+      "the screws that should have been included are not there",
+      "Parts missing queries",
+    ],
+    ["a parcel overdue", "This is overdue, it should have arrived last week", "Delivery queries"],
+    [
+      "a non-arrival stated as a contrast",
+      "It should have been delivered on Tuesday but nothing was sent",
+      "Delivery queries",
+    ],
+  ])("keeps %s out of the wrong-item claim", (_name, text, expected) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe(expected);
+  });
+
+  /** "Instead of" between two remedies names no mismatch. */
+  it("does not read a choice between remedies as a wrong item", () => {
+    expect(
+      semanticsOf("Could I have a refund instead of a replacement please").claims.wrong_item,
+    ).toBe("not_stated");
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * AN AUXILIARY IS ONLY A QUESTION WHERE IT OPENS ONE
+   *
+   * `INTERROGATIVE_FRAME` matched an auxiliary followed by a pronoun or a
+   * determiner ANYWHERE in the clause, so `is the` / `are the` / `was the` in a
+   * plain statement made the whole clause a question. Every wrong-item report
+   * written that way came back `asked` rather than `asserted`, `semanticsOf`
+   * recorded no event, and the issue axis was blind to the family.
+   * ----------------------------------------------------------------------- */
+
+  it.each([
+    "They are the wrong colour",
+    "This is the wrong size",
+    "The item is the wrong colour",
+    "The ceiling roses are the wrong ones",
+    "It was the wrong type sent again",
+    "The shades are the wrong size",
+  ])("reads %j as a report of a wrong item", (text) => {
+    expect(speechActOf(text)).toBe("assertion");
+    expect(semanticsOf(text).claims.wrong_item).toBe("asserted");
+    expect(semanticsOf(text).event).toBe("wrong_item_supplied");
+    expect(classifyConversationCategory([text])).toBe("Wrong item sent messages");
+  });
+
+  /**
+   * THE INVERSION STILL READS. What makes an auxiliary interrogative is that it
+   * moves in FRONT of its subject, which is exactly what the anchor now
+   * requires — including where the customer omits the question mark, and where
+   * the question opens a later clause rather than the message.
+   */
+  it.each([
+    ["a wh-question", "What colour did I order?"],
+    ["an inverted auxiliary", "Is this the correct size?"],
+    ["a modal request", "Can I change the colour?"],
+    ["no question mark", "Is this suitable for a bathroom"],
+    ["an auxiliary with no mark", "Does this come with a bulb"],
+    ["a question in a later clause", "Thanks for that, is this suitable for outdoors"],
+  ])("still reads %s as a question", (_name, text) => {
+    expect(speechActOf(text)).toBe("question");
+  });
+
+  /** And the claim a question raises is still `asked`, never a report. */
+  it("does not read a question about the size as a wrong item", () => {
+    expect(semanticsOf("Is this the correct size?").claims.wrong_item).not.toBe("asserted");
+    expect(classifyConversationCategory(["Is this the correct size?"])).not.toBe(
+      "Wrong item sent messages",
+    );
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * A BUYER WHO HAS NOT BOUGHT YET
+   *
+   * `looksPreSales` required the message to name a physical ATTRIBUTE — colour,
+   * material, wattage, size — so the two things every buyer actually says first
+   * reached nothing: that they are trying to buy, and what it costs.
+   * ----------------------------------------------------------------------- */
+
+  it("reads a buyer asking about a listing's pictures and price as pre-sales", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi I am trying to buy the hook. There is a problem with pictures showing property. Can you fix it?",
+        "This one I need.",
+        "What is the price?",
+      ]),
+    ).toBe("Pre sales queries");
+  });
+
+  /**
+   * "PROBLEM", "PICTURE" AND "PROPERTY" MAY NOT OVERRIDE PURCHASE INTENT. A
+   * buyer reporting that a listing's images are broken is shopping, not raising
+   * a case about goods they do not have.
+   */
+  it.each([
+    ["a stated intention to buy", "Hi I am trying to buy the hook. Can you fix the pictures?"],
+    ["a price question", "What is the price?"],
+    ["the price asked informally", "How much is this one?"],
+    ["a purchase being considered", "I am looking to buy this, does it come in black?"],
+  ])("reads %s as pre-sales", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).toBe("Pre sales queries");
+  });
+
+  /**
+   * BUT ASKING SOMETHING IS STILL REQUIRED, and a future purchase mentioned
+   * inside an after-sales message claims nothing. This is the pinned
+   * return-postage negotiation, which names a size, a weight and an intention
+   * to purchase, and asks for none of them.
+   */
+  it.each([
+    [
+      "a return-postage negotiation",
+      "Due to the physical size (160mm x 140mm x 5mm) and weight (53g) of my returning parcel I believe the cost should be no more than a standard 1st class letter. I was intending to purchase the correct item 2 core x 5 mtrs.",
+    ],
+    ["goods already bought", "I bought this last week and the price has now dropped"],
+  ])("does not read %s as pre-sales", (_name, text) => {
+    expect(classifyMessageCategoryWithFallback(text)).not.toBe("Pre sales queries");
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * ADMIN IS A CASE, NOT A CATCH-ALL
+   *
+   * Admin was the last step of both readings — "if nothing matched, say Admin"
+   * — and that made it the largest category in the system: 379 of 1,335 live
+   * eBay threads, 28%, almost none of it an admin matter. It was the classifier
+   * saying "I don't know" in a word that means something else, and it buried
+   * the real invoice and account queries an agent filters for.
+   * ----------------------------------------------------------------------- */
+
+  it.each([
+    ["a price enquiry", "How much is this?", "Pre sales queries"],
+    [
+      "a buyer reporting a broken listing image",
+      "I am trying to buy this item, but the image is not showing properly",
+      "Pre sales queries",
+    ],
+    ["a quantity shortfall", "Only 1 pendant was delivered", "Wrong quantity sent issues"],
+    ["a delivery enquiry", "Parcel has not arrived", "Delivery queries"],
+    ["a whereabouts question", "Where is my parcel?", "Delivery queries"],
+    ["damage reported", "One of the shades arrived smashed", "Damage queries"],
+  ])("does not send %s to Admin", (_name, text, expected) => {
+    expect(classifyConversationCategory([text])).toBe(expected);
+  });
+
+  /** What Admin genuinely owns, and still does. */
+  it.each([
+    ["a VAT invoice request", "Can I have a VAT invoice for this order please"],
+    ["a receipt request", "Please send me a receipt for my purchase"],
+    ["a German invoice request", "Können Sie mir bitte eine Rechnung zusenden?"],
+    ["account access", "I cannot log in to my account to see the order"],
+    ["a payment problem", "The payment has been taken twice"],
+    ["an order reference query", "Can you confirm the order number for this purchase"],
+  ])("still names %s as an admin matter", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Admin related issues");
+  });
+
+  /**
+   * AND NOTHING IS LEFT UNCATEGORISED. Gating the fallback itself on admin
+   * evidence was tried on 2026-09-03 and reverted the same day: it left real
+   * customer messages with no category, and a blank hides a conversation from
+   * every filter in the inbox. Admin stays the residue; what changed is how
+   * little reaches it, because the categories above it now claim what is theirs.
+   */
+  it.each([
+    ["a bare greeting", "Many thanks, kind regards."],
+    ["an unexplained question", "Hello, I have a question about my order."],
+    ["a chatty remark", "I bought 3 shades this week and didn't know this was available as an option."],
+  ])("still gives %s a category rather than a blank", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Admin related issues");
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * A CUSTOMER INTENT ALWAYS BEATS THE ADMIN RESIDUE
+   *
+   * Three live shapes that fell to Admin because no witness recognised them —
+   * not because Admin outranked anything. Admin is already last; what these
+   * needed was for their own category to claim them first.
+   * ----------------------------------------------------------------------- */
+
+  /**
+   * A CHANGE OF MIND, IN ENGLISH. `ORDERED_THE_WRONG_THING` is German-only, so
+   * the English form of "I have thought about it again and want something else"
+   * reached nothing. Which category it is depends on the order's state: an
+   * amendment while we still hold it, a return once we do not.
+   */
+  it("reads a change of mind as an amendment before shipping", () => {
+    expect(classifyConversationCategory(["Just realised I need different cable"])).toBe(
+      "Order change, before shipping queries",
+    );
+  });
+
+  it("reads the same change of mind after delivery as a return", () => {
+    expect(
+      classifyConversationCategory([
+        "Just realised I need different cable, the order arrived yesterday",
+      ]),
+    ).toBe("Return and refunds");
+  });
+
+  it("reads an accidental order the customer has cancelled as an amendment", () => {
+    expect(
+      classifyConversationCategory([
+        "I have just placed an order accidentally and requested to cancel",
+      ]),
+    ).toBe("Order change, before shipping queries");
+  });
+
+  /**
+   * A CANCELLATION IS AN AMENDMENT, AND A DOCUMENT IS ADMIN. The pair, pinned
+   * together: the line between them is what the customer wants done, and a
+   * polite "please could you confirm asap" attached to a cancellation does not
+   * make it an administrative query.
+   */
+  it.each([
+    [
+      "a cancellation with a confirmation chased",
+      "I have just placed an order accidentally and requested to cancel. Please could you confirm asap?",
+      "Order change, before shipping queries",
+    ],
+    ["a bare cancellation request", "Can you cancel my order please?", "Order change, before shipping queries"],
+    ["a VAT invoice request", "Can you send me a VAT invoice?", "Admin related issues"],
+  ])("reads %s correctly", (_name, text, expected) => {
+    expect(classifyConversationCategory([text])).toBe(expected);
+  });
+
+  /**
+   * HAVING BOUGHT ONCE DOES NOT END THE CONVERSATION. `ALREADY_PURCHASED` vetoes
+   * a pre-sales reading as soon as a customer says they bought something — a
+   * guard against after-sales problems that could not tell a problem from a
+   * compliment, so a happy customer about to spend more was an admin matter.
+   */
+  it.each([
+    ["asking for a longer one", "I just purchased one was great, do you have another one longer?"],
+    ["asking to buy more", "Lamps are great thanks, I would like to buy four more if possible, thanks"],
+  ])("reads %s as pre-sales", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Pre sales queries");
+  });
+
+  /**
+   * AND THE VETO STILL DOES ITS REAL WORK. Each of these asks for another one
+   * too, and each names a problem first — which is the case, and not an enquiry.
+   */
+  it.each([
+    ["a wrong item", "I received the wrong one, do you have another one?", "Wrong item sent messages"],
+    ["damage", "It arrived broken, have you got a bigger one?", "Damage queries"],
+    ["a return", "I want to return this, do you have a bigger one?", "Return and refunds"],
+  ])("keeps %s out of pre-sales", (_name, text, expected) => {
+    expect(classifyConversationCategory([text])).toBe(expected);
+  });
+
+  /**
+   * A REALISATION IS REQUIRED FOR THE CHANGE OF MIND, and this is why: a bare
+   * "I need a different one" is what a customer says about goods that arrived
+   * broken, and `wants_order_change` sits ABOVE every problem intent.
+   */
+  it.each([
+    ["a fault", "The bulb is broken, I need a different one"],
+    ["damage with a realisation attached", "It arrived damaged and I realised I need a different size anyway"],
+  ])("does not read %s as an order change", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Damage queries");
+  });
+
+  /**
+   * GERMAN HELD TO A STRICTER STANDARD THAN ENGLISH, in two places, and both
+   * were sitting in the Admin residue. The English side has never needed an
+   * equivalent of "yet" to read a non-arrival, and an address complaint has
+   * been a delivery matter here since the pattern was written.
+   */
+  it.each([
+    ["a plain German non-delivery", "Artikel wurde nicht geliefert", "Delivery queries"],
+    ["German goods that did not arrive", "Die Ware ist nicht angekommen", "Delivery queries"],
+    [
+      "a German delivery-address complaint",
+      "Hallo, Die Lieferadresse ist verkehrt ! Das Paket soll in die Musterstrasse 31",
+      "Delivery queries",
+    ],
+    ["the form that already worked", "Ich habe die Ware noch nicht erhalten", "Delivery queries"],
+  ])("names %s", (_name, text, expected) => {
+    expect(classifyConversationCategory([text])).toBe(expected);
+  });
+
+  /** And an arrival is still an arrival. */
+  it("does not read a German arrival as a non-delivery", () => {
+    expect(classifyConversationCategory(["Danke, die Ware ist angekommen"])).not.toBe(
+      "Delivery queries",
+    );
+  });
+
+  /**
+   * WHAT HAS NOT ARRIVED HAS TO BE THE PARCEL. Dropping the "noch" requirement
+   * immediately claimed an invoice request — the customer has the goods and
+   * wants the paperwork, which is Admin's case and the one thing Delivery
+   * cannot answer. German puts the noun in front of the negation.
+   */
+  it.each([
+    [
+      "invoices chased for goods already received",
+      "Sehr geehrte Damen und Herren, leider habe ich zu meinen bestellten Artikeln die Rechnungen nicht erhalten. Bitte senden Sie mir noch die Rechnungen.",
+    ],
+    ["a single invoice chased", "Ich habe die Rechnung noch nicht erhalten"],
+  ])("gives %s to Admin, not Delivery", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Admin related issues");
+  });
+
+  /** But a parcel missing alongside the paperwork is still the parcel's case. */
+  it("keeps the parcel when both it and the invoice are outstanding", () => {
+    expect(
+      classifyConversationCategory(["Die Ware ist nicht angekommen und die Rechnung fehlt auch"]),
+    ).toBe("Delivery queries");
   });
 
   /** The distinction the task set out, stated as one pair. */
