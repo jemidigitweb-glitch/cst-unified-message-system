@@ -3086,6 +3086,22 @@ const LEFT_AT_A_DELIVERY_LOCATION = new RegExp(
 
 const DELIVERY_PROBLEM = new RegExp(
   [
+    /*
+     * IT WENT SOMEWHERE ELSE, said without the word "wrong".
+     *
+     * The alternative below already owns "wrong address" and "incorrect
+     * postcode", and customers say the same thing at least as often by naming
+     * WHERE it went instead of judging it: "my parcel was delivered to another
+     * address", "it was delivered to a different address". That reached no
+     * delivery signal at all — no intent, no event, no category — and fell to
+     * the Admin residue, which is the one place that cannot help with a parcel.
+     *
+     * A COMPLETED DELIVERY TO THE WRONG PLACE IS STILL OURS. This is also the
+     * guard that keeps such a message out of the marketplace-address rule
+     * above: it contains an address, a delivery and a finished order, and is a
+     * delivery failure rather than an account setting.
+     */
+    "\\bdeliver(?:ed|y)\\s+(?:to|at)\\s+(?:a\\s+|an\\s+|the\\s+)?(?:another|different|wrong|incorrect|someone\\s+else|somebody\\s+else)\\w*\\b",
     "\\b(?:missed\\s+(?:delivery\\s+)?attempt|attempted\\s+delivery|delivery\\s+attempt|failed\\s+delivery|missed\\s+delivery|delivery\\s+(?:was\\s+)?missed|(?:incorrect|wrong)\\s+(?:post\\s?code|postcode|address)|stranded|held\\s+(?:at|in)\\s+(?:the\\s+)?(?:depot|customs|sorting)|collection\\s+point|for\\s+pick\\s?-?\\s?up|pick\\s+(?:it|them)\\s+up|delivery\\s+office)\\b",
     // THE SAME COMPLAINT IN GERMAN. "(incorrect|wrong) address" has been a
     // delivery matter here since this pattern was written; the German for it
@@ -5424,6 +5440,59 @@ const ISSUE_OWNERSHIP: readonly Exclude<MessageEvent, "none">[] = [
  * message does when it has an ISSUE, and that axis has already decided by the
  * time this is consulted.
  */
+/** An address is what the request is about. Cheap gate before the three below. */
+const MENTIONS_AN_ADDRESS = /\baddress(?:e[sn])?\b|\banschrift\b|\blieferadresse\b/i;
+
+/**
+ * The order is past the point where the seller can amend it.
+ *
+ * PAST PARTICIPLES ONLY, and that is what keeps it apart from the requests it
+ * has to leave alone. "Please change address BEFORE DISPATCH" and "can you
+ * update my address before SHIPPING" are the very cases Order change exists
+ * for, and both name the same events — as things that have not happened yet.
+ * `\bdispatched\b` does not match "dispatch"; `\bshipped\b` does not match
+ * "shipping". A tense is doing real work here, so nothing is stemmed.
+ *
+ * `delivered` sits in this list and is the reason the delivery-complaint guard
+ * is checked first: a parcel delivered to the wrong address is a completed
+ * delivery and a failure we own, not an address the customer may still edit.
+ */
+const ORDER_BEYOND_AMENDMENT =
+  /\b(?:dispatched|despatched|shipped|delivered|completed|cancelled|canceled|refunded|versandt|versendet|zugestellt|geliefert|storniert)\b/i;
+
+/**
+ * The same words used to say the order has NOT gone yet — which is the exact
+ * case Order change exists to serve, and the reason the word alone is not
+ * evidence.
+ *
+ * MEASURED, and it cost two live threads to learn. Conversation 874 opens "I
+ * just ordered these but meant to send to my home address", and our own reply
+ * begins "Thank you for letting us know BEFORE your order WAS DISPATCHED" —
+ * a sentence whose entire point is that the order had not gone. Conversation
+ * 1297 says it twice, once on each side: "If the order has NOT been dispatched
+ * yet, would you be able to update the delivery address" and "Your order has
+ * NOT YET been dispatched, so we have updated the delivery address as
+ * requested." Both are amendments we successfully made, and a bare
+ * `\bdispatched\b` read all three sentences as proof the order had shipped.
+ *
+ * TWO FRAMINGS, and they are the only two these threads use: a negation before
+ * the participle, and `before` in front of the event.
+ */
+const ORDER_HAS_NOT_GONE_YET =
+  /\bbefore\b[^.!?]{0,40}\b(?:dispatch|despatch|ship|post|send|leave|leaves)\w*\b|\b(?:not|n[o']?t|never|noch\s+nicht|nicht)\b[^.!?]{0,30}\b(?:dispatched|despatched|shipped|posted|sent|delivered|versandt|versendet|zugestellt)\b|\b(?:has|have|is|are|was|were)\s+(?:not\s+|n[o']?t\s+)?yet\s+(?:been\s+)?(?:dispatched|despatched|shipped|posted|sent|delivered)\b/i;
+
+/**
+ * The customer asking HOW TO MANAGE THEIR OWN ADDRESS on the marketplace.
+ *
+ * Admin whatever the order's state, because it is not an amendment anybody here
+ * performs — the answer is where to click in their account, which is what the
+ * ADMIN rules cover. Distinguished from a real amendment by naming either the
+ * platform ("my eBay address", "address on eBay") or the how-to frame ("how do
+ * I change...") rather than asking US to do it ("can you update my address").
+ */
+const PLATFORM_ADDRESS_SELF_SERVICE =
+  /\bhow\s+(?:do|can)\s+i\b[^.!?]{0,40}\b(?:change|update|amend|edit|alter)\b[^.!?]{0,40}\baddress\b|\bhow\s+to\b[^.!?]{0,40}\b(?:change|update|amend|edit)\b[^.!?]{0,40}\baddress\b|\b(?:change|update|amend|edit|alter)\b[^.!?]{0,25}\b(?:ebay|amazon|paypal|etsy|account)\b[^.!?]{0,25}\baddress\b|\baddress\b[^.!?]{0,25}\bon\s+(?:ebay|amazon|paypal|etsy|my\s+account)\b/i;
+
 const ACTION_CATEGORY: Readonly<Partial<Record<RequestedAction, MessageCategory>>> = {
   whereabouts: "Delivery queries",
   refund_or_return: "Return and refunds",
@@ -5501,7 +5570,78 @@ function isReferenceOnly(text: string): boolean {
  * discarded before anything is decided. See the block comment above for the two
  * axes and why the issue outranks the action.
  */
+/**
+ * AN ADDRESS WE CAN NO LONGER CHANGE IS NOT AN ORDER CHANGE.
+ *
+ * "Order change, BEFORE SHIPPING" says in its own name what it is for: an order
+ * the seller can still amend. Every witness reads "can I change the delivery
+ * address" as an amendment from the wording alone, and the per-message gate on
+ * the action axis (`!hasTakenDelivery`) can only see the ONE message that asked
+ * — so a customer asking after we have already told them the parcel was
+ * delivered still produced an amendment nobody can carry out, and a reply
+ * offering to change something that has already gone.
+ *
+ * APPLIED TO THE FINISHED READING, not inside one branch, and that is not
+ * tidiness. This verdict arrives by two different routes: the ACTION axis for
+ * "how do I change delivery address on eBay" (`order_amendment`), and the
+ * INTENT layer for "can I update my eBay address" (`wants_order_change`, with
+ * no action at all). A test placed on either one misses the other.
+ *
+ * LIFECYCLE IS READ FROM THE WHOLE THREAD, INCLUDING OUR OWN MESSAGES. "Parcel
+ * was delivered to address A" is something WE said, and it is the most reliable
+ * statement of the order's state there is — more reliable than anything the
+ * customer says, because it is our own record. It is used ONLY as lifecycle
+ * evidence: no category is ever read off an outbound message.
+ *
+ * TWO ROUTES TO ADMIN, and they answer different questions.
+ *
+ *   the order has gone       dispatched, delivered, completed or cancelled, so
+ *                            there is no amendment left to make.
+ *   the marketplace owns it  "how do I change my address on eBay" is a question
+ *                            about ACCOUNT management. Admin whatever the
+ *                            order's state, because the answer is where to
+ *                            click in their account and it is not something the
+ *                            seller performs.
+ *
+ * A DELIVERY COMPLAINT IS NEVER EITHER. "My parcel was delivered to another
+ * address" contains an address, a delivery and a completed order, and is a
+ * delivery failure we own — so the guard is checked first and outranks both.
+ */
+function marketplaceAddressAdmin(
+  turns: readonly ConversationTurn[],
+  category: MessageCategory | null,
+): boolean {
+  if (category !== "Order change, before shipping queries") return false;
+
+  const inbound = turns
+    .filter((turn) => turn.direction === "inbound")
+    .map((turn) => normalise(turn.text?.trim() ?? ""))
+    .filter((text) => text !== "");
+  if (!inbound.some((text) => MENTIONS_AN_ADDRESS.test(text))) return false;
+
+  // Checked first, and it outranks both routes below.
+  if (inbound.some((text) => DELIVERY_PROBLEM.test(text) || HAS_NOT_ARRIVED.test(text))) {
+    return false;
+  }
+
+  // Every turn, ours included — see above. A message that says the order has
+  // NOT gone contributes nothing, whichever side said it.
+  const everything = turns.map((turn) => normalise(turn.text?.trim() ?? ""));
+  return (
+    everything.some(
+      (text) => ORDER_BEYOND_AMENDMENT.test(text) && !ORDER_HAS_NOT_GONE_YET.test(text),
+    ) || inbound.some((text) => PLATFORM_ADDRESS_SELF_SERVICE.test(text))
+  );
+}
+
 export function readConversation(turns: readonly ConversationTurn[]): ConversationReading {
+  const reading = readConversationAxes(turns);
+  return marketplaceAddressAdmin(turns, reading.category)
+    ? { ...reading, category: "Admin related issues" }
+    : reading;
+}
+
+function readConversationAxes(turns: readonly ConversationTurn[]): ConversationReading {
   const texts = turns
     .filter((turn) => turn.direction === "inbound")
     .map((turn) => normalise(turn.text?.trim() ?? ""))
@@ -5855,6 +5995,37 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
     }
   }
 
+  /*
+   * AN ADDRESS WE CAN NO LONGER CHANGE IS NOT AN ORDER CHANGE.
+   *
+   * "Order change, BEFORE SHIPPING" says in its own name what it is for: an
+   * order the seller can still amend. The action axis reads "can I change the
+   * delivery address" as an amendment from the wording alone, and the
+   * per-message gate on it (`!hasTakenDelivery`) can only see the ONE message
+   * that asked — so a customer asking after we have already told them the
+   * parcel was delivered still produced an amendment request nobody can carry
+   * out. The reply then offers to change something that has already gone.
+   *
+   * LIFECYCLE IS READ FROM THE WHOLE THREAD, INCLUDING OUR OWN MESSAGES, and
+   * that is the point of doing this here rather than per message. "Parcel was
+   * delivered to address A" is something WE said, and it is the most reliable
+   * statement of the order's state in the thread — more reliable than anything
+   * the customer says, because it is our own record. It is used ONLY as
+   * lifecycle evidence: no category is ever read off an outbound message.
+   *
+   * TWO ROUTES TO ADMIN, and they are different questions.
+   *
+   *   the order has gone      dispatched, delivered, completed or cancelled, so
+   *                           there is no amendment left to make.
+   *   the marketplace owns it "how do I change my address on eBay" is a question
+   *                           about ACCOUNT management. It is Admin whatever the
+   *                           order's state, because the answer is the same and
+   *                           it is not something the seller performs.
+   *
+   * A DELIVERY COMPLAINT IS NEVER EITHER. "My parcel was delivered to another
+   * address" contains an address, a delivery and a completed order, and is a
+   * delivery failure we own — so the guard is checked first and outranks both.
+   */
   const fromAction = ACTION_CATEGORY[action];
   if (fromAction !== undefined) return { category: fromAction, issue, requestedAction: action };
 

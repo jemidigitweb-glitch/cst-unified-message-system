@@ -40,6 +40,17 @@ import { claimStatus, clausesOf, speechActOf } from "@/lib/knowledge/message-sem
 type GoldenCase = {
   /** The customer's messages, oldest first. One entry is a single message. */
   readonly thread: readonly string[];
+  /**
+   * The thread WITH DIRECTIONS, where our own replies are part of the evidence.
+   *
+   * Present only on the rows that need it. Almost every boundary is decided by
+   * what the customer said, and `thread` says so by carrying nothing else — but
+   * an order's LIFECYCLE is most reliably stated by us ("your order has been
+   * dispatched"), and a rule that reads it cannot be tested without a way to
+   * write it down. When present this is what runs; `thread` still carries the
+   * inbound half so the row reads as a conversation either way.
+   */
+  readonly turns?: readonly { readonly direction: "inbound" | "outbound"; readonly text: string }[];
   readonly expectedCategory: MessageCategory | null;
   /** Why this is the right answer — the rule or distinction being pinned. */
   readonly reason: string;
@@ -55,7 +66,11 @@ function check(cases: readonly GoldenCase[]): void {
   it.each(cases.map((entry) => [entry.thread.join(" ⏎ "), entry] as const))(
     "%s",
     (_label, entry) => {
-      expect(classifyConversationCategory([...entry.thread])).toBe(entry.expectedCategory);
+      const actual =
+        entry.turns === undefined
+          ? classifyConversationCategory([...entry.thread])
+          : readConversation(entry.turns.map((turn) => ({ ...turn }))).category;
+      expect(actual).toBe(entry.expectedCategory);
     },
   );
 }
@@ -620,6 +635,164 @@ describe("golden set — 4. wrong item vs the customer's own mistake", () => {
   describe("the customer chose the wrong thing", () => check(CUSTOMER_MISTAKE));
 });
 
+/* ── 4b. AN ADDRESS CHANGE, AGAINST THE ORDER'S LIFECYCLE ───────────────── */
+
+/**
+ * "Order change, BEFORE SHIPPING" says in its own name what it is for. Whether
+ * a request to change an address belongs to it turns on whether the order can
+ * still be changed — which the words alone do not say.
+ */
+const ADDRESS_STILL_CHANGEABLE: readonly GoldenCase[] = [
+  {
+    thread: ["I just placed an order, can I change the delivery address?"],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "An active order and a request we can carry out.",
+    regressionSource: "brief: order-change lifecycle",
+  },
+  {
+    thread: ["I just ordered, can you change delivery address?"],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "Case 1 of the brief: not dispatched, and the customer asks US to do it.",
+    regressionSource: "brief: case 1",
+  },
+  {
+    thread: ["Can you update my address before shipping?"],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "Names the dispatch event as something that has NOT happened. The " +
+      "lifecycle test uses past participles only, so `shipping` cannot trip it.",
+    regressionSource: "brief: order-change lifecycle",
+  },
+  {
+    thread: ["Please change address before dispatch"],
+    expectedCategory: "Order change, before shipping queries",
+    reason: "`dispatch` is not `dispatched`; a tense is doing real work here.",
+    regressionSource: "brief: order-change lifecycle",
+  },
+  {
+    thread: [
+      "Hi, I just ordered these but meant to send to my home address - is it possible to change delivery to 41 Sample Lane West, Kingston, KT0 0AA?",
+      "Thanks Dhruv, really appreciated, Liz",
+    ],
+    turns: [
+      {
+        direction: "inbound",
+        text: "Hi, I just ordered these but meant to send to my home address - is it possible to change delivery to 41 Sample Lane West, Kingston, KT0 0AA?",
+      },
+      {
+        direction: "outbound",
+        text: "Thank you for letting us know before your order was dispatched. We have now updated the delivery address as requested.",
+      },
+      { direction: "inbound", text: "Thanks Dhruv, really appreciated, Liz" },
+    ],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "A LIVE AMENDMENT WE ACTUALLY MADE, and the reason the lifecycle test has " +
+      "to read negation and tense. Our own reply contains the word `dispatched` " +
+      "in a sentence whose whole point is that the order had not gone.",
+    regressionSource: "live conversation 874",
+  },
+  {
+    thread: [
+      "Hi, I have just realised that I accidentally used my old delivery address for this order. If the order has not been dispatched yet, would you be able to update the delivery address?",
+    ],
+    expectedCategory: "Order change, before shipping queries",
+    reason:
+      "The customer says `not been dispatched yet` themselves. A bare " +
+      "`dispatched` read that as proof the order had shipped.",
+    regressionSource: "live conversation 1297",
+  },
+];
+
+const ADDRESS_IS_THE_MARKETPLACE_S: readonly GoldenCase[] = [
+  {
+    thread: ["How do I change delivery address on eBay?"],
+    turns: [
+      { direction: "outbound", text: "Parcel was delivered to address A." },
+      { direction: "inbound", text: "How do I change delivery address on eBay?" },
+    ],
+    expectedCategory: "Admin related issues",
+    reason:
+      "Case 2 of the brief. The lifecycle comes from OUR message — the most " +
+      "reliable statement of the order's state there is — and the question is " +
+      "about account management, not an amendment the seller performs.",
+    regressionSource: "brief: case 2",
+  },
+  {
+    thread: ["How do l change delivery address on ebay"],
+    expectedCategory: "Admin related issues",
+    reason: "The live instance of case 2, typo and all.",
+    regressionSource: "live conversation 37945",
+  },
+  {
+    thread: ["Can I update my eBay address?"],
+    expectedCategory: "Admin related issues",
+    reason:
+      "Case 4: no order context at all. Naming the PLATFORM is what makes it " +
+      "account management, so no lifecycle evidence is needed. Reached by the " +
+      "intent layer with no action set, which is why the rule is applied to the " +
+      "finished reading rather than to one branch.",
+    regressionSource: "brief: case 4",
+  },
+  {
+    thread: ["Can I change my address?"],
+    turns: [
+      { direction: "outbound", text: "Your order has been dispatched." },
+      { direction: "inbound", text: "Can I change my address?" },
+    ],
+    expectedCategory: "Admin related issues",
+    reason:
+      "No platform named, so this one turns entirely on the lifecycle: there is " +
+      "no amendment left for us to make.",
+    regressionSource: "brief: order-change lifecycle",
+  },
+];
+
+/** A completed delivery to the wrong place is ours, not an account setting. */
+const ADDRESS_IS_A_DELIVERY_FAILURE: readonly GoldenCase[] = [
+  {
+    thread: ["My parcel went to the wrong address"],
+    expectedCategory: "Delivery queries",
+    reason: "Case 3 of the brief: a misdelivery, stated with the word `wrong`.",
+    regressionSource: "brief: case 3",
+  },
+  {
+    thread: ["My parcel was delivered to another address"],
+    expectedCategory: "Delivery queries",
+    reason:
+      "The same complaint without the word `wrong`. It reached no delivery " +
+      "signal at all — no intent, no event, no category — and fell to the Admin " +
+      "residue, which is the one place that cannot help with a parcel.",
+    regressionSource: "brief: delivery-complaint protection",
+  },
+  {
+    thread: ["Tracking shows delivered but not my address"],
+    expectedCategory: "Delivery queries",
+    reason: "A completed delivery to somewhere else is a delivery failure.",
+    regressionSource: "brief: delivery-complaint protection",
+  },
+  {
+    thread: ["My parcel went to the wrong address"],
+    turns: [
+      { direction: "outbound", text: "Tracking shows delivered." },
+      { direction: "inbound", text: "My parcel went to the wrong address" },
+    ],
+    expectedCategory: "Delivery queries",
+    reason:
+      "Every ingredient of the Admin rule is present — an address, a delivery, " +
+      "a finished order — and the complaint outranks all of them.",
+    regressionSource: "brief: case 3 with lifecycle context",
+  },
+];
+
+describe("golden set — 4b. an address change against the order's lifecycle", () => {
+  describe("the order can still be changed", () => check(ADDRESS_STILL_CHANGEABLE));
+  describe("the order has gone, or the marketplace owns the address", () =>
+    check(ADDRESS_IS_THE_MARKETPLACE_S));
+  describe("the address is a delivery failure, not a setting", () =>
+    check(ADDRESS_IS_A_DELIVERY_FAILURE));
+});
+
 describe("golden set — 5. damage vs return", () => {
   describe("goods that arrived harmed", () => check(DAMAGE));
   describe("goods that are perfectly fine", () => check(RETURN_NOT_DAMAGE));
@@ -638,6 +811,7 @@ describe("the dataset is well formed", () => {
     ...DEFECTIVE, ...NOT_DEFECTIVE, ...PRE_SALES, ...ADMIN, ...DELIVERY, ...RETURN,
     ...DELIVERY_WITH_REFUND, ...WRONG_ITEM, ...CUSTOMER_MISTAKE, ...DAMAGE,
     ...RETURN_NOT_DAMAGE, ...THREADS, ...NEGATIVE,
+    ...ADDRESS_STILL_CHANGEABLE, ...ADDRESS_IS_THE_MARKETPLACE_S, ...ADDRESS_IS_A_DELIVERY_FAILURE,
   ];
 
   it("every case states a reason and a source", () => {
@@ -651,7 +825,13 @@ describe("the dataset is well formed", () => {
   it("holds no duplicate threads", () => {
     const seen = new Map<string, MessageCategory | null>();
     for (const entry of ALL) {
-      const key = entry.thread.join(" ");
+      // THE DIRECTIONS ARE PART OF THE IDENTITY. The same customer message
+      // with and without one of our replies in front of it are two different
+      // cases, and that pairing is precisely how the lifecycle rules are pinned.
+      const key =
+        entry.turns === undefined
+          ? entry.thread.join(" ")
+          : entry.turns.map((turn) => `${turn.direction}:${turn.text}`).join(" ");
       // The same thread twice with the same answer is redundant; with two
       // different answers it is a contradiction. Both are worth failing on.
       expect(seen.has(key), `duplicated: ${key}`).toBe(false);
