@@ -169,8 +169,34 @@ export function clauseAt(text: string, index: number): Clause {
  * something is missing") as a missing-parts trigger. Reading the hedge as a
  * question threw the claim away.
  */
+/**
+ * AN AUXILIARY IS ONLY A QUESTION WHERE IT OPENS ONE — the same rule as the
+ * wh-words above, and the one place it had never been applied.
+ *
+ * WHAT MAKES AN AUXILIARY INTERROGATIVE IS INVERSION: the verb moves in FRONT of
+ * its subject. "IS THIS the correct size?" asks; "This IS THE wrong size" tells.
+ * Matched anywhere in the clause, `is the` / `are the` / `was the` occur in
+ * plain statements constantly, and every one of them came back as a question:
+ *
+ *   "They are the wrong colour"             claim: asked, event: none
+ *   "This is the wrong item"                claim: asked, event: none
+ *   "The ceiling roses are the wrong ones"  claim: asked, event: none
+ *   "It was the wrong type sent again"      claim: asked, event: none
+ *
+ * Each is a customer REPORTING a wrong item, and because the claim came back
+ * `asked` rather than `asserted`, `semanticsOf` recorded no event and the issue
+ * axis was blind to the whole family. Measured over 1,335 live eBay threads, 51
+ * of the 362 messages carrying a problem intent had `event: "none"`, and this
+ * was the largest single cause.
+ *
+ * ANCHORED TO THE CLAUSE, NOT THE MESSAGE, which is what makes it safe: the
+ * clause splitter already breaks before a mid-sentence question ("Thanks for
+ * that, IS THIS suitable for outdoors"), so the inverted auxiliary still opens
+ * its own clause wherever a customer actually asks something. An explicit
+ * question mark still counts on its own, independently of any of this.
+ */
 const INTERROGATIVE_FRAME =
-  /\?|\b(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|advise|clarify)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/iu;
+  /\?|^\s*[\p{P}\s]*(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|advise|clarify)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/iu;
 
 /**
  * A clause that says the message is NOT about something.

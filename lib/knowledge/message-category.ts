@@ -846,9 +846,37 @@ const ORDERED_THE_WRONG_THING = /\bfalsch\w*\s+(?:\w+\s+){0,3}bestellt\b/i;
 const WANTS_A_DIFFERENT_ONE =
   /\b(?:ander(?:e|es|en|er|em)|umtausch\w*|(?:um)?tauschen|wechseln|different|swap|exchange)\b/i;
 
+/**
+ * THE CUSTOMER HAS CHANGED THEIR MIND ABOUT WHAT THEY NEED.
+ *
+ * `ORDERED_THE_WRONG_THING` above is German-only — `falsch ... bestellt` — so
+ * the English form of the same thing reached nothing at all:
+ *
+ *   "Just realised I need different cable"
+ *
+ * Nobody has done anything wrong and nothing has gone wrong with the goods. The
+ * customer has looked again at what they bought and wants something else, which
+ * is an amendment while the order is still here and a return once it is not.
+ *
+ * BOTH HALVES ARE REQUIRED, AND THE FIRST IS WHAT KEEPS IT OUT OF THE PROBLEM
+ * CATEGORIES. "I need a different one" on its own is what a customer says about
+ * a bulb that arrived broken, and `wants_order_change` sits ABOVE every problem
+ * intent in `INTENT_OWNERSHIP` — so a bare "need a different X" here would take
+ * damage and fault cases with it. A REALISATION is the thing that marks a
+ * change of mind rather than a complaint: nothing has happened except that the
+ * customer thought about it again.
+ */
+const CHANGED_THEIR_MIND = new RegExp(
+  "\\b(?:(?:just\\s+)?realis(?:e|ed|ing)|(?:just\\s+)?realiz(?:e|ed|ing)|changed\\s+my\\s+mind|" +
+    "on\\s+second\\s+thoughts|having\\s+thought\\s+about\\s+it)\\b" +
+    "[^.!?;\\n]{0,40}?\\b(?:need|needed|want|wanted|require|should\\s+have)\\b" +
+    "[^.!?;\\n]{0,25}?\\b(?:different|another|other|instead|longer|shorter|bigger|smaller|wider)\\b",
+  "i",
+);
+
 function looksLikeOwnOrderingMistake(text: string): boolean {
   return (
-    ORDERED_THE_WRONG_THING.test(text) &&
+    (ORDERED_THE_WRONG_THING.test(text) || CHANGED_THEIR_MIND.test(text)) &&
     WANTS_A_DIFFERENT_ONE.test(text) &&
     !EXPLICIT_REMEDY_REQUEST.test(text)
   );
@@ -1293,6 +1321,14 @@ const RETURN_UNDER_WAY = new RegExp(
     "\\b(?:can|could|may|shall)\\s+(?:i|we)\\s+(?:please\\s+)?(?:just\\s+)?return\\b",
     "\\breturn\\s+(?:it|them|this|these|the|item|items|my)\\b",
     "\\bsend\\s+(?:it|them|this|these)\\s+back\\b",
+    // THE PAST TENSE, which was missing entirely. The comment below names
+    // Returns INT08's own triggers — "sent the parcel back", "I posted it back"
+    // — and only the noun forms were written, so a customer using a pronoun
+    // ("I sent it back already", "I posted them back last week") set no return
+    // at all and their thread fell to the admin catch-all. The same for the
+    // passive a customer announces one with: "all goods will be sent back".
+    "\\b(?:sent|posted|shipped|returned|dropped)\\s+(?:it|them|this|these)\\s+(?:straight\\s+|right\\s+)?back\\b",
+    "\\b(?:goods|items|item|parcel|package|order|lot)\\b[^.!?;\\n]{0,20}?\\b(?:sent|posted|shipped)\\s+back\\b",
     // "send parcel straight back to Ledsone", "post the item back". Returns
     // INT08 lists "sent the parcel back" and "I posted it back"; the noun forms
     // were missing and a customer asking WHERE to send it back read as nothing
@@ -1443,19 +1479,102 @@ const AWAITING_SOMETHING = /\b(still|yet|waiting|when will|when is|how long|noch
 /** Longer than a buyer's question; by this length the thread is usually a case. */
 const MAX_ENQUIRY_LENGTH = 250;
 
+/**
+ * THE CUSTOMER SAYS THEY HAVE NOT BOUGHT IT YET.
+ *
+ * The strongest pre-sales signal there is, and nothing read it. This rule
+ * required the message to name a product ATTRIBUTE, so a buyer who says plainly
+ * what they are doing — "I am trying to buy the hook" — reached nothing at all
+ * and the whole thread fell to the admin catch-all.
+ *
+ * IT MUST BE A PURCHASE STILL TO COME. `ALREADY_PURCHASED` is checked below and
+ * is the general guard, but it cannot see the tense inside this phrase, so the
+ * shapes here are future or in-progress by construction: TRYING to buy, WANT to
+ * buy, LOOKING to buy, BEFORE I buy. "I bought" and "I have purchased" match
+ * none of them, and are excluded again by that guard.
+ */
+const INTENDS_TO_BUY =
+  /\b(?:trying|want|wanting|looking|hoping|planning|intending|intend|would\s+like|about)\s+to\s+(?:buy|purchase|order|get)\b|\bthinking\s+(?:of|about)\s+(?:buying|purchasing|ordering)\b|\bbefore\s+i\s+(?:buy|purchase|order|commit)\b|\bam\s+trying\s+to\s+buy\b|\bm(?:ö|oe)chte\s+(?:ich\s+)?kaufen\b|\bvor\s+dem\s+kauf\b/i;
+
+/**
+ * WHAT DOES IT COST — a question about the product, and one this rule could not
+ * ask. `PRODUCT_ATTRIBUTE_STEMS` is a list of PHYSICAL attributes: colour,
+ * material, wattage, size. Price is the commercial one, it is the second thing
+ * every buyer asks, and "What is the price?" was an admin matter.
+ *
+ * `PACK_SIZE_QUESTION` already carries "price for one / cost for the pair",
+ * which is the price asked as a pack-size question. This is the plain form.
+ */
+const PRICE_QUESTION =
+  /\b(?:what(?:'s|\s+is|\s+are)?\s+the\s+)?price\b|\bhow\s+much\b|\bcost\s+of\b|\bwhat\s+does\s+it\s+cost\b|\bpreis\b|\bwas\s+kostet\b/i;
+
+/**
+ * A HAPPY CUSTOMER ASKING ABOUT THE NEXT PURCHASE.
+ *
+ *   "I just purchased one was great, do you have another one longer?"
+ *   "Lamps are great thanks, I would like to buy four more if possible"
+ *
+ * Both are buyers about to spend more money, and both were admin matters. The
+ * block is `ALREADY_PURCHASED`, which vetoes a pre-sales reading the moment a
+ * customer says they have bought something — a guard that exists to stop
+ * after-sales PROBLEMS reading as enquiries, and which cannot tell a problem
+ * from a compliment.
+ *
+ * So the veto is lifted for exactly this shape: an ask about a FURTHER or
+ * DIFFERENT item. `MENTIONS_A_PROBLEM` still applies and is what keeps the
+ * guard's real work intact — "I received the wrong one, do you have another?"
+ * and "it arrived broken, have you got a bigger one?" both name a problem and
+ * are refused, as they were before.
+ */
+const ASKING_FOR_A_FURTHER_PURCHASE = new RegExp(
+  [
+    // "do you have another", "have you got any other", "do you sell a longer".
+    "\\b(?:do|have|did)\\s+you\\s+(?:have|do|sell|stock|got|make)\\b" +
+      "[^.!?;\\n]{0,30}?\\b(?:another|other|others|longer|shorter|bigger|larger|smaller|wider|different)\\b",
+    // "another one longer", "a second one in black".
+    "\\b(?:another|a\\s+second)\\s+(?:one|set)\\b[^.!?;\\n]{0,25}?\\b(?:longer|shorter|bigger|larger|smaller|wider|different|in)\\b",
+    // "I would like to buy four more", "can I buy another".
+    "\\bbuy\\s+(?:another|more|\\d+\\s+more|(?:one|two|three|four|five|six)\\s+more)\\b",
+    "\\border\\s+(?:another|\\d+\\s+more)\\b",
+  ].join("|"),
+  "i",
+);
+
 function looksPreSales(text: string): boolean {
   return (
     text.length < MAX_ENQUIRY_LENGTH &&
-    asksOrRequests(text) &&
+    // ASKING SOMETHING, OR SAYING PLAINLY THAT YOU ARE BUYING.
+    //
+    // The ask used to be an unconditional requirement, and relaxing it once
+    // already claimed a pinned conversation: "Due to the physical size ... of my
+    // RETURNING parcel I believe the cost should be no more than a 1st class
+    // letter. I was INTENDING TO PURCHASE the correct item" is a return-postage
+    // negotiation that mentions a future purchase and asks nothing.
+    //
+    // What separates that from "I am trying to buy this item, but the image is
+    // not showing properly" is not whether a question was asked — neither asks
+    // one — it is that the first customer is SENDING SOMETHING BACK. So the
+    // return is what the exception is predicated on, which is the fact that
+    // actually distinguishes them, and a buyer stating their intent is read as
+    // the pre-sales message it is.
+    (asksOrRequests(text) || (INTENDS_TO_BUY.test(text) && !returnIsUnderWay(text))) &&
     // HOW MANY COME IN THE BOX IS A SPECIFICATION QUESTION. "I would like to
     // purchase Types 4 and 5. Do they come in boxes of 3? I need a total of 8."
     // is a buyer working out what to order and it reached the admin catch-all,
     // because pack size is not in `PRODUCT_ATTRIBUTE_STEMS` and nothing else in
     // the message names an attribute. The four exclusions below still apply, so
     // this cannot take a message that reports a problem or names an order.
-    (namesAProductAttribute(text) || PACK_SIZE_QUESTION.test(text)) &&
+    (namesAProductAttribute(text) ||
+      PACK_SIZE_QUESTION.test(text) ||
+      INTENDS_TO_BUY.test(text) ||
+      PRICE_QUESTION.test(text) ||
+      ASKING_FOR_A_FURTHER_PURCHASE.test(text)) &&
     !ASKING_FOR_PAPERWORK.test(text) &&
-    !ALREADY_PURCHASED.test(text) &&
+    // HAVING BOUGHT ONCE DOES NOT END THE CONVERSATION. The veto stands for
+    // everything except a customer asking about the NEXT one — see
+    // `ASKING_FOR_A_FURTHER_PURCHASE`. `MENTIONS_A_PROBLEM` below is what keeps
+    // this from re-opening the after-sales cases the veto exists for.
+    (!ALREADY_PURCHASED.test(text) || ASKING_FOR_A_FURTHER_PURCHASE.test(text)) &&
     !AWAITING_SOMETHING.test(text) &&
     !MENTIONS_A_PROBLEM.test(text)
   );
@@ -1532,7 +1651,15 @@ export function classifyMessageCategory(customerText: string | null): MessageCat
   // mis-order wanting a swap, then a pre-sales enquiry. Checked in that order
   // because the first is the narrower of the two.
   if (scored.length === 0) {
-    if (looksLikeOwnOrderingMistake(text)) return "Order change, before shipping queries";
+    // WHICH OF THE TWO IT IS DEPENDS ON THE ORDER'S STATE. A customer who wants
+    // something else is amending an order we still hold and returning one we do
+    // not — the before-shipping / post-delivery line, drawn here with the same
+    // arrival test everything else uses.
+    if (looksLikeOwnOrderingMistake(text)) {
+      return hasTakenDelivery(text)
+        ? "Return and refunds"
+        : "Order change, before shipping queries";
+    }
     if (looksLikeDeliveryRequest(text)) return "Delivery queries";
     return looksPreSales(text) ? "Pre sales queries" : null;
   }
@@ -1670,8 +1797,72 @@ const HAS_THE_GOODS = new RegExp(
  * DIFFERENT PRODUCT is making the wrong-item claim as precisely as it can be
  * made — and `A_MISMATCH` read nothing at all in it.
  */
-const A_MISMATCH =
-  /\b(?:wrong|incorrect|not\s+what\s+i\s+(?:(?:'ve|have|had)\s+)?(?:ordered|order|asked|requested|bought|purchased|paid|chose|chosen|selected)|not\s+the\s+one|different\s+(?:item|product|one|model|type|thing)|(?:completely|totally|entirely)\s+different|(?:the\s+)?(?:correct|right)\s+one|belongs?\s+to\s+(?:another|a\s+different)|(?:another|a\s+different)\s+(?:type|kind|model|version)\s+of|falsch\w*|nicht\s+das\s+was)\b/i;
+/**
+ * "SHOULD HAVE HAD X BUT WAS SENT Y" — the mismatch stated as a SUBSTITUTION,
+ * with neither the word `wrong` nor the word `different` anywhere in it.
+ *
+ * Reported live, and it is two messages of one conversation:
+ *
+ *   "the bulb holder is black instead of being chrome"
+ *   "should have had satin nikel lamp holder but was sent black on one of them"
+ *
+ * A customer naming what they should have had and what came instead is making
+ * the wrong-item claim as plainly as anyone makes it, and both messages reached
+ * NOTHING — the second one on its own was an admin catch-all. `A_MISMATCH` knew
+ * "wrong", "incorrect", "not what I ordered" and "different item"; it did not
+ * know the shape where the customer simply names the two things.
+ *
+ * TWO SHAPES, AND BOTH ARE BOUNDED HARD — the first attempt at this was not,
+ * and it broke three pinned conversations at once. A BARE "should have" is the
+ * way EVERY category states what was due, not just this one:
+ *
+ *   "I should have received 4 but only got 2"          a quantity error
+ *   "the screws that should have been included are     a parts case
+ *    not there"
+ *   "it should have arrived by now"                    a delivery chase
+ *
+ * What makes the reported message a wrong ITEM is not the expectation on its
+ * own — it is the expectation set AGAINST A DIFFERENT THING HAVING BEEN SENT.
+ * So the contrast and the supply are both required, and the gap between them
+ * may not cross a negator: "should have been delivered but nothing was sent" is
+ * a non-arrival, and the same three words would otherwise read it as a swap.
+ *
+ * A BARE "INSTEAD OF" IS JUST AS DANGEROUS, and measuring it over the live
+ * corpus is what showed it. It is the ordinary English for choosing between two
+ * of anything, and unbounded it moved four threads that had nothing wrong with
+ * the item:
+ *
+ *   "send us the black with gold interior INSTEAD OF the version I originally
+ *    ordered"                                    an order AMENDMENT
+ *   "come with chrome screws INSTEAD OF black    a 13-message DAMAGE saga,
+ *    ones"                                       decided by its last aside
+ *   "STATT der 5 bestellten nur 4 Klemmdosen     a QUANTITY shortfall — German
+ *    geliefert"                                  `statt` counts units too
+ *
+ * So it is anchored to a FINISH NAMED IMMEDIATELY BEFORE IT. "black instead of
+ * chrome" is a substitution of the thing itself; "the version I originally
+ * ordered instead of ..." and "screws instead of ..." are not, because the word
+ * in front of `instead` is not a finish. A closed list, for the same reason the
+ * component vocabulary is one. German `statt` is deliberately absent: it is the
+ * word a German customer counts with, and it has no such anchor.
+ *
+ * The spelling is the customer's: `nikel` is in the list beside `nickel`.
+ */
+const FINISH =
+  "black|white|chrome|brass|copper|nickel|nikel|gold|golden|silver|bronze|grey|gray|" +
+  "brushed|satin|matt|matte|polished|antique|clear|smoked|amber|green|blue|red|pink|cream|ivory";
+
+const NOT_PAST_A_NEGATOR = "(?:(?!\\b(?:not|never|nothing|no|n't)\\b)[^.!?;\\n])";
+
+const SUBSTITUTED_FOR_WHAT_WAS_DUE =
+  `(?:${FINISH})\\s+instead\\s+of\\b` +
+  `|should\\s+have\\s+(?:had|been)\\b[^.!?;\\n]{0,60}?\\bbut\\b${NOT_PAST_A_NEGATOR}{0,30}?\\b(?:sent|supplied|given|shipped)\\b`;
+
+const A_MISMATCH = new RegExp(
+  "\\b(?:wrong|incorrect|not\\s+what\\s+i\\s+(?:(?:'ve|have|had)\\s+)?(?:ordered|order|asked|requested|bought|purchased|paid|chose|chosen|selected)|not\\s+the\\s+one|different\\s+(?:item|product|one|model|type|thing)|(?:completely|totally|entirely)\\s+different|(?:the\\s+)?(?:correct|right)\\s+one|belongs?\\s+to\\s+(?:another|a\\s+different)|(?:another|a\\s+different)\\s+(?:type|kind|model|version)\\s+of|falsch\\w*|nicht\\s+das\\s+was)\\b" +
+    `|\\b(?:${SUBSTITUTED_FOR_WHAT_WAS_DUE})`,
+  "i",
+);
 
 /**
  * The thing that is wrong is WHERE IT IS GOING, not what was sent.
@@ -1681,8 +1872,14 @@ const A_MISMATCH =
  * bare word `wrong`. Named here so the wrong-item CLAIM can decline it, which
  * is the only place early enough to matter.
  */
+/**
+ * The German half knew `falsche Adresse` and `Adresse ist falsch`, and missed
+ * the compound noun a German customer actually writes — LIEFERadresse,
+ * RECHNUNGSadresse — and `verkehrt`, which is the other everyday word for
+ * wrong: "Die Lieferadresse ist verkehrt !" reached nothing at all.
+ */
 const THE_ADDRESS_IS_WRONG =
-  /\b(?:wrong|incorrect)\s+(?:delivery\s+|billing\s+|postal\s+|shipping\s+)?(?:address|postcode|post\s?code|zip)\b|\b(?:delivery\s+|billing\s+|postal\s+|shipping\s+)?(?:address|postcode|post\s?code)\s+(?:is|was|are|were)\s+(?:wrong|incorrect)\b|\bfalsche\s+adresse\b|\badresse\s+ist\s+falsch\b/i;
+  /\b(?:wrong|incorrect)\s+(?:delivery\s+|billing\s+|postal\s+|shipping\s+)?(?:address|postcode|post\s?code|zip)\b|\b(?:delivery\s+|billing\s+|postal\s+|shipping\s+)?(?:address|postcode|post\s?code)\s+(?:is|was|are|were)\s+(?:wrong|incorrect)\b|\bfalsche\s+(?:liefer|rechnungs|versand)?adresse\b|\b(?:liefer|rechnungs|versand)?adresse\s+ist\s+(?:falsch|verkehrt)\b/i;
 
 /**
  * SOMETHING DIFFERENT WAS SUPPLIED TO THE CUSTOMER.
@@ -2251,6 +2448,43 @@ export function quantityShortfallEvidence(customerText: string | null): Shortfal
       : "MISSING_ORDER_COMPONENT";
   }
 
+  /*
+   * "ONLY 1 PENDANT WAS DELIVERED" — the shortfall stated of the DELIVERY.
+   *
+   * THE REPORTED REGRESSION, and it is a whole message: "Hi / Only 1 pendant was
+   * delivered." Nothing above it can fire. There is one count, so the arithmetic
+   * finds no pair to compare; no fraction, so `PARTIAL_ORDER` misses; the count
+   * is the SUBJECT rather than the object of the verb, so `BARE_SHORTFALL`'s
+   * "only received one X" misses too; and the customer never writes missing,
+   * short or absent, so `SOMETHING_ABSENT` misses. It fell to the admin
+   * catch-all, and an agent saw no case at all on a shipment that is short.
+   *
+   * WHY THIS IS THE QUANTITY CASE AND NOT THE PARTS CASE, with no reference to
+   * the order in the message to anchor it. `MEASURED_AGAINST_THE_ORDER` exists
+   * because "only 2 arrived" is genuinely ambiguous — two of the three shades
+   * that belong to one pendant, or two of the three pendants bought — and the
+   * anchor is what tells them apart. DELIVERED is not ambiguous in that way. It
+   * is predicated on the consignment: what the courier handed over, measured
+   * against what was bought. Nobody describes the contents of a box they are
+   * holding as having been "delivered" to them; they say what was in it, what
+   * came with it, what was there. So the delivery verb IS the anchor here, and
+   * this is a shipment short against the order.
+   *
+   * IT RUNS LAST OF THE COUNTING RULES, WHICH IS WHAT KEEPS IT NARROW. Every
+   * shape that names an expectation has already been decided above, so the parts
+   * readings survive untouched — "Only two lampshades arrived but should be
+   * three" is settled by the arithmetic as a component absent from goods that
+   * did arrive, and "Leider sind nur 2 Lampenschirme dabei. Es sollten aber 3
+   * dabei sein" likewise. What reaches here is a bare count of units delivered
+   * and nothing else.
+   *
+   * A FUTURE DELIVERY IS NOT A SHORT ONE. "Only 1 will be delivered" is us
+   * telling a customer what to expect, or a customer repeating it back, and it
+   * reports no shortfall — so a modal may not appear between the count and the
+   * verb.
+   */
+  if (DELIVERY_WAS_SHORT.test(text)) return "ORDERED_QUANTITY_GREATER_THAN_RECEIVED";
+
   if (SOMETHING_ABSENT.test(text)) return "MISSING_ORDER_COMPONENT";
   return null;
 }
@@ -2276,6 +2510,32 @@ const BARE_SHORTFALL = new RegExp(
     `\\bonly\\s+(?:received|recieved|got|sent|had)\\s+(?:one|1|a\\s+single)\\s+${NAMES_WHAT_IS_SHORT}`,
     "\\bonly\\s+(?:one|1)\\s+(?:\\w+\\s+){0,3}?in\\s+the\\s+(?:box|package|parcel|bag|envelope)\\b",
   ].join("|"),
+  "i",
+);
+
+/**
+ * A count of units DELIVERED, stated as short — "only 1 pendant was delivered".
+ *
+ * The reasoning for why this alone names a QUANTITY case, where "only 2
+ * arrived" does not, is written at the point of use in
+ * `quantityShortfallEvidence`. What is enforced here is only the shape.
+ *
+ * The gap between the count and the verb carries the noun, the partitive and
+ * any auxiliary — "only 1 pendant was delivered", "only 2 of the lights have
+ * been delivered", "nur 1 Lampe geliefert" — and REFUSES TWO KINDS OF WORD:
+ *
+ *   a modal  a delivery still to come reports no shortfall. "Only 1 will be
+ *            delivered" is what to expect, not what went wrong.
+ *   a unit   "Only 2 days ago the parcel was delivered" counts the DAYS, not
+ *   of time  the goods. It is the one shape a gap this wide would otherwise
+ *            reach, and it is a customer telling us when, not how many.
+ */
+const NOT_A_MODAL_OR_A_TIME =
+  "(?:(?!(?:will|would|shall|should|can|could|may|might|must|to|" +
+  "minutes?|hours?|days?|weeks?|months?|years?|tagen?|wochen?|monaten?)\\b)\\w+\\s+)";
+
+const DELIVERY_WAS_SHORT = new RegExp(
+  `\\b(?:only|just|nur|lediglich)\\s+(?:${QUANTITY})\\s+${NOT_A_MODAL_OR_A_TIME}{0,5}?(?:delivered|geliefert)\\b`,
   "i",
 );
 
@@ -2337,8 +2597,23 @@ const BARE_SHORTFALL = new RegExp(
  *
  * The German nouns below were already enumerated and are unchanged.
  */
+/**
+ * A DING IS A DENT, and it was the one word for it nobody had written down.
+ *
+ * Reported live: "Hi, one of the items came with two dings (see photo). How do
+ * you want to proceed this?" — the plainest damage report there is, and it
+ * reached no damage signal at all. The thread went to the admin catch-all on
+ * that message and then to Return and refunds on the customer's next one, where
+ * they said they would get a local replacement. An agent saw a returns case on
+ * a conversation whose subject is two dents and a photograph.
+ *
+ * `dents` was present and `dings` was not, which is the whole of the defect.
+ * Enumerated rather than stemmed, like every other inflection in this pattern —
+ * `ding\w*` would match `dinghy`. And "ding dong" is excluded outright: it is a
+ * chime, not a dent, and this business sells things that make that noise.
+ */
 const IS_DAMAGED =
-  /\b(?:damage|damages|damaged|damaging|broken|smash|smashes|smashed|smashing|crack|cracks|cracked|cracking|dent|dents|dented|denting|scratch|scratches|scratched|scratching|scratchy|besch(?:ä|ae)digt|(?:zer|ge)brochen|zerkratzt|shatter|shatters|shattered|shattering|chipped|chip\s+(?:on|off)|crush|crushes|crushed|crushing|scuff|scuffs|scuffed|scuffing|fracture|fractures|fractured|fracturing)\b|\b(?:slightly\s+)?(?:bent|buckled|warped|misshapen)\b|\b(?:burn\s+marks?|melted|melting|heat\s+damage|discolour|discolours|discoloured|discolouring|discolouration|discolor|discolors|discolored|discoloring|discoloration|blemish|blemishes|blemished|fray|frays|frayed|fraying|loose\s+threads?)\b|\b(?:not\s+perfectly\s+round|shape\s+(?:is\s+)?off|slight\s+wobble)\b|\b(?:riss|risse|rissen|spr(?:ü|ue)nge|delle|dellen|kratzer|bruchstelle|gesprungen|zersprungen|angeschlagen)\b/i;
+  /\bding(?!\s*dong)s?\b|\bdinged\b|\b(?:damage|damages|damaged|damaging|broken|smash|smashes|smashed|smashing|crack|cracks|cracked|cracking|dent|dents|dented|denting|scratch|scratches|scratched|scratching|scratchy|besch(?:ä|ae)digt|(?:zer|ge)brochen|zerkratzt|shatter|shatters|shattered|shattering|chipped|chip\s+(?:on|off)|crush|crushes|crushed|crushing|scuff|scuffs|scuffed|scuffing|fracture|fractures|fractured|fracturing)\b|\b(?:slightly\s+)?(?:bent|buckled|warped|misshapen)\b|\b(?:burn\s+marks?|melted|melting|heat\s+damage|discolour|discolours|discoloured|discolouring|discolouration|discolor|discolors|discolored|discoloring|discoloration|blemish|blemishes|blemished|fray|frays|frayed|fraying|loose\s+threads?)\b|\b(?:not\s+perfectly\s+round|shape\s+(?:is\s+)?off|slight\s+wobble)\b|\b(?:riss|risse|rissen|spr(?:ü|ue)nge|delle|dellen|kratzer|bruchstelle|gesprungen|zersprungen|angeschlagen)\b/i;
 
 /**
  * The goods are intact and they do not work.
@@ -2537,8 +2812,42 @@ function deliveredButNotReceived(text: string): boolean {
 }
 
 /** The same words in the negative — a non-arrival, which is the opposite claim. */
-const HAS_NOT_ARRIVED =
-  /\b(?:not|never|no)\b[^.!?]{0,15}?\b(?:arrived|delivered|received)\b|\b(?:has|have|had|is|was|were)\s?n[o']?t\b[^.!?]{0,15}?\b(?:arrived|delivered|received)\b|\bnoch\s+nicht\b[^.!?]{0,20}?\b(?:erhalten|angekommen|geliefert|bekommen)\b/i;
+/**
+ * GERMAN DOES NOT NEED "NOCH" TO SAY A PARCEL NEVER CAME.
+ *
+ * The German alternative required `noch nicht` — "not YET" — which is how a
+ * customer says it while they are still waiting. The plainest form of the claim
+ * drops the "noch" entirely, and it was reaching nothing:
+ *
+ *   "Artikel wurde nicht geliefert"          the item was not delivered
+ *   "Die Ware ist nicht angekommen"          the goods did not arrive
+ *
+ * Both fell to the admin catch-all. The English side has never required an
+ * equivalent of "yet" — `\b(?:not|never|no)\b ... arrived` — so this is the
+ * same claim held to a stricter standard in one language only.
+ *
+ * `noch` stays OPTIONAL rather than being removed, so every message the old
+ * form matched still matches.
+ *
+ * WHAT HAS NOT ARRIVED HAS TO BE THE PARCEL — the same distinction
+ * `REFUND_NOT_RECEIVED` draws for the money, drawn here for the paperwork.
+ * Dropping the "noch" requirement immediately claimed an invoice request:
+ *
+ *   "leider habe ich zu meinen bestellten Artikeln die RECHNUNGEN nicht
+ *    erhalten. Bitte senden Sie mir ..."
+ *
+ * The customer has the goods and wants the invoices, which is Admin's case.
+ * German puts the noun in front of the negation, so the guard looks backwards.
+ */
+const PAPERWORK_NOUN_BEHIND =
+  "(?<!\\b(?:rechnung|rechnungen|beleg|belege|quittung|quittungen|bewertung)\\b[^.!?]{0,25})";
+
+const HAS_NOT_ARRIVED = new RegExp(
+  "\\b(?:not|never|no)\\b[^.!?]{0,15}?\\b(?:arrived|delivered|received)\\b" +
+    "|\\b(?:has|have|had|is|was|were)\\s?n[o']?t\\b[^.!?]{0,15}?\\b(?:arrived|delivered|received)\\b" +
+    `|${PAPERWORK_NOUN_BEHIND}\\b(?:noch\\s+)?nicht\\b[^.!?]{0,20}?\\b(?:erhalten|angekommen|geliefert|bekommen)\\b`,
+  "i",
+);
 
 function hasTakenDelivery(text: string): boolean {
   return GOODS_HAVE_ARRIVED.test(text) && !HAS_NOT_ARRIVED.test(text);
@@ -2632,9 +2941,111 @@ function wantsADifferentVariant(text: string): boolean {
  * incorrect postcode" reports what the carrier holds; it does not ask us to
  * change anything. The word "cancel" is what still marks a real amendment, and
  * it is checked separately where this is used.
+ *
+ * ------------------------------------------------------------------------
+ * THE PARCEL LEFT SOMEWHERE ELSE IS A DELIVERY MATTER EVEN ONCE IT IS FOUND.
+ * ------------------------------------------------------------------------
+ * The reported conversation is one inbound message long, because the customer
+ * opened the delivery case on eBay and only wrote to us after our reply:
+ *
+ *   us:  "According to the courier tracking, the parcel is showing as
+ *         delivered ... have another look around the indicated delivery
+ *         location, any safe places, or with nearby staff/neighbours"
+ *   them: "Thanks for the reply they missed placed it at the petrol station
+ *          good product thank you!"
+ *
+ * OUR OWN REPLY CANNOT DECIDE THE CATEGORY — `readConversation` discards
+ * outbound turns before anything is read, deliberately — so the whole thread
+ * rested on that one sentence, and it named nothing. It went to the admin
+ * catch-all: the message asserts no absence (the parcel is in the customer's
+ * hands), asks for nothing, and reports no fault with the goods.
+ *
+ * BUT IT DOES SAY WHERE THE PARCEL WENT, and that is the case. A consignment
+ * put somewhere other than the delivery address is Delivery's subject whether
+ * the customer is still looking for it or has just walked to the petrol station
+ * and collected it. A delivery problem that gets located is still a delivery
+ * problem — the resolution is the ANSWER to the query, not a different query —
+ * and this is the wording customers use to report it after the fact.
+ *
+ * BOUNDED TWICE, because "misplaced" on its own is a customer losing something
+ * of their own ("I've misplaced the instructions", which is not a delivery
+ * matter at all):
+ *
+ *   the misplacement needs a  "misplaced it AT the petrol station". Without a
+ *      destination                place, nothing has been said about delivery.
+ *   the place is a closed list  for "left it at/with ...", which is otherwise
+ *      of delivery locations       the commonest shape in English ("I left it
+ *                                  in the loft") and nothing to do with us.
+ *
+ * The customer's spelling is the ordinary one for this: "missed placed" is two
+ * words in the live text, so the space and the hyphen are both allowed.
  */
-const DELIVERY_PROBLEM =
-  /\b(?:missed\s+(?:delivery\s+)?attempt|attempted\s+delivery|delivery\s+attempt|failed\s+delivery|missed\s+delivery|delivery\s+(?:was\s+)?missed|(?:incorrect|wrong)\s+(?:post\s?code|postcode|address)|stranded|held\s+(?:at|in)\s+(?:the\s+)?(?:depot|customs|sorting)|collection\s+point|for\s+pick\s?-?\s?up|pick\s+(?:it|them)\s+up|delivery\s+office)\b/i;
+const MISPLACED_AT_A_LOCATION =
+  "\\bmis(?:sed)?[\\s-]?placed\\b[^.!?;\\n]{0,25}?\\b(?:at|in|with|by|outside|behind|near)\\b" +
+  "|\\bmis[\\s-]?delivered\\b";
+
+/** Where a courier leaves a parcel when it does not go to the door. */
+const DELIVERY_LOCATION =
+  "petrol\\s+station|garage|corner\\s+shop|shop|store|neighbou?r\\w*|porch|doorstep|shed|" +
+  "bin\\s+store|reception|post\\s+office|sorting\\s+office|depot|newsagent|pharmacy|" +
+  "locker|packstation|safe\\s+place|pick\\s?-?\\s?up\\s+point|collection\\s+office";
+
+/**
+ * THE PARCEL IS SIMPLY LATE — the commonest delivery problem, and the one no
+ * witness could see.
+ *
+ * `HAS_NOT_ARRIVED` wants a NEGATED arrival verb and `CHASING_A_CONSIGNMENT`
+ * wants "where is" plus a consignment noun. A customer who writes neither —
+ * "my parcel is late" — reached no delivery signal at all, in any layer. On its
+ * own that survived, because the positional reading still named Delivery from
+ * the phrase table. Attach the remedy and it was lost:
+ *
+ *   "My parcel is late."                    -> Delivery queries
+ *   "My parcel is late. Please refund me."  -> Return and refunds
+ *
+ * The refund deferral in `readConversation` could not save it either: that
+ * deferral tests for the `delivery_request` intent, and lateness raised none.
+ *
+ * BOUNDED TO THE CONSIGNMENT, TWICE. "Sorry for the late reply" is the single
+ * commonest use of the word in this inbox and names no parcel, so a consignment
+ * noun is required. And the gap between the noun and the word may not cross the
+ * MONEY: "I posted the return and my refund is late" is a refund chase, which is
+ * Return's own case and the opposite claim — the parcel got here, the money did
+ * not.
+ */
+const NOT_PAST_THE_MONEY = "(?:(?!\\brefund|\\bmoney|\\bpayment|\\berstattung)[^.!?;\\n])";
+
+const CONSIGNMENT_IS_LATE = new RegExp(
+  [
+    // "my parcel is late", "the order is running late", "delivery has been delayed".
+    "\\b(?:parcel|package|packet|order|delivery|shipment|consignment|item|items|goods)\\b" +
+      `${NOT_PAST_THE_MONEY}{0,25}?\\b(?:late|delayed|overdue)\\b`,
+    // The same thing said the other way round.
+    "\\b(?:late|delayed|overdue)\\s+(?:delivery|parcel|package|order|shipment|dispatch)\\b",
+  ].join("|"),
+  "i",
+);
+
+const LEFT_AT_A_DELIVERY_LOCATION = new RegExp(
+  `\\bleft\\s+(?:it|them|mine|ours|the\\s+(?:parcel|package|box|item|items|order|delivery))\\s+` +
+    `(?:at|in|with|by|outside|behind|round)\\s+(?:the\\s+|a\\s+|an\\s+|my\\s+|our\\s+)?(?:${DELIVERY_LOCATION})\\b`,
+  "i",
+).source;
+
+const DELIVERY_PROBLEM = new RegExp(
+  [
+    "\\b(?:missed\\s+(?:delivery\\s+)?attempt|attempted\\s+delivery|delivery\\s+attempt|failed\\s+delivery|missed\\s+delivery|delivery\\s+(?:was\\s+)?missed|(?:incorrect|wrong)\\s+(?:post\\s?code|postcode|address)|stranded|held\\s+(?:at|in)\\s+(?:the\\s+)?(?:depot|customs|sorting)|collection\\s+point|for\\s+pick\\s?-?\\s?up|pick\\s+(?:it|them)\\s+up|delivery\\s+office)\\b",
+    // THE SAME COMPLAINT IN GERMAN. "(incorrect|wrong) address" has been a
+    // delivery matter here since this pattern was written; the German for it
+    // was only ever a veto on the wrong-item claim, never a route to Delivery,
+    // so "Die Lieferadresse ist verkehrt !" fell to the admin catch-all.
+    "\\bfalsche\\s+(?:liefer|versand)?adresse\\b|\\b(?:liefer|versand)?adresse\\s+ist\\s+(?:falsch|verkehrt)\\b",
+    MISPLACED_AT_A_LOCATION,
+    LEFT_AT_A_DELIVERY_LOCATION,
+    CONSIGNMENT_IS_LATE.source,
+  ].join("|"),
+  "i",
+);
 
 /**
  * SOMEBODY CHANGING A FITTING, not an order.
@@ -2785,6 +3196,54 @@ const CHASING_A_CONSIGNMENT = new RegExp(
 
 const ADMIN_MATTER =
   /\b(?:invoice|receipt|vat|business\s+account|payment|paid|order\s+number|statement|rechnung|beleg|quittung|zahlung)\b/i;
+
+/**
+ * Getting at the ACCOUNT or the MARKETPLACE, rather than at the goods.
+ *
+ * The other half of what Admin actually owns, and the half no pattern named: a
+ * customer locked out of their account, a payment page that will not complete,
+ * a marketplace whose site is down. `ADMIN_MATTER` above is the paperwork and
+ * money half.
+ *
+ * Deliberately NOT "the picture is not loading". A broken listing image is a
+ * marketplace fault in the abstract, and the customer reporting it is SHOPPING —
+ * "I am trying to buy this item, but the image is not showing properly" is a
+ * pre-sales enquiry, and the pre-sales reading runs first and keeps it.
+ */
+const PLATFORM_OR_ACCOUNT =
+  /\b(?:log\s?in|logging\s+in|logged\s+in|sign\s+in|signed\s+in|password|my\s+account|your\s+account|the\s+account|account\s+(?:access|details|settings|suspended|blocked|closed)|checkout|check\s+out|ebay\s+(?:site|app|system|account)|amazon\s+(?:site|app|system|account)|site\s+is\s+down|website\s+is\s+down|kundenkonto|mein\s+konto|anmelden)\b/i;
+
+/**
+ * IS THERE ACTUAL ADMIN EVIDENCE IN THIS MESSAGE?
+ *
+ * ------------------------------------------------------------------------
+ * ADMIN IS A CASE, NOT A CATCH-ALL. THIS IS THE POLICY REVERSAL.
+ * ------------------------------------------------------------------------
+ * Until now the last step of both readings was "if nothing matched, say Admin",
+ * on the stated grounds that "a blank tells them nothing and hides the
+ * conversation from every filter". Measured against the live inbox, that made
+ * Admin the single largest category — 379 of 1,335 eBay threads, 28% — and
+ * almost none of it was an admin matter. It was the classifier saying "I don't
+ * know" in a word that means something else, and an agent filtering for real
+ * invoice and account queries had to read past all of it.
+ *
+ * So the fallback now requires the same evidence the corpus route has always
+ * required of this category: paperwork asked for, money or an order reference
+ * named, or the account/marketplace itself in question. A message with none of
+ * that and nothing else to name is UNCATEGORISED, which is the honest answer and
+ * a visibly different one from "this is an admin query".
+ *
+ * WHAT THIS DOES NOT TOUCH. Every category that names something still names it,
+ * and all of them are tried first — a pre-sales question, a delivery chase, a
+ * quantity shortfall and a damage report each reach their own reading long
+ * before this is consulted. This only decides what happens when they have all
+ * declined.
+ */
+function hasAdminEvidence(text: string): boolean {
+  return (
+    ASKING_FOR_PAPERWORK.test(text) || ADMIN_MATTER.test(text) || PLATFORM_OR_ACCOUNT.test(text)
+  );
+}
 
 /**
  * Not a customer at all — transport headers, automated notifications, partner
@@ -3022,9 +3481,16 @@ const PROBLEM_INTENTS: readonly MessageIntent[] = [
  * Predicated on the money, not on a parcel — "still have not received my
  * refund", "the refund has not come". A delivery case says the opposite way
  * round: the parcel is late and the refund is what the customer now wants.
+ *
+ * A CHASE IS ALSO ASKED AS A QUESTION, and only the negated forms were here.
+ * "When will my refund arrive?", "Where is my refund?" and "How long does a
+ * refund take?" are the same claim in the interrogative, and they were reaching
+ * the delivery vocabulary instead — "when will ... arrive" is the shape of a
+ * parcel chase, and the thing being chased is the money. All three came back as
+ * Delivery queries, which is the one category that cannot answer them.
  */
 const REFUND_NOT_RECEIVED =
-  /\b(?:not|n'?t|never|still\s+waiting\s+for|awaiting|chasing)\s+(?:\w+\s+){0,3}?(?:refund|money\s+back|payment)\b|\b(?:refund|money)\s+(?:has\s+|have\s+)?(?:not|n'?t|never)\s+(?:come|arrived|been\s+(?:received|paid|issued))\b/i;
+  /\b(?:not|n'?t|never|still\s+waiting\s+for|awaiting|chasing)\s+(?:\w+\s+){0,3}?(?:refund|money\s+back|payment)\b|\b(?:refund|money)\s+(?:has\s+|have\s+)?(?:not|n'?t|never)\s+(?:come|arrived|been\s+(?:received|paid|issued))\b|\b(?:when|where|how\s+long)\b(?:(?!\b(?:parcel|package|item|order|delivery)\b)[^.!?;\n]){0,40}?\b(?:refund|money\s+back|repayment)\b/i;
 
 
 /**
@@ -3157,6 +3623,46 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
   if (DELIVERY_PROBLEM.test(text)) {
     if (!found.includes("delivery_request")) found = [...found, "delivery_request"];
     if (!/\bcancel/i.test(text)) found = drop("wants_order_change");
+  }
+
+  /*
+   * WHAT IS BEING CHASED IS THE MONEY, SO IT IS NOT A DELIVERY MATTER.
+   *
+   * The mirror of the rule `semanticsOf` already applies to the event axis —
+   * "`REFUND_NOT_RECEIVED` is predicated on the money, so it is exactly the test
+   * that separates the two" — restated on the intent layer, which had never been
+   * given it. "When will my refund arrive?" reaches the delivery vocabulary word
+   * for word: a thing, and when it will arrive. The thing is the refund, and
+   * Delivery is the one category that cannot answer the question.
+   *
+   * ONLY WHERE NO PARCEL IS ALSO MISSING. "My order never came and I still have
+   * not had my refund" chases both, and the parcel is the live problem — so the
+   * delivery intent survives wherever the message says a consignment has not
+   * arrived, is late, or has a delivery problem of its own.
+   */
+  if (found.includes("delivery_request") && REFUND_NOT_RECEIVED.test(text)) {
+    const aParcelIsAlsoMissing =
+      HAS_NOT_ARRIVED.test(text) || CHASING_A_CONSIGNMENT.test(text) || DELIVERY_PROBLEM.test(text);
+    if (!aParcelIsAlsoMissing) found = drop("delivery_request");
+  }
+
+  /*
+   * AND WHAT IS BEING CHASED IS THE PAPERWORK, WHICH IS ADMIN'S.
+   *
+   * The same rule again, one noun along. "Leider habe ich zu meinen bestellten
+   * Artikeln die RECHNUNGEN nicht erhalten. Bitte senden Sie mir ..." is a
+   * customer who HAS the goods and wants the invoices — an admin matter, and
+   * the one category Delivery cannot answer for. It reached `delivery_request`
+   * because "nicht erhalten" is a non-arrival in every language test here, and
+   * nothing asked WHAT had not arrived.
+   */
+  if (found.includes("delivery_request") && ADMIN_IS_WHAT_IS_MISSING.test(text)) {
+    const aParcelIsAlsoMissing =
+      HAS_NOT_ARRIVED.test(text) || CHASING_A_CONSIGNMENT.test(text) || DELIVERY_PROBLEM.test(text);
+    if (!aParcelIsAlsoMissing) {
+      found = drop("delivery_request");
+      if (!found.includes("admin_issue")) found = [...found, "admin_issue"];
+    }
   }
 
   /*
@@ -3295,7 +3801,7 @@ const CLAIMED_PROBLEMS: readonly (readonly [MessageIntent, RegExp])[] = [
 
 /** "fehlt die Rechnung" — the absent thing is the paperwork, not a component. */
 const ADMIN_IS_WHAT_IS_MISSING =
-  /\b(?:fehlt|fehlen|missing|not\s+received|never\s+received|no)\s+(?:\w+\s+){0,3}(?:rechnung|invoice|receipt|beleg|quittung|vat)\b|\b(?:rechnung|invoice|receipt|beleg|quittung)\s+(?:\w+\s+){0,3}(?:fehlt|fehlen|is\s+missing|missing)\b/i;
+  /\b(?:fehlt|fehlen|missing|not\s+received|never\s+received|no)\s+(?:\w+\s+){0,3}(?:rechnung|invoice|receipt|beleg|quittung|vat)\b|\b(?:rechnung|invoice|receipt|beleg|quittung)\s+(?:\w+\s+){0,3}(?:fehlt|fehlen|is\s+missing|missing)\b|\b(?:rechnung|rechnungen|beleg|belege|quittung|invoice|invoices|receipt|receipts)\b[^.!?]{0,20}?\bnicht\s+(?:erhalten|bekommen|zugegangen)\b/i;
 
 /* ------------------------------------------------------------------------- *
  * CST EVIDENCE: OWNERSHIP AND EXCLUSION
@@ -3679,6 +4185,14 @@ export function classifyMessageCategoryWithFallback(
 
   // And last of all, the reading of the message itself — see
   // `categoryFromSemantics`. Only then is Admin the honest answer.
+  //
+  // NO CUSTOMER MESSAGE MAY END UP UNCATEGORISED. Gating this on admin evidence
+  // was tried on 2026-09-03 and reverted the same day: it left real customer
+  // messages with no category at all, and a blank hides a conversation from
+  // every filter in the inbox — which is worse than a tag an agent can correct
+  // in a click. Admin remains the residue. What changed instead is everything
+  // ABOVE this line: a message that fits pre-sales, delivery, quantity, damage
+  // or returns now reaches that category first, so far less residue arrives.
   return categoryFromSemantics(semanticsOf(text), text) ?? "Admin related issues";
 }
 
@@ -4299,8 +4813,11 @@ const CORPUS_CONDITIONS: Readonly<
   // safety and recall. NOT the catch-all — that is the fallback below, and
   // keeping them separate is what makes "no CST-supported message falls to
   // Admin" a checkable claim rather than a hope.
-  "Admin related issues": (text) =>
-    ASKING_FOR_PAPERWORK.test(text) || ADMIN_MATTER.test(text) ? null : "NOT_AN_ADMIN_MATTER",
+  // `hasAdminEvidence` rather than the two patterns inline: it adds the account
+  // and marketplace half — a customer locked out, a payment that will not
+  // complete — which this gate refused as NOT_AN_ADMIN_MATTER, so an Admin
+  // corpus row could never be admitted for the very cases Admin owns.
+  "Admin related issues": (text) => (hasAdminEvidence(text) ? null : "NOT_AN_ADMIN_MATTER"),
 };
 
 /**
@@ -4692,6 +5209,21 @@ const ISSUE_CATEGORY: Readonly<Record<Exclude<MessageEvent, "none">, MessageCate
 };
 
 /**
+ * The categories that name a PROBLEM THE CUSTOMER REPORTED, as opposed to a
+ * remedy they asked for or a question they raised.
+ *
+ * DERIVED, NOT RESTATED. These are exactly the categories an ISSUE maps to, so
+ * reading them off `ISSUE_CATEGORY` means a new event added there is covered
+ * wherever this is used, and the two lists can never disagree.
+ *
+ * NOT `PROBLEM_CATEGORIES`, and the difference is the point. That list carries
+ * "Order change, before shipping queries" as well — which is a REQUEST about an
+ * order, not something that went wrong with the goods. Used to decide whether a
+ * problem outranks a remedy, it would let one remedy outrank another.
+ */
+const REPORTED_PROBLEM: ReadonlySet<MessageCategory> = new Set(Object.values(ISSUE_CATEGORY));
+
+/**
  * Which issue owns the conversation when the customer reported more than one.
  *
  * The same order as `CORPUS_OWNERSHIP`, restated over events so there is one
@@ -4852,7 +5384,9 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
       speaks[index] && (SOMETHING_DIFFERENT_WAS_SUPPLIED.test(text) || hasTakenDelivery(text)),
   );
 
-  const axesFrom = (start: number): { issue: MessageEvent; action: RequestedAction } => {
+  const axesFrom = (
+    start: number,
+  ): { issue: MessageEvent; action: RequestedAction; actionAt: number } => {
     const events = semantics
       .slice(start)
       .map((entry) => entry?.event ?? "none")
@@ -4860,19 +5394,24 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
     const issue = ISSUE_OWNERSHIP.find((candidate) => events.includes(candidate)) ?? "none";
 
     // The LATEST stated action wins: it is what the reply has to answer.
+    // WHICH MESSAGE STATED IT is carried out as well — see the promotion rule
+    // below, which turns on whether the problem and the remedy were the same
+    // breath or two different ones.
     let action: RequestedAction = "none";
+    let actionAt = -1;
     for (let index = semantics.length - 1; index >= start; index--) {
       const stated = semantics[index]?.requestedAction ?? "none";
       if (stated !== "none" && stated !== "report_problem") {
         action = stated;
+        actionAt = index;
         break;
       }
     }
-    return { issue, action };
+    return { issue, action, actionAt };
   };
 
-  let { issue, action } = axesFrom(lastResolved + 1);
-  if (issue === "none" && action === "none") ({ issue, action } = axesFrom(0));
+  let { issue, action, actionAt } = axesFrom(lastResolved + 1);
+  if (issue === "none" && action === "none") ({ issue, action, actionAt } = axesFrom(0));
 
   /*
    * A REFUND ASKED FOR ALONGSIDE A CANCELLATION OR A CHASE IS STILL THE REMEDY.
@@ -4985,14 +5524,121 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
    * "red", and without this the enquiry would be handed back to Return by a
    * remedy nobody asked for.
    */
-  const enquiry = action === "technical_specification" || action === "availability";
   const positional = positionalConversationCategory(texts, speaks);
-  if (enquiry && positional !== null && CASE_CATEGORIES.includes(positional)) {
+
+  /*
+   * A PROBLEM ANY WITNESS NAMED OUTRANKS THE REMEDY ASKED FOR.
+   *
+   * THIS IS THE RULE THE BLOCK BELOW ALREADY STATES, GENERALISED FROM TWO
+   * ACTIONS TO ALL OF THEM. "A REPORTED PROBLEM IS NEVER OVERRIDDEN" was
+   * enforced only where the last action was a product question; every other
+   * action returned at `ACTION_CATEGORY` a few lines down, before the reading
+   * that had seen the problem was ever consulted.
+   *
+   * WHY A PROBLEM CAN BE INVISIBLE TO THE ISSUE AXIS. That axis reads ONE
+   * witness — `semanticsOf(...).event`. Three others can name a problem and
+   * reach the thread only through `positionalConversationCategory`: the phrase
+   * table, the intent layer with `refine`, and the 730-row corpus. Measured over
+   * 1,335 live eBay threads, 51 of the 362 messages carrying a problem intent
+   * had `event: "none"` — a wrong item written as "they are the wrong colour",
+   * a German fault, a courier failure — and in each of those threads a refund
+   * asked for afterwards took the category:
+   *
+   *   "You sent the wrong colour"  "I want to return it"   -> Return and refunds
+   *   "The item arrived with two dents"  "I want a refund"  -> Return and refunds
+   *
+   * Both are the problem's case with the customer's preferred remedy attached,
+   * which is the distinction this whole two-axis reading exists to draw.
+   *
+   * `ISSUE_CATEGORY` IS THE LIST, AND `PROBLEM_CATEGORIES` DELIBERATELY IS NOT.
+   * The latter contains "Order change, before shipping queries", which is not a
+   * problem with the goods but a REQUEST about the order — one remedy, and it
+   * may not outrank another. The categories that may are exactly the ones an
+   * ISSUE maps to, so they are read off `ISSUE_CATEGORY` rather than restated:
+   * a new event added there is covered here by construction, and the two can
+   * never drift apart.
+   *
+   * NOTHING BELOW IS WEAKENED. A thread whose positional reading names a remedy
+   * or an enquiry still falls through to the block below and then to
+   * `ACTION_CATEGORY` exactly as before, so a plain "please refund me" with no
+   * problem behind it is still Return and refunds. A problem the customer has
+   * since closed cannot reach here either: `positionalConversationCategory`
+   * applies its own resolution window first.
+   *
+   * ------------------------------------------------------------------------
+   * THE PROBLEM AND THE REMEDY HAVE TO BE TWO DIFFERENT MESSAGES.
+   * ------------------------------------------------------------------------
+   * THIS BOUND IS NOT A REFINEMENT, IT IS WHAT MAKES THE RULE SAFE, and two
+   * pinned conversations proved it. Both are ONE message that names a problem
+   * and asks for the money in the same breath, and in both the problem is a
+   * FALSE POSITIVE of the per-message layers that `semanticsOf` had already
+   * refused:
+   *
+   *   "it won't work for the item I wanted it for. Can I please return it and
+   *    receive a refund?"          INT-DF05 read "won't work" as a fault;
+   *                                `functional_fault: not_stated`.
+   *   "it is simply too big for the space. Can I have a refund?"
+   *                                the measurement-mismatch rows read "too big"
+   *                                as a wrong item; `wrong_item: not_stated`.
+   *
+   * Both are customers returning goods that are perfectly fine and unsuitable
+   * for them, and promoting the positional reading turned both into seller
+   * errors. A SINGLE MESSAGE IS ALREADY ARBITRATED — `refine` drops a refund
+   * behind an asserted problem, `ownedIntentCategory` defers it, and the strict
+   * table has its own Return gate — and every one of those judgements is
+   * measured. What NOTHING arbitrates is the problem stated in one message and
+   * the remedy in a later one, which is the shape this whole two-axis reading
+   * exists for and the shape every conversation in the audit had:
+   *
+   *   "You sent the wrong colour"   ...   "I want to return it"
+   *   "der Led Treiber ist defekt"  ...   "ich bitte um Rückerstattung"
+   *
+   * So the promotion applies only where the message that named the problem is
+   * not the message that stated the action. Where they are the same message,
+   * the layers that already weigh them keep the decision they had.
+   */
+  const twoDifferentMessages = actionAt === -1 || (positional.at !== -1 && positional.at < actionAt);
+
+  /*
+   * TRACKING A RETURN IS STILL NOT A DELIVERY QUERY.
+   *
+   * The guard above, applied to this promotion as well, because measuring the
+   * change over 1,335 live threads showed it needed it — twice, and both times
+   * for the same reason a return parcel narrates its own journey in the words of
+   * an inbound chase:
+   *
+   *   "die Rücksendung liegt zur Abholung bereit. Wann holen Sie diese ab und
+   *    wann kann ich mit meiner Erstattung rechnen?"
+   *   a 38-message thread ending in arranging a Royal Mail collection
+   *
+   * Both are the customer chasing US about a return, which Return and refunds
+   * owns, and both were promoted to Delivery. The condition is deliberately the
+   * one already written above rather than a second opinion: a return in progress
+   * and nothing saying OUR parcel is the one missing.
+   */
+  const notAReturnJourney = (): boolean => {
+    if (positional.category !== "Delivery queries") return true;
+    const spoken = texts.filter((_, index) => speaks[index]);
+    if (!spoken.some((text) => returnIsUnderWay(text))) return true;
+    return spoken.some((text) => HAS_NOT_ARRIVED.test(text) || COURIER_SENT_IT_BACK.test(text));
+  };
+
+  if (
+    positional.category !== null &&
+    REPORTED_PROBLEM.has(positional.category) &&
+    twoDifferentMessages &&
+    notAReturnJourney()
+  ) {
+    return { category: positional.category, issue, requestedAction: action };
+  }
+
+  const enquiry = action === "technical_specification" || action === "availability";
+  if (enquiry && positional.category !== null && CASE_CATEGORIES.includes(positional.category)) {
     const holdsTheGoods = texts.some(
       (text, index) => speaks[index] && (hasTakenDelivery(text) || returnIsUnderWay(text)),
     );
-    if (PROBLEM_CATEGORIES.includes(positional) || holdsTheGoods) {
-      return { category: positional, issue, requestedAction: action };
+    if (PROBLEM_CATEGORIES.includes(positional.category) || holdsTheGoods) {
+      return { category: positional.category, issue, requestedAction: action };
     }
   }
 
@@ -5000,7 +5646,7 @@ export function readConversation(turns: readonly ConversationTurn[]): Conversati
   if (fromAction !== undefined) return { category: fromAction, issue, requestedAction: action };
 
   // Neither axis named anything. The positional reading is unchanged.
-  return { category: positional, issue, requestedAction: action };
+  return { category: positional.category, issue, requestedAction: action };
 }
 
 /**
@@ -5064,11 +5710,21 @@ export function classifyConversationCategory(
  * Each message is read on its own, so no signal is invented by two unrelated
  * sentences landing next to each other.
  */
+/**
+ * The positional reading, and WHICH MESSAGE NAMED IT.
+ *
+ * The index is carried out for one caller only — the promotion rule in
+ * `readConversation`, which has to know whether the problem and the remedy were
+ * stated in the same breath or in two different messages. `at` is -1 where the
+ * category is not attributable to a single message (the admin catch-all).
+ */
+type PositionalReading = { readonly category: MessageCategory | null; readonly at: number };
+
 function positionalConversationCategory(
   texts: readonly string[],
   speaks: readonly boolean[],
-): MessageCategory | null {
-  if (texts.length === 0) return null;
+): PositionalReading {
+  if (texts.length === 0) return { category: null, at: -1 };
 
   // Intent first, message by message, in the order they were sent. Each message
   // is read on its own so no signal is invented by two unrelated sentences
@@ -5148,7 +5804,7 @@ function positionalConversationCategory(
    *                                supersedes nothing, so a chase followed by
    *                                "any news?" stays a chase.
    */
-  const caseCategoryFrom = (start: number): MessageCategory | null => {
+  const caseCategoryFrom = (start: number): number | null => {
     const cases: number[] = [];
     for (let index = start; index < perMessage.length; index++) {
       const category = perMessage[index];
@@ -5156,7 +5812,7 @@ function positionalConversationCategory(
     }
     const first = cases[0];
     if (first === undefined) return null;
-    if (perMessage[first] !== "Delivery queries") return perMessage[first]!;
+    if (perMessage[first] !== "Delivery queries") return first;
 
     /*
      * ANY LATER CASE SUPERSEDES A CHASE, not only an arrival.
@@ -5195,17 +5851,17 @@ function positionalConversationCategory(
         perMessage[index] !== "Delivery queries" &&
         PROBLEM_CATEGORIES.includes(perMessage[index]!),
     );
-    return supersedes === undefined ? perMessage[first]! : perMessage[supersedes]!;
+    return supersedes === undefined ? first : supersedes;
   };
 
   const afterResolution = caseCategoryFrom(lastResolved + 1);
-  if (afterResolution != null) return afterResolution;
+  if (afterResolution != null) return { category: perMessage[afterResolution]!, at: afterResolution };
 
   const firstCase = caseCategoryFrom(0);
-  if (firstCase != null) return firstCase;
+  if (firstCase != null) return { category: perMessage[firstCase]!, at: firstCase };
 
-  const firstAny = perMessage.find((category) => category != null);
-  if (firstAny != null) return firstAny;
+  const firstAny = perMessage.findIndex((category) => category != null);
+  if (firstAny !== -1) return { category: perMessage[firstAny]!, at: firstAny };
 
   // Nothing identifiable anywhere. A thread that is only the customer telling
   // us it is sorted — with or without a parting thank-you — is not an admin
@@ -5214,9 +5870,15 @@ function positionalConversationCategory(
   const resolvedOnly =
     texts.some((text) => looksResolved(text)) &&
     texts.every((text) => looksResolved(text) || PLEASANTRY_ONLY.test(text));
-  if (resolvedOnly) return null;
+  if (resolvedOnly) return { category: null, at: -1 };
 
-  return "Admin related issues";
+  // Admin remains the residue for a thread nothing else can name — see the note
+  // in `classifyMessageCategoryWithFallback` on why a blank is not an option.
+  // The index points at the message carrying admin evidence where there is one,
+  // so the promotion rule in `readConversation` can tell an admin matter
+  // somebody actually raised from the residue.
+  const adminAt = texts.findIndex((text, index) => speaks[index] && hasAdminEvidence(text));
+  return { category: "Admin related issues", at: adminAt };
 }
 
 /* ------------------------------------------------------------------------- *
