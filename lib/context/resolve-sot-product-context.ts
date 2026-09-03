@@ -3,6 +3,7 @@ import "server-only";
 import type { VerifiedFact } from "@/lib/domain/draft";
 import {
   type Queryable as SourceQueryable,
+  findSotProductBySku,
   findSotProductForListing,
 } from "@/lib/repositories/sot-product-repository";
 
@@ -286,4 +287,47 @@ export async function resolveSotProductContext(
   if (facts.length === 0) return EMPTY;
 
   return [{ name: "sku", value: product.sku }, ...facts];
+}
+
+/**
+ * The SOT attributes for the SKU a customer ACTUALLY BOUGHT.
+ *
+ * WHY THIS IS A SEPARATE ENTRY POINT, AND WHY IT MAY RUN BESIDE ORDER FACTS.
+ * The listing-based lookup above answers from the parent row, which on a
+ * multi-variation listing is one specific variant and not necessarily the
+ * customer's — so for a conversation that HAS resolved an order it would put a
+ * second, possibly wrong product description beside the right one. That is the
+ * contradiction the draft route used to avoid by refusing to run SOT at all once
+ * an order existed, at the cost of every post-sale reply losing the catalogue.
+ *
+ * Resolving by the ORDER'S OWN SKU removes the contradiction instead of avoiding
+ * it: there is exactly one product, the order named it, and these are its
+ * attributes. A "wrong description" or "missing parts" reply can now state the
+ * dimensions and the parts list of the item in the customer's hands.
+ *
+ * NO `sku` FACT IS RETURNED. The order already stated it and remains the
+ * authority on it; repeating it here could only ever disagree with itself.
+ */
+export async function resolveSotProductContextForSku(
+  sourceClient: SourceQueryable,
+  sku: string,
+): Promise<VerifiedFact[]> {
+  if (sku.trim() === "") return EMPTY;
+
+  const product = await findSotProductBySku(sourceClient, {
+    sku,
+    blockedKeyPatterns: BLOCKED_SOT_ATTRIBUTE_PATTERNS,
+  });
+  if (product === null) return EMPTY;
+
+  const facts: VerifiedFact[] = [];
+  for (const attribute of product.attributes) {
+    // Re-applied here for the same reason as above: this module is the authority
+    // on what may be stated, whether or not the query filtered first.
+    if (!sotAttributeIsStatable(attribute.key)) continue;
+    const value = statableValue(attribute.value);
+    if (value !== null) facts.push({ name: attribute.key, value });
+  }
+
+  return facts;
 }

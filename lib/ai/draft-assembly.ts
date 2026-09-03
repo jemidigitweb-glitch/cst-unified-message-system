@@ -149,7 +149,14 @@ function usageRule(
    * on exactly the listings the bundle resolver was built to serve.
    */
   const answerable = productFacts.filter(
-    (fact) => fact.name !== "sku" && fact.name !== "product_title",
+    (fact) =>
+      fact.name !== "sku" &&
+      fact.name !== "product_title" &&
+      // A listing's title names the product; it settles no question about it.
+      // Same reasoning as the two above, and it must not on its own switch this
+      // rule on — otherwise every eBay draft would gain the guidance, since a
+      // title now resolves for essentially every listing.
+      fact.name !== "listing_title",
   );
   const bundleAttributes: { name: string; value: string }[] = [
     ...(bundle?.common ?? []).flatMap((component) =>
@@ -170,6 +177,43 @@ function usageRule(
     "- If it answers the customer's question about THE PRODUCT, answer it directly. Do not ask the customer for something already stated there, and do not ask them to check a detail we have already established.",
     "- Ask only for what depends on THE CUSTOMER'S OWN fitting, fixture or setup, and only when the answer genuinely turns on it. Answer everything you can first, then ask for the minimum still missing, in that order and in the same reply.",
   ];
+
+  /*
+   * WHAT THE LISTING OFFERS IS NOT WHAT THIS CUSTOMER HAS.
+   *
+   * `listing_options_colour: Copper, Brushed Silver, Rustic Red` says the
+   * listing sells those three. It does not say which the customer bought, and
+   * nothing on this path knows — a multi-variation listing carries one row per
+   * variant and the conversation names the listing, not the row. Without this
+   * line the facts read as a description of their item, and "your Rustic Red
+   * shade" to someone holding a copper one is the confident, fluent, wrong
+   * sentence this whole design exists to prevent.
+   *
+   * Stated only when such a fact is present, like the passive-product line
+   * below: a draft with no options block is not told how to read one.
+   */
+  const hasOptions = productFacts.some((fact) => fact.name.startsWith("listing_options_"));
+  if (hasOptions) {
+    lines.push(
+      "- Any `listing_options_*` fact lists what THE LISTING OFFERS, not what this customer bought or received. Never state or imply which option is theirs, and never describe their item by one of them unless a verified order fact or the customer themselves said so.",
+      /*
+       * ANSWER AVAILABILITY OUTRIGHT. Measured on a live conversation (32623): a
+       * customer asked "do you do this in white", the option list reached the
+       * model as `Black, Black Inner Gold, Black Inner White` — which settles it
+       * — and the reply asked them to send a listing link instead. An option
+       * list is a complete enumeration, so "is X available" has an answer in it
+       * every time; treating it as something still to be checked is the failure.
+       */
+      "- ANSWER AVAILABILITY AND VARIATION QUESTIONS DIRECTLY FROM IT. The list is the complete set of options this listing sells, so a question about whether a colour, size or style is available is already answered: say it is offered, or say plainly that it is not and name what is offered instead. Do not defer it, do not describe it as something you need to check, and do not ask the customer to confirm what the listing sells.",
+      /*
+       * AND DO NOT ASK FOR WHAT WE ALREADY HOLD. The same conversation asked for
+       * "the eBay listing number or link" for the listing the customer was
+       * already writing to us about. Across 319 stored drafts this shape appears
+       * on 3, all of them here — rare, and indefensible each time.
+       */
+      "- DO NOT ASK FOR THIS LISTING. We already hold this conversation's listing and the options above, so never ask the customer for a listing link, an item number, an item reference, or a screenshot of the listing they are writing to us about. Ask for an external listing ONLY where they are plainly asking about a DIFFERENT product — another item of ours, or one they saw elsewhere — that nothing in this context identifies.",
+    );
+  }
 
   const passive = [...productFacts, ...bundleAttributes].some(
     (fact) => ELECTRICAL_REQUIREMENT_FACTS.has(fact.name) && MEANS_NO.test(fact.value.trim()),

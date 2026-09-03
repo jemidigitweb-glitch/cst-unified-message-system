@@ -175,11 +175,38 @@ export async function findSotProductForListing(
   // choosing between them would be a guess.
   if (parentRows.length !== 1) return null;
 
-  const sku = parentRows[0]!.sku;
+  return findSotProductBySku(client, {
+    sku: parentRows[0]!.sku,
+    blockedKeyPatterns: options.blockedKeyPatterns,
+  });
+}
+
+/**
+ * The SOT record for ONE EXACT SKU, skipping the listing entirely.
+ *
+ * WHY THIS EXISTS SEPARATELY. `findSotProductForListing` has to guess which SKU
+ * a listing means, and answers only where the parent row makes that unambiguous.
+ * A caller that already KNOWS the SKU — because an order resolved and named the
+ * one the customer actually bought — has no such problem, and routing it through
+ * the parent row would answer about a variant the customer may not own.
+ *
+ * The SKU is matched exactly, as everywhere else: no upper(), no btrim(), no
+ * case-fold, no splitting on `+`. See the module doc.
+ */
+export async function findSotProductBySku(
+  client: Queryable,
+  options: {
+    readonly sku: string;
+    /** Key patterns that must NOT reach a draft. Never empty — see the module doc. */
+    readonly blockedKeyPatterns: readonly string[];
+  },
+): Promise<SotProduct | null> {
+  if (options.blockedKeyPatterns.length === 0) return null;
+  if (options.sku.trim() === "") return null;
 
   const attributeResult = await client.query({
     text: FIND_SOT_ATTRIBUTES,
-    values: [sku, [...options.blockedKeyPatterns]],
+    values: [options.sku, [...options.blockedKeyPatterns]],
   });
   const rows = attributeResult.rows as SotAttributeRow[];
   if (rows.length === 0) return null;
@@ -189,7 +216,7 @@ export async function findSotProductForListing(
 
   const first = rows[0]!;
   return {
-    // The SOT row's own sku, not the listing's — they are equal by the WHERE
+    // The SOT row's own sku, not the caller's — they are equal by the WHERE
     // clause, and returning the matched row's value keeps the record internally
     // consistent if that ever stops being true.
     sku: first.sku,

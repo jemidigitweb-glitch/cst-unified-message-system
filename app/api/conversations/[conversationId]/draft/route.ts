@@ -10,7 +10,11 @@ import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
 import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
 import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
 import { resolveBundleProductContext } from "@/lib/context/resolve-bundle-product-context";
-import { resolveSotProductContext } from "@/lib/context/resolve-sot-product-context";
+import { resolveListingContext } from "@/lib/context/resolve-listing-context";
+import {
+  resolveSotProductContext,
+  resolveSotProductContextForSku,
+} from "@/lib/context/resolve-sot-product-context";
 import { resolveVerifiedTracking } from "@/lib/context/resolve-tracking-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { BundleContext } from "@/lib/domain/bundle-context";
@@ -127,31 +131,41 @@ async function verifiedFactsFor(
   }
 
   /**
-   * The SOT catalogue, and ONLY where no order resolved.
+   * The SOT catalogue — for EVERY conversation, resolved by whichever SKU is
+   * actually known.
    *
-   * SAME PRECEDENCE RULE AS THE SELECTED-ORDER FALLBACK ABOVE, for a sharper
-   * reason. A resolved order names the SKU the customer actually bought; the SOT
-   * lookup names the SKU on the listing's PARENT row, which on a multi-variation
-   * listing is one specific variant and not necessarily theirs. Contributing both
-   * would put two `sku` facts and two product descriptions in front of the model
-   * with no way to tell which describes the item in the customer's hands — a
-   * contradiction dressed as two verified facts.
+   * THIS USED TO BE GATED ON `orderFacts.length === 0`, and the reason was
+   * sound: the listing-based lookup answers from the PARENT row, which on a
+   * multi-variation listing is one specific variant and not necessarily the
+   * customer's, so running it beside a resolved order would have put two `sku`
+   * facts and two product descriptions in front of the model with no way to tell
+   * which described the item in the customer's hands.
    *
-   * So this answers exactly the case that has no answer today: a pre-sale
-   * enquiry, where there is no order to be more specific than the listing. Every
-   * conversation with a resolved order is untouched, and so is every marketplace
-   * other than eBay.
+   * THE GATE SOLVED THAT BY WITHHOLDING THE CATALOGUE FROM EVERY POST-SALE
+   * REPLY, which is 735 of the 1,334 live eBay conversations — every wrong
+   * description, every missing part, every damage and return case. A draft
+   * answering "what's missing from my box?" held the order and no parts list.
+   *
+   * RESOLVING BY THE ORDER'S OWN SKU REMOVES THE AMBIGUITY INSTEAD OF AVOIDING
+   * IT. Where an order resolved it named the exact SKU purchased, so there is
+   * nothing to guess: those are that product's attributes, and no second `sku`
+   * fact is produced because the order already stated it. Where no order
+   * resolved, the listing-based lookup runs exactly as it did before, so every
+   * pre-sale conversation is byte-identical to what it was.
    *
    * Guarded separately, like the two above, so a SOT lookup failure cannot
    * discard order or return facts that already resolved.
    */
+  const purchasedSku = orderFacts.find((fact) => fact.name === "sku")?.value ?? null;
+
   let productFacts: VerifiedFact[] = [];
-  if (orderFacts.length === 0) {
-    try {
-      productFacts = await resolveSotProductContext(sourcePool, conversation);
-    } catch (cause) {
-      console.error("[draft] SOT product context resolution failed", cause);
-    }
+  try {
+    productFacts =
+      purchasedSku === null
+        ? await resolveSotProductContext(sourcePool, conversation)
+        : await resolveSotProductContextForSku(sourcePool, purchasedSku);
+  } catch (cause) {
+    console.error("[draft] SOT product context resolution failed", cause);
   }
 
   /**
@@ -168,11 +182,18 @@ async function verifiedFactsFor(
    * description of the same thing. Ordered this way, a conversation that works
    * today is byte-identical tomorrow.
    *
+   * NO LONGER GATED ON THE ORDER, for the same reason as the catalogue above.
+   * What a bundle contributes is what every option of the listing has IN COMMON
+   * — the components in the box — and that cannot contradict a record of which
+   * option was bought. Withholding it from post-sale replies cost 228 of the 735
+   * order-resolved conversations their package contents, 33 of them in "parts
+   * missing", which is the one category where what is in the box IS the question.
+   *
    * Guarded separately, like the three above, so a bundle lookup failure cannot
    * discard facts that already resolved.
    */
   let bundle: BundleContext | null = null;
-  if (orderFacts.length === 0 && productFacts.length === 0) {
+  if (productFacts.length === 0) {
     try {
       bundle = await resolveBundleProductContext(sourcePool, conversation);
     } catch (cause) {
@@ -180,7 +201,36 @@ async function verifiedFactsFor(
     }
   }
 
-  return { facts: [...orderFacts, ...returnFacts, ...productFacts], bundle };
+  /**
+   * What the LISTING says about itself — its title and the options it offers.
+   *
+   * RUNS ON EVERY CONVERSATION, and needs no gate. A list of the colours a
+   * listing sells is not a claim about which one this customer has, so it cannot
+   * contradict an order, a catalogue record or a bundle. It is also the only one
+   * of these four sources with real coverage: a title resolves for 869 of 869
+   * live listings where SOT resolves for 3.
+   *
+   * `listing_title` IS DROPPED WHERE THE ORDER NAMED THE PURCHASED ITEM. Both
+   * answer "what is this?", and the order's answer is about the variant in the
+   * customer's hands while the listing's is about the advertisement. Two titles
+   * would invite the model to choose; one removes the question.
+   *
+   * Guarded separately, like the four above.
+   */
+  let listingFacts: VerifiedFact[] = [];
+  try {
+    listingFacts = await resolveListingContext(sourcePool, conversation);
+    if (orderFacts.some((fact) => fact.name === "product_title")) {
+      listingFacts = listingFacts.filter((fact) => fact.name !== "listing_title");
+    }
+  } catch (cause) {
+    console.error("[draft] listing context resolution failed", cause);
+  }
+
+  return {
+    facts: [...orderFacts, ...returnFacts, ...productFacts, ...listingFacts],
+    bundle,
+  };
 }
 
 export async function GET(
