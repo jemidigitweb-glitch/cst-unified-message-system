@@ -4,17 +4,23 @@ import {
 } from "@/lib/domain/customer-product-data";
 import {
   type DraftResult,
+  type VerifiedFact,
   draftResultSchema,
   settleReviewRequirement,
 } from "@/lib/domain/draft";
 import type { BundleContext } from "@/lib/domain/bundle-context";
 import { displayBody } from "@/lib/domain/inbox";
+import {
+  TECHNICAL_TRACKING_LANGUAGE,
+  customerDeliveryDate,
+  customerDeliveryStatus,
+} from "@/lib/domain/tracking-customer-language";
 import { readConversation } from "@/lib/knowledge/message-category";
 import { normaliseRef } from "@/lib/knowledge/rule-evidence";
 import { CARRIER_LABELS } from "@/lib/tracking/carrier";
 import { TRACKING_STATUS_LABELS, type TrackingResult } from "@/lib/tracking/provider";
 
-import { correctionBlock } from "./draft-validation";
+import { correctionBlock, dispatchState } from "./draft-validation";
 import { DraftGenerationUnavailable, type DraftRequest } from "./provider";
 
 /**
@@ -289,7 +295,9 @@ export function contextBlocks(request: DraftRequest): string {
   const customerBlock = customerProductDataBlock(extractCustomerProductData(request.messages));
   if (customerBlock !== null) blocks.push(customerBlock);
 
-  const trackingBlock = verifiedTrackingBlock(request.tracking);
+  // The facts travel with the tracking: whether the goods were DISPATCHED is an
+  // order fact, never a scan — see `customerDeliveryStatus`.
+  const trackingBlock = verifiedTrackingBlock(request.tracking, request.facts);
   if (trackingBlock !== null) blocks.push(trackingBlock);
 
   return blocks.join("\n\n");
@@ -437,8 +445,30 @@ function incompleteGuidance(bundle: BundleContext, hasPreviousReplies: boolean):
  * `retrieval` IS SHOWN, and it matters. "Delivered, checked a moment ago" and
  * "Delivered, checked a quarter of an hour ago" are different claims, and only
  * one of them should be written to a customer as the present state of affairs.
+ *
+ * TWO REGISTERS, STATED AS TWO SECTIONS. This block used to print the carrier's
+ * own wording beside the normalised status under one heading reading VERIFIED,
+ * and told the model three times to "say what the carrier recorded". It did:
+ *
+ *   "Royal Mail tracking shows Data Received on 28 August at 05:56 and Not yet
+ *    with the carrier."
+ *
+ * True, verified, and not English a customer should ever read — "Data Received"
+ * is the carrier's pre-scan event and "Not yet with the carrier" is OUR label,
+ * written for the reviewer's sidebar. So the customer-facing sentence now comes
+ * FIRST and alone, and everything the carrier said is grouped beneath it as
+ * evidence and labelled as evidence. Nothing was removed: the whole scan
+ * history is still here, because the shape of the journey is what answers the
+ * questions that generate work.
+ *
+ * `facts` decides ONE thing: whether dispatch is established. That is an order
+ * fact and never a scan — a label made and never scanned is not a parcel that
+ * was not sent, and it is not a parcel on its way either.
  */
-export function verifiedTrackingBlock(tracking: TrackingResult | null | undefined): string | null {
+export function verifiedTrackingBlock(
+  tracking: TrackingResult | null | undefined,
+  facts: readonly VerifiedFact[] = [],
+): string | null {
   if (tracking === null || tracking === undefined) return null;
 
   const latest = tracking.trackingEvents.at(-1);
@@ -460,10 +490,40 @@ export function verifiedTrackingBlock(tracking: TrackingResult | null | undefine
         `  * ${event.timestamp} — ${TRACKING_STATUS_LABELS[event.status]} — ${event.description}`,
     );
 
+  /*
+   * THE CUSTOMER-FACING SENTENCE, chosen from the normalised status and — where
+   * the carrier has no position to give — from whether the order establishes
+   * dispatch. `customerDeliveryStatus` owns that decision and the wording; this
+   * function only places it.
+   */
+  const spoken = customerDeliveryStatus(tracking, dispatchState(facts) === "dispatched");
+  /*
+   * A DATE, AND ONLY FROM THE CARRIER'S OWN POSITION.
+   *
+   * Offered when the status states where the parcel is, because then
+   * `lastUpdated` is the moment that position was reached — the delivery, the
+   * attempt, the collection point. Withheld otherwise: on a `pre_transit`
+   * shipment that timestamp is when a label was made, and dating "dispatched"
+   * from it would turn a database row into a claim about the warehouse.
+   */
+  const spokenDate = spoken.source === "tracking" ? customerDeliveryDate(tracking.lastUpdated) : null;
+
   return [
     "VERIFIED TRACKING INFORMATION:",
     `- Carrier: ${CARRIER_LABELS[tracking.carrier]}`,
     `- Tracking number: ${tracking.trackingNumber}`,
+    "",
+    "CUSTOMER-FACING DELIVERY STATUS — the ONLY wording you may use in the reply for where this parcel is:",
+    `  "${spoken.sentence}"`,
+    spokenDate === null
+      ? null
+      : `  You may also say that this was on ${spokenDate}. Give the date only — never a time of day.`,
+    spoken.statesAPosition
+      ? null
+      : "  Nothing above states where the parcel is, so the reply may not either. Say this, apply the CST rules for the case, and do not build an arrival, a delay or a movement on top of it.",
+    "  Say it in your own courteous words, in the customer's language, and add what it means for them under the CST rules. Do not go beyond it: it is the whole of what may be stated about this parcel's position.",
+    "",
+    "INTERNAL TRACKING EVIDENCE — FOR YOUR REASONING ONLY, NEVER FOR THE REPLY:",
     `- Current status: ${TRACKING_STATUS_LABELS[tracking.currentStatus]}`,
     `- Last updated: ${tracking.lastUpdated ?? "(the carrier has reported nothing yet)"}`,
     latest === undefined
@@ -473,6 +533,17 @@ export function verifiedTrackingBlock(tracking: TrackingResult | null | undefine
     ...history,
     `- Source: ${tracking.source.retrieval === "live" ? "Live" : "Cached"}`,
     "",
+    /*
+     * THE REGISTER RULE, stated where the data is.
+     *
+     * The examples are the vocabulary the validator actually catches — one
+     * list, exported from `tracking-customer-language.ts` — so what the model
+     * is warned about and what the accuracy gate rejects cannot drift apart.
+     */
+    "TRACKING EVENTS AND CARRIER DESCRIPTIONS ARE EVIDENCE FOR REASONING ONLY. They are not customer-facing language. Never repeat a raw carrier event description, an internal status label or identifier, a facility name, an event code or a technical timestamp in \"draft_reply\" — not quoted, not paraphrased, and not as \"tracking shows …\". Wording of this kind must never reach a customer: " +
+      TECHNICAL_TRACKING_LANGUAGE.map((term) => term.label).join(", ") +
+      ' — for example "Data Received", "Label Created", "Shipment information received", "Manifest generated", "pre_transit", "Not yet with the carrier", "Sort Facility … Service Centre", "2026-08-28 05:56:12".',
+    "THE ORDINARY DELIVERY WORDS REMAIN ORDINARY. \"Dispatched\", \"in transit\", \"out for delivery\", \"delivered\" and \"ready for collection\" are what a customer expects to read, and this rule does not discourage any of them — it governs only where those words come from, which is the customer-facing sentence above and nothing else.",
     /*
      * EVIDENCE FIRST, CONTENT ONLY IF ASKED FOR. Both halves are here because
      * each was broken in turn.
@@ -492,7 +563,7 @@ export function verifiedTrackingBlock(tracking: TrackingResult | null | undefine
      * only when the customer's own question turns on where the parcel is.
      */
     "VERIFIED SHIPMENT TRACKING INFORMATION IS AUTHORITATIVE. Use it before requesting information from the customer. Never ask them for the latest tracking update, the current parcel status, or the tracking history — all of it is above.",
-    "IT IS EVIDENCE, NOT SOMETHING YOU MUST REPEAT. Before putting any of it in the reply, ask yourself: does this customer need delivery or shipment information to have THEIR message answered? If yes — they are asking where the parcel is, whether it arrived, when it will come, about a delay, a delivery attempt, a redelivery or a collection — then say what the carrier recorded and what it means for them. If no — they are asking about a missing part, a refund amount, a replacement decision, a wrong or damaged item, or the product itself — then use the tracking silently, to check your assumptions and to avoid contradicting the record, and do not narrate it. Answer the question they actually asked.",
+    "IT IS EVIDENCE, NOT SOMETHING YOU MUST REPEAT. Before putting any of it in the reply, ask yourself: does this customer need delivery or shipment information to have THEIR message answered? If yes — they are asking where the parcel is, whether it arrived, when it will come, about a delay, a delivery attempt, a redelivery or a collection — then give them the customer-facing delivery status above and what it means for them. If no — they are asking about a missing part, a refund amount, a replacement decision, a wrong or damaged item, or the product itself — then use the tracking silently, to check your assumptions and to avoid contradicting the record, and do not narrate it. Answer the question they actually asked.",
     "USE ONLY THIS VERIFIED TRACKING INFORMATION. Do not guess the delivery status, do not estimate when it will arrive, and do not describe any movement not listed above. If the status is unknown, say that we are checking with the carrier — do not fill the gap.",
     /*
      * The one case where raising it unprompted IS right. Without this, the
@@ -500,9 +571,9 @@ export function verifiedTrackingBlock(tracking: TrackingResult | null | undefine
      * against a Delivered scan be answered as though the record agreed with
      * them.
      */
-    "If what the customer describes conflicts with the record above, that makes it relevant: say what the carrier recorded, and ask them to confirm the detail that would settle it.",
+    "If what the customer describes conflicts with the record above, that makes it relevant: give them the customer-facing delivery status above, and ask them to confirm the detail that would settle it. Still in that wording — a conflict is a reason to state our position, never a reason to quote the carrier's scan at them.",
     tracking.source.retrieval === "cached"
-      ? "This was retrieved a short time ago rather than this moment. Do not present it as the position right now — say what the carrier last recorded."
+      ? "This was retrieved a short time ago rather than this moment. Do not present it as the position right now — say what we last recorded for the parcel, in the customer-facing wording above."
       : null,
   ]
     .filter((line) => line !== null)

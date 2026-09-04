@@ -2,6 +2,10 @@ import type { BundleContext } from "@/lib/domain/bundle-context";
 import { type VerifiedFact, ungroundedClaims } from "@/lib/domain/draft";
 import { type ConversationMessageView, displayBody } from "@/lib/domain/inbox";
 import {
+  customerDeliveryStatus,
+  technicalTrackingLanguageIn,
+} from "@/lib/domain/tracking-customer-language";
+import {
   type MessageIntent,
   detectIntents,
   intentOwningCategory,
@@ -59,6 +63,16 @@ export type DraftIssueType =
   | "intent_not_addressed"
   /** The reply asserts something no supplied fact supports. */
   | "unsupported_claim"
+  /**
+   * The reply exposes internal carrier or system wording to a customer.
+   *
+   * NOT A TRUTH PROBLEM, and the only issue in this list that is not. "Royal
+   * Mail tracking shows Data Received on 28 August at 05:56" is entirely
+   * accurate; it is also a database row read aloud to a member of the public.
+   * Every other check here asks whether the reply is right. This one asks
+   * whether it is written in the customer's language.
+   */
+  | "technical_tracking_language"
   /**
    * The reply states a specification that came from the SOT product sheet.
    *
@@ -1304,6 +1318,65 @@ function trackingSupports(
   return true;
 }
 
+/* ------------------------------------------------------------------------- *
+ * CHECK 5 — CUSTOMER-FACING LANGUAGE
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Internal tracking wording that reached the customer.
+ *
+ * THE FAILURE, in the words that produced it: "Royal Mail tracking shows Data
+ * Received on 28 August at 05:56 and Not yet with the carrier." Verified in
+ * every particular — "Data Received" is the carrier's own pre-scan event,
+ * "05:56" is a database timestamp, and "Not yet with the carrier" is OUR label,
+ * written for the reviewer's sidebar — and none of it is English a customer
+ * should read.
+ *
+ * A NET, NOT THE RULE. The rule lives in the prompt, in `verifiedTrackingBlock`:
+ * the normalised status is the only tier that may be spoken, and the carrier's
+ * wording is evidence. This catches what slips through, over a closed
+ * vocabulary this system owns — see `TECHNICAL_TRACKING_LANGUAGE`, which the
+ * prompt quotes from so the warning and the check cannot drift apart.
+ *
+ * CRITICAL, so it buys the one regeneration. A reviewer cannot fix this by
+ * adding a sentence: the offending line has to be rewritten, and a draft that
+ * reads like a system log is the kind of reply a customer forwards back with a
+ * complaint attached.
+ *
+ * UNGATED BY THE KNOWLEDGE BASE and UNGATED BY `tracking`. A restricted draft
+ * may not state policy but can still quote a scan, and a draft that names
+ * "pre_transit" without any tracking having been supplied is worse, not better.
+ *
+ * ONE FINDING PER SENTENCE. A sentence containing three technical fragments is
+ * one sentence to rewrite, and three identical corrections would spend the
+ * regeneration's attention repeating itself.
+ */
+function trackingLanguageCheck(draft: DraftUnderReview): DraftFinding[] {
+  const findings: DraftFinding[] = [];
+
+  for (const sentence of sentences(draft.reply)) {
+    const term = technicalTrackingLanguageIn(sentence);
+    if (term === null) continue;
+
+    findings.push({
+      issue: "technical_tracking_language",
+      severity: "critical",
+      incorrectStatement: sentence,
+      verifiedFact:
+        draft.tracking == null
+          ? null
+          : `customer-facing delivery status = ${
+              customerDeliveryStatus(draft.tracking, dispatchState(draft.facts) === "dispatched")
+                .sentence
+            }`,
+      ruleThatApplies: "Delivery wording: tracking events are evidence, not customer language",
+      regenerationReason: `The reply exposes ${term.label} to the customer. Carrier events, internal status labels and identifiers, facility names, event codes and technical timestamps are evidence for your reasoning only and must never appear in the reply. Use the verified delivery status and explain it naturally to the customer, in the customer-facing wording you were given — for example "Your parcel is currently in transit." The ordinary delivery words remain available: dispatched, in transit, out for delivery, delivered, ready for collection.`,
+    });
+  }
+
+  return findings;
+}
+
 function hallucinationCheck(draft: DraftUnderReview): DraftFinding[] {
   const findings: DraftFinding[] = [];
 
@@ -1325,10 +1398,20 @@ function hallucinationCheck(draft: DraftUnderReview): DraftFinding[] {
           ? null
           : `tracking status = ${draft.tracking.currentStatus}`,
       ruleThatApplies: "Delivery status: state only what the carrier established",
+      /*
+       * THE CORRECTION IS WRITTEN IN CUSTOMER LANGUAGE, and this used to be a
+       * defect of its own: it interpolated `currentStatus`, so a regeneration
+       * was literally instructed to tell the customer "pre_transit". The
+       * identifier is this system's vocabulary; what the reply may say is the
+       * sentence `customerDeliveryStatus` produces.
+       */
       regenerationReason:
         draft.tracking == null
           ? "The reply tells the customer where their parcel is. No carrier tracking was established for this conversation, so that is not something we know. Remove it and say what the verified order context supports instead."
-          : `The reply describes a delivery state the carrier does not report. The carrier's status is "${draft.tracking.currentStatus}". Say that, or say nothing about where the parcel is.`,
+          : `The reply describes a delivery state the carrier does not report. Use the verified delivery status and explain it naturally to the customer: "${
+              customerDeliveryStatus(draft.tracking, dispatchState(draft.facts) === "dispatched")
+                .sentence
+            }" Say that in your own words, or say nothing about where the parcel is. Never quote the carrier's own event wording or an internal status name.`,
     });
   }
 
@@ -1395,6 +1478,12 @@ export function validateDraftAccuracy(draft: DraftUnderReview): DraftValidation 
   const findings: DraftFinding[] = [
     ...factCheck(draft),
     ...hallucinationCheck(draft),
+    /*
+     * NOT GATED ON THE KNOWLEDGE BASE, like the two above and for the same
+     * reason: it is a question about the TEXT, not about the rules. A draft
+     * written in restricted mode may still read a scan aloud.
+     */
+    ...trackingLanguageCheck(draft),
     /*
      * SKIPPED IN RESTRICTED MODE, and only these two.
      *

@@ -346,14 +346,23 @@ describe("5. a delivery state may only come from a carrier", () => {
     ).toEqual([]);
   });
 
-  /** Tracking present is not a licence for any delivery claim. */
+  /**
+   * Tracking present is not a licence for any delivery claim.
+   *
+   * THE CORRECTION NAMES THE STATUS IN CUSTOMER LANGUAGE, and this assertion
+   * changed on purpose. It used to require the identifier `in_transit`, which
+   * was the defect rather than the contract: the correction is handed straight
+   * to a regeneration whose whole job is to write to a customer, so telling it
+   * to say "in_transit" invited exactly the leak this file now guards against.
+   */
   it("rejects a claim the carrier's status does not support", () => {
     const inTransit = result({ currentStatus: "in_transit" });
     const finding = check("Your parcel has been delivered.", inTransit).findings.find((f) =>
       f.ruleThatApplies?.includes("Delivery status"),
     );
     expect(finding).toBeDefined();
-    expect(finding!.regenerationReason).toContain("in_transit");
+    expect(finding!.regenerationReason).toContain("Your parcel is currently in transit.");
+    expect(finding!.regenerationReason).not.toContain("in_transit");
   });
 
   /** A reply may not be more certain than the carrier. */
