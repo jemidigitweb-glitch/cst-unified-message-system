@@ -179,9 +179,16 @@ describe("the required cases", () => {
     expect(finding!.ruleThatApplies).toMatch(/return route/i);
   });
 
+  /**
+   * "ALREADY DISPATCHED", NOT "ALREADY ON ITS WAY". The draft used to say the
+   * latter and this test accepted it; movement is now the carrier's fact and no
+   * scan was supplied here, so the wording changed rather than the point. What
+   * is pinned is unaltered: a dispatched cancellation handled as a return
+   * raises nothing.
+   */
   it("passes a dispatched cancellation handled as a return", () => {
     const result = check(
-      "Your order is already on its way, so it cannot be stopped now. Once it arrives you can return it to us unopened and we will refund you in full.",
+      "Your order has already been dispatched, so it cannot be stopped now. Once it arrives you can return it to us unopened and we will refund you in full.",
       { order_status: "Completed", tracking_number: "AB123456789GB" },
       "I have changed my mind, please cancel my order and refund me.",
     );
@@ -315,11 +322,28 @@ describe("claims nothing supports", () => {
 
   it("accepts the same claim when a tracking number establishes it", () => {
     const result = check(
-      "Good news — your order has been dispatched and is on its way under AB123456789GB.",
+      "Good news — your order has been dispatched under AB123456789GB.",
       { order_status: "Completed", tracking_number: "AB123456789GB" },
       "Has it been sent?",
     );
     expect(result.findings.filter((f) => f.issue === "unsupported_claim")).toEqual([]);
+  });
+
+  /**
+   * A TRACKING NUMBER ESTABLISHES DISPATCH AND NOT MOVEMENT, which is why the
+   * test above lost its "and is on its way". A booked shipment says the goods
+   * left us; only a carrier scan says the parcel is going anywhere, and none
+   * was supplied here.
+   */
+  it("still catches the movement half of the same sentence", () => {
+    const result = check(
+      "Good news — your order has been dispatched and is on its way under AB123456789GB.",
+      { order_status: "Completed", tracking_number: "AB123456789GB" },
+      "Has it been sent?",
+    );
+    const finding = result.findings.find((f) => f.issue === "unsupported_claim");
+    expect(finding).toBeDefined();
+    expect(finding!.ruleThatApplies).toMatch(/movement is the carrier's/);
   });
 
   it("catches an investigation that cannot have happened", () => {

@@ -384,7 +384,15 @@ describe("5. a delivery state may only come from a carrier", () => {
       "Could you confirm whether it has been delivered?",
       "If it has not been delivered by Friday, please let us know.",
       "We will let you know as soon as we have a delivery update.",
-      "Your order was dispatched and is on its way to you.",
+      /*
+       * DISPATCH ALONE, with the movement half removed. This line used to read
+       * "and is on its way to you", and it passed because nothing separated the
+       * order's fact from the carrier's. It now does: `check(reply, null)`
+       * supplies no tracking, so no scan reports movement, and the sentence is
+       * a claim rather than the harmless statement this list is testing for.
+       * The dispatch statement itself is still exactly as acceptable as it was.
+       */
+      "Your order was dispatched to you.",
     ]) {
       expect(
         check(reply, null).findings.filter((f) => f.ruleThatApplies?.includes("Delivery status")),
