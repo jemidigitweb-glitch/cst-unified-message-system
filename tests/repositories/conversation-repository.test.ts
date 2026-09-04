@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { classifyConversationCategory } from "@/lib/knowledge/message-category";
 import {
   DEFAULT_INBOX_LIMIT,
   MAX_INBOX_LIMIT,
@@ -158,6 +159,9 @@ describe("inbox listing", () => {
       inboundCount: 1,
       lastDirection: "outbound",
       category: "Admin related issues",
+      // Additive. This row carries no per-message text, so nothing was
+      // established to rank — see the priority tests at the foot of this file.
+      priority: null,
     });
   });
 
@@ -324,6 +328,9 @@ describe("No Rule listing", () => {
       inboundCount: 1,
       lastDirection: "outbound",
       category: "Admin related issues",
+      // Additive, and null for the same reason as above: the No Rule query
+      // selects no per-message text either.
+      priority: null,
       caseType: "Damaged item",
       analysedAt: "2026-08-20 09:00:00",
       reason: "no_corpus",
@@ -683,5 +690,178 @@ describe("read-only guarantee", () => {
         expect(call.text).not.toContain(foreign);
       }
     }
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * PRIORITY ON THE READ PATH
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Priority reaches the inbox the same way the category does — computed on read
+ * from text the list query already selects, never stored, never queried for
+ * separately.
+ *
+ * Synthetic messages throughout. Every one is written for this test.
+ */
+describe("inbox priority", () => {
+  const listed = async (inboundTexts: (string | null)[] | null, overrides = {}) => {
+    const { calls, client } = fake([
+      [conversationRow({ inbound_texts: inboundTexts, inbound_count: 1, ...overrides })],
+    ]);
+    const page = await listConversations(client, { marketplace: "ebay" });
+    return { item: page.items[0]!, calls };
+  };
+
+  it("carries a cancellation through to the item as HIGH", async () => {
+    const { item } = await listed(["Please cancel my order."]);
+    expect(item.priority).toBe("HIGH");
+  });
+
+  it("carries an ordinary delivery query through as MEDIUM", async () => {
+    const { item } = await listed(["Where is my parcel?"]);
+    expect(item.priority).toBe("MEDIUM");
+  });
+
+  it("carries a routine pre-sales question through as LOW", async () => {
+    const { item } = await listed(["Is this light dimmable?"]);
+    expect(item.priority).toBe("LOW");
+  });
+
+  /**
+   * NULL SURVIVES THE WHOLE PATH. The classifier refuses to rank what it cannot
+   * read, and nothing between it and the browser is allowed to turn that refusal
+   * into "LOW" — a conversation nobody could read is not one that can wait.
+   */
+  it("carries an unreadable conversation through as null, never LOW", async () => {
+    for (const texts of [["Hello."], ["asdf qwerty"], [""], [null]]) {
+      const { item } = await listed(texts);
+      expect(item.priority, JSON.stringify(texts)).toBeNull();
+    }
+  });
+
+  it("reads each message separately rather than the thread glued together", async () => {
+    const { item } = await listed([
+      "My electrician is coming on Friday and I need this urgently.",
+      "Thank you, all sorted now.",
+    ]);
+    // The closing message ends the urgency; a concatenated read could not.
+    expect(item.priority).toBe("LOW");
+  });
+
+  it("declines to rank when the projection carries no per-message text", async () => {
+    const { item } = await listed(null);
+    expect(item.priority).toBeNull();
+  });
+
+  /**
+   * Suppressed for the same measured reason the category is: this marketplace's
+   * stored text carries raw email transport headers and corporate boilerplate,
+   * and ranking that produces confident HIGHs off supplier marketing rather than
+   * a blank.
+   */
+  it("suppresses priority wherever the category is suppressed", async () => {
+    const { calls, client } = fake([
+      [
+        conversationRow({
+          marketplace: "bandq",
+          inbound_texts: ["Please cancel my order."],
+          inbound_count: 1,
+        }),
+      ],
+    ]);
+    const page = await listConversations(client, { marketplace: "bandq" });
+    expect(page.items[0]!.priority).toBeNull();
+    expect(page.items[0]!.category).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
+
+  /** 9. No extra round trip. */
+  it("adds no database query of its own", async () => {
+    const { calls } = await listed(["Please cancel my order.", "Where is my parcel?"]);
+    expect(calls).toHaveLength(1);
+    // ...and no new SQL, either: the text it reads was already selected.
+    expect(calls[0]!.text).toContain("inbound_texts");
+    expect(calls[0]!.text.toLowerCase()).not.toContain("priority");
+  });
+
+  /** 7 and 8. Everything else on the item is untouched. */
+  it("changes no other field on the item", async () => {
+    const row = conversationRow({
+      inbound_texts: ["Please cancel my order."],
+      inbound_count: 1,
+    });
+    const { client } = fake([[row]]);
+    const [item] = (await listConversations(client, { marketplace: "ebay" })).items;
+
+    expect(item!.priority).toBe("HIGH");
+    // The urgent reading changes nothing about the workflow, the direction, the
+    // counts, the timestamps, the marketplace or the placement.
+    expect(item!.workflowState).toBe("received");
+    expect(item!.lastDirection).toBe("outbound");
+    expect(item!.messageCount).toBe(2);
+    expect(item!.inboundCount).toBe(1);
+    expect(item!.firstSourceTimestamp).toBe("2026-08-01 10:00:00");
+    expect(item!.lastSourceTimestamp).toBe("2026-08-02 10:00:00");
+    expect(item!.marketplace).toBe("ebay");
+    expect(item!.inboxPlacement).toBe("reply_inbox");
+    expect(item!.needsContext).toBe(false);
+    expect(item!.subSourceId).toBe(7);
+    expect(item!.counterpartyRef).toBe("counterparty-a");
+    expect(item!.listingItemRef).toBe("listing-1");
+    expect(item!.id).toBe("1");
+  });
+
+  /** 7. The category for the same text is what it always was. */
+  it("leaves the category for the same conversation unchanged", async () => {
+    const cases: readonly (readonly [string, string | null])[] = [
+      ["Please cancel my order.", "Order change, before shipping queries"],
+      ["Where is my parcel?", "Delivery queries"],
+      ["Is this light dimmable?", "Pre sales queries"],
+      ["The item arrived damaged.", "Damage queries"],
+    ];
+    for (const [text, expected] of cases) {
+      const { item } = await listed([text]);
+      // Read straight from the untouched classifier, so this compares the
+      // repository's output against the category authority rather than against
+      // a second copy of its answer.
+      expect(item.category, text).toBe(classifyConversationCategory([text]));
+      expect(item.category, text).toBe(expected);
+    }
+  });
+
+  /** A conversation ranks and categorises independently, end to end. */
+  it("lets one category carry two different priorities", async () => {
+    const recall = await listed(["I received a product recall notice for this light."]);
+    const invoice = await listed(["Can I have an invoice for this order please?"]);
+    expect(recall.item.category).toBe(invoice.item.category);
+    expect(recall.item.priority).toBe("HIGH");
+    expect(invoice.item.priority).toBe("MEDIUM");
+  });
+
+  /**
+   * 5. Priority is read from the customer's words alone. Flipping the workflow
+   * state, the reply direction and the placement must not move it — those
+   * connections belong to a future business rule, not to this one.
+   */
+  it("ignores workflow state, reply direction and placement", async () => {
+    const readings = await Promise.all(
+      (
+        [
+          { workflow_state: "received", last_direction: "inbound" },
+          { workflow_state: "drafting", last_direction: "outbound" },
+          { workflow_state: "pending_review", last_direction: "inbound" },
+          { workflow_state: "reviewed", last_direction: "outbound", inbox_visibility: "filtered" },
+        ] as const
+      ).map(async (overrides) => (await listed(["Please cancel my order."], overrides)).item.priority),
+    );
+    expect(readings).toEqual(["HIGH", "HIGH", "HIGH", "HIGH"]);
+  });
+
+  /** A single-conversation read selects no per-message text, so it is unranked. */
+  it("leaves a single-conversation read unranked rather than guessing", async () => {
+    const { client } = fake([[conversationRow()], [messageRow()]]);
+    const detail = await getConversation(client, "1");
+    expect(detail!.conversation.priority).toBeNull();
   });
 });

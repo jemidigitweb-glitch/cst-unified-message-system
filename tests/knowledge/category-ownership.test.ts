@@ -141,9 +141,27 @@ describe("a customer who has already connected it is not a prospect", () => {
   const CASES: readonly (readonly [string, MessageCategory])[] = [
     ["I have wired it in and the bulbs flash on and off constantly.", "Defective items"],
     ["Fitted it yesterday and it strobes when dimmed.", "Defective items"],
-    // The infinitive and the passive are still questions about a purchase
-    // nobody has made — INT-PS19 and sheet Z, ASSEMBLY AND WIRING.
-    ["How do I connect this to a 12v supply?", "Pre sales queries"],
+    /*
+     * HOW versus WHETHER, which is not the line this pair used to draw.
+     *
+     * Both of these were Pre sales, on the reasoning that an infinitive or a
+     * passive is "a question about a purchase nobody has made" — in other
+     * words, on OWNERSHIP. That gate has been retired: a specification question
+     * is Pre sales whoever asks it, and a how-do-I question is Admin whoever
+     * asks it. See `asksHowToUseIt`.
+     *
+     * The two books genuinely overlap here — the pre-sales workbook has
+     * INT-PS19 sheet Z ASSEMBLY AND WIRING, and ADMIN.xlsx sheet 12 has
+     * INSTALLATION / WIRING GUIDANCE — and the split approved for the inbox is
+     * by what the customer is asking for:
+     *
+     *   "HOW do I connect this"      a method   -> Admin
+     *   "CAN it be wired to a X"     a property -> Pre sales
+     *
+     * So the first moves and the second does not, and the difference is the
+     * question rather than anything about the order behind it.
+     */
+    ["How do I connect this to a 12v supply?", "Admin related issues"],
     ["Can it be wired to a dimmer switch?", "Pre sales queries"],
   ];
 

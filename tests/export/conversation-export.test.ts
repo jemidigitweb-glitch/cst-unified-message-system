@@ -40,6 +40,10 @@ function conversation(overrides: Partial<InboxItem> = {}): InboxItem {
     inboundCount: 2,
     lastDirection: "outbound",
     category: null,
+    // Additive field on `InboxItem`. Null here on purpose: the export writes a
+    // conversation, and priority is not part of it — see the assertion below
+    // that the exported text names no priority at all.
+    priority: null,
     ...overrides,
   };
 }
@@ -161,6 +165,22 @@ describe("the conversation export", () => {
     expect(() => JSON.parse(file.content)).toThrow();
     expect(file.content).not.toMatch(/matchedRules|ruleText|sourceSheet/);
     expect(file.content).not.toMatch(/\b[A-Z]{4,8}-[A-Z0-9]{2,6}-\d+\b/);
+  });
+
+  /**
+   * The export is the conversation, not our reading of it. It has never written
+   * the category and it must not start writing the priority: both are derived
+   * on read, neither is a fact about the thread, and an exported file that
+   * carried one would be shipping a machine opinion as evidence.
+   */
+  it("writes neither our category nor our priority", () => {
+    const ranked = buildConversationTextExport({
+      detail: { conversation: conversation({ category: "Delivery queries", priority: "HIGH" }), messages: [] },
+      exportedAt: EXPORTED_AT,
+    });
+    for (const derived of ["Delivery queries", "HIGH", "MEDIUM", "LOW", "Priority", "priority"]) {
+      expect(ranked.content, derived).not.toContain(derived);
+    }
   });
 
   it("states the marketplace, account, customer and references", () => {

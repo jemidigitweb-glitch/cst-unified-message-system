@@ -1291,6 +1291,151 @@ const ASKING_FOR_PAPERWORK =
   /\b(?:invoice|vat|receipt|proof\s+of\s+purchase|rechnung|beleg|quittung|kaufbeleg)\b|\b(?:instruction|installation|user|product|assembly)\s+manual\b|\bwiring\s+diagram\b|\b(?:fitting|installation|assembly)\s+instructions\b|\b(?:ce|ukca|safety|compliance|conformity)\s+(?:certificate|declaration|mark)\b|\btest\s+report\b|\bdatasheet\b|\bdata\s+sheet\b/i;
 
 /**
+ * ------------------------------------------------------------------------
+ * SPECIFICATION IS PRE SALES. INSTALLATION GUIDANCE IS ADMIN.
+ * ------------------------------------------------------------------------
+ *
+ * THE WORKBOOKS ALREADY DRAW THIS LINE and this is where it was missing. The
+ * pre-sales book owns `WIRING DRIVER TRANSFORMER ADVICE` — WHICH driver should
+ * I buy — and `ADMIN.xlsx` sheet 12 owns `INSTALLATION / WIRING GUIDANCE` and
+ * `MANUAL / WIRING DIAGRAM` — HOW do I fit the one I have. Two questions about
+ * the same wiring, two different teams, and the split is the customer's REQUEST
+ * rather than anything about the order behind it.
+ *
+ * WHAT WENT WRONG WITHOUT IT. `requestedAction` reads any product question as
+ * `technical_specification`, and every route mapped that straight to Pre sales.
+ * A customer with a completed order writing "I want to connect 3x1.5mm² cable
+ * but because of the thickness I cannot get it onto the thread, what can I do?"
+ * was filed as a sales enquiry: a live installation problem sitting in the
+ * queue for people answering questions from buyers who have not bought yet.
+ *
+ * OWNERSHIP IS DELIBERATELY NOT THE TEST, and that is not an oversight — it is
+ * the rule `PRE_SALES` states a few hundred lines below: "Pre sales survives a
+ * previous purchase — the customer who bought last year and is asking whether
+ * the transformer has isolated windings is asking a pre-sales question." That
+ * stays true. A SPECIFICATION question is Pre sales whoever asks it; a HOW-DO-I
+ * question is Admin whoever asks it. Nothing here reads an order.
+ *
+ * THREE SHAPES, because customers ask for help in three ways and only the first
+ * uses the word "how":
+ *
+ *   1. THE HOW-TO QUESTION.        "How do I connect this?", "wie schließe ich
+ *                                  das an?"
+ *   2. THE REQUEST FOR GUIDANCE.   "Can you explain how to install it",
+ *                                  "please advise on fitting this".
+ *   3. THE REPORTED DIFFICULTY.    "I'm struggling to fit the cable, what
+ *                                  should I do?" — no question word about the
+ *                                  method at all, and the commonest of the three
+ *                                  in live text.
+ */
+const INSTALLATION_VERB =
+  "install(?:ing|ed|ation)?|fit(?:ting|ted)?|wir(?:e|ing|ed)|connect(?:ing|ed|ion)?|" +
+  "attach(?:ing|ed)?|assembl(?:e|ing|ed|y)|mount(?:ing|ed)?|hang(?:ing)?|" +
+  "set(?:ting)?\\s+up|screw(?:ing|ed)?\\s+(?:in|on|together)|plug(?:ging|ged)?\\s+(?:in|into)|" +
+  "us(?:e|ing)|operat(?:e|ing)";
+
+/**
+ * COMPATIBILITY IS NOT AN INSTRUCTION, however many fitting words it contains.
+ *
+ * "Will it fit my cable?" and "can I use this outside?" are the two shapes that
+ * put a `fit` and a `use` inside a specification question, and both are the
+ * product's property rather than the customer's task. Excluded by the frame —
+ * an auxiliary in front of the product — not by the verb, so "will you show me
+ * how to fit it" is untouched.
+ */
+const COMPATIBILITY_FRAME =
+  /\b(?:will|would|does|do|can|could|is|are|has|have)\s+(?:it|this|these|they|that|the\s+\w+|i)\s+(?:\w+\s+){0,2}?(?:fit|work|use|used|take|accept|support|suit)\b/i;
+
+/** 1. Asking, in so many words, how the thing is done. */
+const HOW_TO_FRAME = new RegExp(
+  `\\bhow\\b[^.!?;\\n]{0,40}?\\b(?:${INSTALLATION_VERB})\\b` +
+    `|\\bwhat(?:'s|\\s+is)\\s+the\\s+(?:best\\s+)?way\\b[^.!?;\\n]{0,30}?\\b(?:${INSTALLATION_VERB})\\b` +
+    // GERMAN SEPARATES ITS VERBS. "Wie schließe ich das an?" is the same
+    // sentence as "wie kann ich das anschließen", with the prefix parked at the
+    // end of the clause — so the joined form alone would miss the commonest way
+    // a customer actually writes it. The bare stem is admitted for exactly the
+    // verbs whose separated form is unambiguous here.
+    `|\\bwie\\b[^.!?;\\n]{0,40}?\\b(?:anschlie(?:ß|ss)\\w*|schlie(?:ß|ss)e?\\w*|installier\\w*|montier\\w*|befestig\\w*|verbind\\w*|einbau\\w*|anbring\\w*|benutz\\w*|verwend\\w*)`,
+  "i",
+);
+
+/** 2. Asking us to explain, advise or show. */
+const GUIDANCE_REQUEST = new RegExp(
+  `\\b(?:explain|advise|advice|guidance|instruct|show\\s+(?:me|us)|tell\\s+(?:me|us)|help\\s+(?:me|us)?|walk\\s+(?:me|us)\\s+through)\\b` +
+    `[^.!?;\\n]{0,40}?\\b(?:${INSTALLATION_VERB})\\b` +
+    `|\\b(?:${INSTALLATION_VERB})\\b[^.!?;\\n]{0,30}?\\b(?:instructions?|guidance|advice)\\b` +
+    `|\\b(?:anleitung|hilfe|rat)\\b[^.!?;\\n]{0,40}?\\b(?:anschlie(?:ß|ss)\\w*|installier\\w*|montier\\w*|einbau\\w*)`,
+  "i",
+);
+
+/**
+ * 3. Reporting that the job will not go — the shape with no question word in
+ * it. `get it onto`/`get it through` is here because that is how a customer
+ * describes a physical fit failing without naming any installation verb at all.
+ */
+const CANNOT_DO_IT = new RegExp(
+  `\\b(?:can\\s?n[o']?t|cannot|can\\s+not|unable\\s+to|struggl\\w+|difficult|difficulty|difficulties|impossible|trouble|problems?|issues?)\\b` +
+    `[^.!?;\\n]{0,60}?\\b(?:${INSTALLATION_VERB}|get\\s+(?:it|them|this|these|the\\s+\\w+)\\s+(?:on|onto|in|into|through|over|off|round|around))\\b` +
+    `|\\b(?:unm(?:ö|oe)glich|schwierig|probleme?|schwierigkeiten)\\b[^.!?;\\n]{0,60}?\\b(?:anschlie(?:ß|ss)\\w*|installier\\w*|montier\\w*|befestig\\w*|verbind\\w*|einbau\\w*|bekommen|kriegen)\\b` +
+    // "es ist unmöglich, AUF DAS GEWINDE ZU KOMMEN" — a physical fit that will
+    // not go, described with no installation verb in it at all. The English
+    // side has the same shape in `get it onto`, and bare `kommen` is not
+    // admitted: on its own it is "when is it coming", which is Delivery's.
+    `|\\b(?:unm(?:ö|oe)glich|schwierig|probleme?|schwierigkeiten)\\b[^.!?;\\n]{0,60}?\\b(?:auf|in|durch|(?:ü|ue)ber)\\b[^.!?;\\n]{0,30}?\\bzu\\s+(?:kommen|bekommen|bringen|f(?:ü|ue)hren)\\b`,
+  "i",
+);
+
+/**
+ * Whether the customer is asking HOW to install, wire, connect, fit or use the
+ * product, as opposed to asking WHAT it is or WHETHER it suits them.
+ *
+ * German is read directly, like every other pattern in this file — there is no
+ * translation step in front of the classifier, and `translateGermanTerms` only
+ * maps product NOUNS, not verbs. The German alternatives sit beside the English
+ * ones for the same reason `HAS_NOT_ARRIVED` carries "nicht erhalten".
+ */
+function asksHowToUseIt(text: string): boolean {
+  if (COMPATIBILITY_FRAME.test(text) && !HOW_TO_FRAME.test(text)) return false;
+  // A REPORT IS NOT A REQUEST FOR A METHOD, and this is the guard that keeps
+  // the problem categories whole. "Received wall lamps but shades cannot
+  // assemble as photograph portrays" contains a `cannot` and an `assemble` and
+  // is not asking how to do anything — it says the goods do not match the
+  // listing, which is Wrong description's case. The same reasoning protects a
+  // fault, a breakage, an absent part and a wrong item: a customer who has
+  // asserted one is telling us what happened, whatever else the sentence is
+  // shaped like. Read through `claimStatus`, so a DENIAL ("nothing is broken,
+  // I just want to check the wiring") is not mistaken for a report.
+  if (assertsAProblemClaim(text)) return false;
+  return HOW_TO_FRAME.test(text) || GUIDANCE_REQUEST.test(text) || CANNOT_DO_IT.test(text);
+}
+
+/**
+ * Whether the message states any of the five problems as fact.
+ *
+ * The same five concepts `semanticsOf` reads into `claims`, read the same way —
+ * this is not a second opinion about them, only an earlier look, because
+ * `asksHowToUseIt` runs inside the strict table where no semantics have been
+ * computed yet. `LISTING_MISMATCH` keeps its own `negationReverses: false`, for
+ * the reason stated where the claim is built: a description complaint is made
+ * out of negatives.
+ */
+function assertsAProblemClaim(text: string): boolean {
+  return (
+    claimStatus(text, LISTING_MISMATCH, { negationReverses: false }) === "asserted" ||
+    asserts(text, IS_DAMAGED) ||
+    asserts(text, IS_DEFECTIVE) ||
+    asserts(text, SOMETHING_ABSENT) ||
+    asserts(text, A_MISMATCH)
+  );
+}
+
+/**
+ * Where a guidance request belongs. `ADMIN.xlsx` sheet 12 owns installation and
+ * wiring guidance, so this is the workbooks' own answer rather than a new one.
+ */
+const INSTALLATION_GUIDANCE_CATEGORY: MessageCategory = "Admin related issues";
+
+/**
  * The documents that describe the PRODUCT — and the parts of `COMPONENT_NOUN`
  * that are paper rather than parts.
  *
@@ -1736,6 +1881,11 @@ export function classifyMessageCategory(customerText: string | null): MessageCat
     // Paperwork belongs to Admin, whatever product it names — the same guard
     // the intent layer applies, applied to this witness too.
     .filter((entry) => entry.label !== "Pre sales queries" || !ASKING_FOR_PAPERWORK.test(text))
+    // HOW TO FIT IT BELONGS TO ADMIN, on the same footing as the paperwork
+    // guard directly above and for the same reason: a phrase table sees a
+    // product word and calls it a sales enquiry. `INSTALLATION / WIRING
+    // GUIDANCE` is ADMIN.xlsx's row, not the pre-sales book's.
+    .filter((entry) => entry.label !== "Pre sales queries" || !asksHowToUseIt(text))
     // Whose mistake it was is not something a phrase table can see. "Sorry it's
     // the wrong one" scores a Wrong-item hit on the word `wrong` alone, and the
     // customer is apologising for their own order. The same guard the intent
@@ -1768,6 +1918,11 @@ export function classifyMessageCategory(customerText: string | null): MessageCat
         : "Order change, before shipping queries";
     }
     if (looksLikeDeliveryRequest(text)) return "Delivery queries";
+    // Before the pre-sales test, because the two read the same words and only
+    // this one reads what is being ASKED. A message that gets this far and asks
+    // how to fit the thing is an installation question; one that asks what the
+    // thing is, is a sales enquiry.
+    if (asksHowToUseIt(text)) return INSTALLATION_GUIDANCE_CATEGORY;
     return looksPreSales(text) ? "Pre sales queries" : null;
   }
 
@@ -4253,6 +4408,15 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
     return drop("pre_sale_question");
   }
 
+  // NOR IS ASKING HOW TO FIT IT, and it belongs to the same ADMIN sheet the
+  // wiring diagram above does — INSTALLATION / WIRING GUIDANCE. The witnesses
+  // reach pre-sales here for the same reason they reached it for the diagram:
+  // the message names a product attribute and asks a question. What it is
+  // asking for is a method, not a specification.
+  if (found.includes("pre_sale_question") && asksHowToUseIt(text)) {
+    return drop("pre_sale_question");
+  }
+
   // DAMAGE TO THE BOX ALONE IS A DELIVERY MATTER, not a product one.
   //
   // "Box damaged but product fine" was named a Damage query, because the word
@@ -5711,7 +5875,12 @@ function categoryFromSemantics(semantics: MessageSemantics, text: string): Messa
       return "Return and refunds";
     case "order_amendment":
       return "Order change, before shipping queries";
+    // A TECHNICAL QUESTION IS NOT AUTOMATICALLY A SALES QUESTION. The action
+    // axis cannot tell "what cable size does it take" from "how do I get the
+    // cable in", because both ask about the product and name an attribute —
+    // see `asksHowToUseIt`, which reads the request rather than the nouns.
     case "technical_specification":
+      return asksHowToUseIt(text) ? INSTALLATION_GUIDANCE_CATEGORY : "Pre sales queries";
     case "availability":
       return "Pre sales queries";
     // Paperwork IS an admin matter, and saying so here rather than letting it
@@ -6652,7 +6821,21 @@ function readConversationAxes(turns: readonly ConversationTurn[]): ConversationR
    * delivery failure we own — so the guard is checked first and outranks both.
    */
   const fromAction = ACTION_CATEGORY[action];
-  if (fromAction !== undefined) return { category: fromAction, issue, requestedAction: action };
+  if (fromAction !== undefined) {
+    // THE SAME SPLIT THE SINGLE-MESSAGE PATH MAKES, made here for the thread.
+    // `ACTION_CATEGORY` is a static map and cannot read the request, so a
+    // conversation asking how to fit the product would otherwise arrive at Pre
+    // sales through this route after the per-message path had already sent it
+    // to Admin. Read across the customer's own messages only.
+    const guidance =
+      action === "technical_specification" &&
+      texts.some((text, index) => speaks[index] && asksHowToUseIt(text));
+    return {
+      category: guidance ? INSTALLATION_GUIDANCE_CATEGORY : fromAction,
+      issue,
+      requestedAction: action,
+    };
+  }
 
   // Neither axis named anything. The positional reading is unchanged.
   return { category: positional.category, issue, requestedAction: action };

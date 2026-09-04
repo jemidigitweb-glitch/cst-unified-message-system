@@ -8,6 +8,7 @@ import { messageDirectionSchema } from "@/lib/domain/message";
 import { bodyDecodeStatuses } from "@/lib/domain/source-message";
 import { workflowStateSchema } from "@/lib/domain/workflow";
 import { MESSAGE_CATEGORIES } from "@/lib/knowledge/message-category";
+import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
 
 /**
  * Marketplace-NEUTRAL view contracts for the workspace.
@@ -57,6 +58,25 @@ export const inboxItemSchema = z.object({
    * showing the wrong category is worse than one honestly showing none.
    */
   category: z.enum(MESSAGE_CATEGORIES).nullable(),
+  /**
+   * How urgently CST staff should handle this conversation, from
+   * `classifyConversationPriority` — computed at list-fetch time from the same
+   * customer text the category is read from, never stored and never persisted.
+   *
+   * INDEPENDENT OF `category`, and of everything else on this item. It is not
+   * derived from the category, it does not change it, and nothing in the
+   * workflow, draft or sync paths reads it. A recall and an invoice request are
+   * both admin work and rank differently; a recall and a cancellation rank the
+   * same and are nothing alike.
+   *
+   * NULL IS NOT "LOW". Null means no urgency was established — the classifier
+   * refuses to guess rather than ranking a conversation it cannot read. An
+   * interface must render that as no priority shown, never as the least urgent
+   * thing in the inbox: a conversation nobody could read is not one that can
+   * wait. Null is also what a marketplace whose stored text is known to carry
+   * non-customer content gets, for the same reason its category is suppressed.
+   */
+  priority: z.enum(MESSAGE_PRIORITIES).nullable(),
 });
 
 export type InboxItem = z.infer<typeof inboxItemSchema>;

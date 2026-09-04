@@ -12,13 +12,80 @@ import {
 } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
 import type { MessageCategory } from "@/lib/knowledge/message-category";
+import type { MessagePriority } from "@/lib/knowledge/message-priority";
 
 import { CategoryTag } from "./category-tag";
+import { PriorityRibbon } from "./priority-ribbon";
 import { StatusBadge } from "./status-badge";
 
 /** The dropdown's "no filter" option — never a value `InboxItem.category` itself holds. */
 export const ALL_CATEGORIES = "all" as const;
 export type CategoryFilter = MessageCategory | typeof ALL_CATEGORIES;
+
+/**
+ * The same idea for priority, and the same reason it is a sentinel string
+ * rather than null: `InboxItem.priority` genuinely holds null for a
+ * conversation nothing could rank, so null cannot also mean "not filtering".
+ */
+export const ALL_PRIORITIES = "all" as const;
+export type PriorityFilter = MessagePriority | typeof ALL_PRIORITIES;
+
+/**
+ * NOT A CUSTOMER CONVERSATION: eBay's own platform notices (order updates,
+ * policy alerts — see the eBay adapter's `isPlatformNotice`) flow through as
+ * real, stored messages rather than being dropped before they ever reached the
+ * database. They still need a thread to live in, so they land in their own
+ * single-message conversation under the sentinel counterparty "eBay" — but
+ * there is no customer on the other end of that thread, so it does not belong
+ * in a reply inbox built for triaging customer conversations.
+ *
+ * DISPLAY ONLY. Nothing is deleted, re-classified, or excluded from ingestion —
+ * the stored conversation is untouched and still reachable by direct query,
+ * this just keeps it out of the list a reviewer works through.
+ */
+function isEbayPlatformNotice(item: InboxItem): boolean {
+  return item.marketplace === "ebay" && item.counterpartyRef === "eBay";
+}
+
+/**
+ * Which of the loaded conversations the reviewer has asked to see.
+ *
+ * FILTERS ONLY, IN THE ORDER THEY WERE GIVEN. Nothing here sorts, and nothing
+ * may: the list arrives newest-first from the API and stays that way, so a
+ * reviewer can always find the row they were looking at a moment ago. Priority
+ * decides whether a row is shown and what colour it wears — never where it sits.
+ *
+ * ALL THREE ARE CLIENT-SIDE, over the page already loaded. Everything they read
+ * — the last message's direction, the category, the priority — is on the
+ * `InboxItem` before this runs, so changing any of them fetches nothing.
+ *
+ * A NULL PRIORITY IS NOT A LEVEL. It survives "All priorities" and is excluded
+ * by High, Medium and Low alike, because "we could not rank this" is not a
+ * quieter way of saying Low.
+ *
+ * Exported so the composition can be tested as the pure function it is, rather
+ * than through a DOM this suite does not configure.
+ */
+export function visibleConversations(
+  items: readonly InboxItem[],
+  filters: {
+    readonly readFilter: ReadState;
+    readonly categoryFilter: CategoryFilter;
+    readonly priorityFilter: PriorityFilter;
+  },
+): InboxItem[] {
+  return items
+    .filter((item) => !isEbayPlatformNotice(item))
+    .filter((item) => readStateOf(item) === filters.readFilter)
+    .filter(
+      (item) =>
+        filters.categoryFilter === ALL_CATEGORIES || item.category === filters.categoryFilter,
+    )
+    .filter(
+      (item) =>
+        filters.priorityFilter === ALL_PRIORITIES || item.priority === filters.priorityFilter,
+    );
+}
 
 /**
  * The customer-reply inbox.
@@ -52,6 +119,7 @@ export function InboxList({
   readFilter,
   onReadFilterChange,
   categoryFilter,
+  priorityFilter,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -70,6 +138,13 @@ export function InboxList({
    * beside the No Rule tab; this list only applies the choice.
    */
   categoryFilter: CategoryFilter;
+  /**
+   * Client-side too, and for the same reason: `priority` is already on every
+   * loaded `InboxItem`. The control lives in the header beside the category
+   * one; this list only applies the choice. It narrows what is shown and never
+   * reorders it — see `visibleConversations`.
+   */
+  priorityFilter: PriorityFilter;
   /** Whether an older page than what is in `items` still exists server-side. */
   hasMore: boolean;
   loadingMore: boolean;
@@ -82,28 +157,7 @@ export function InboxList({
     return <p className="p-5 text-sm opacity-60">Loading conversations…</p>;
   }
 
-  /*
-   * NOT A CUSTOMER CONVERSATION: eBay's own platform notices (order
-   * updates, policy alerts — see the eBay adapter's `isPlatformNotice`)
-   * now flow through as real, stored messages rather than being dropped
-   * before they ever reached the database. They still need a thread to
-   * live in, so they land in their own single-message conversation under
-   * the sentinel counterparty "eBay" — but there is no customer on the
-   * other end of that thread, so it does not belong in a reply inbox built
-   * for triaging customer conversations.
-   *
-   * DISPLAY ONLY. Nothing is deleted, re-classified, or excluded from
-   * ingestion — the stored conversation is untouched and still reachable by
-   * direct query, this just keeps it out of the list a reviewer works
-   * through.
-   */
-  const isEbayPlatformNotice = (item: InboxItem) =>
-    item.marketplace === "ebay" && item.counterpartyRef === "eBay";
-
-  const filtered = items
-    .filter((item) => !isEbayPlatformNotice(item))
-    .filter((item) => readStateOf(item) === readFilter)
-    .filter((item) => categoryFilter === ALL_CATEGORIES || item.category === categoryFilter);
+  const filtered = visibleConversations(items, { readFilter, categoryFilter, priorityFilter });
   const everyItemNeedsContext = filtered.every((item) => item.needsContext);
 
   return (
@@ -149,10 +203,24 @@ export function InboxList({
                 onClick={() => onSelect(item.id)}
                 aria-current={selected ? "true" : undefined}
                 data-marketplace={item.marketplace}
-                className={`flex w-full flex-col gap-1 border-b border-black/5 px-4 py-3 text-left transition-colors dark:border-white/10 ${
+                /*
+                 * `relative` and `pr-7` are what the ribbon needs, and both are
+                 * on the ROW rather than on the metadata strip below: the
+                 * marker belongs to the conversation, not to the line of chips
+                 * inside it.
+                 *
+                 * THE PADDING IS UNCONDITIONAL, on every row whether it carries
+                 * a ribbon or not. Widening only the ranked rows would step the
+                 * timestamps in and out down the column and make an unranked
+                 * row look like a different kind of thing, which is exactly
+                 * what an absent ribbon must not say.
+                 */
+                className={`relative flex w-full flex-col gap-1 border-b border-black/5 py-3 pr-7 pl-4 text-left transition-colors dark:border-white/10 ${
                   selected ? "bg-black/[0.06] dark:bg-white/[0.10]" : "hover:bg-black/[0.03] dark:hover:bg-white/[0.05]"
                 }`}
               >
+                {/* Renders nothing when the conversation is unranked. */}
+                <PriorityRibbon priority={item.priority} />
                 <span className="flex items-baseline justify-between gap-2">
                   {/* Never the bare stored reference — see conversationTitle. */}
                   <span className="truncate text-sm font-medium">

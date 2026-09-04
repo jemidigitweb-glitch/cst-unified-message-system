@@ -3,15 +3,18 @@ import { describe, expect, it } from "vitest";
 import {
   CONTEXT_NOT_LOADED_TEXT,
   type ConversationMessageView,
+  type InboxItem,
   NEEDS_CONTEXT_LABEL,
   UNAVAILABLE_BODY_TEXT,
   displayBody,
   formatSourceTimestamp,
+  inboxItemSchema,
   messageSide,
   previewOf,
   readStateLabel,
   readStateOf,
 } from "@/lib/domain/inbox";
+import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
 
 function view(overrides: Partial<ConversationMessageView> = {}): ConversationMessageView {
   return {
@@ -135,5 +138,101 @@ describe("context copy", () => {
     for (const invented of ["order number", "sku", "tracking", "refund", "replacement", "delivered"]) {
       expect(text).not.toContain(invented);
     }
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE PRIORITY FIELD ON THE READ CONTRACT
+ * ------------------------------------------------------------------------- */
+
+/**
+ * `priority` is ADDITIVE. It joins the item beside `category` and changes
+ * nothing else on it: no existing field is renamed, removed, re-typed or made
+ * to depend on it.
+ */
+function item(overrides: Partial<InboxItem> = {}): InboxItem {
+  return {
+    id: "1",
+    marketplace: "ebay",
+    subSourceId: 7,
+    counterpartyRef: "counterparty-a",
+    listingItemRef: "listing-1",
+    workflowState: "received",
+    needsContext: false,
+    inboxPlacement: "reply_inbox",
+    firstSourceTimestamp: "2026-08-01 10:00:00",
+    lastSourceTimestamp: "2026-08-02 10:00:00",
+    messageCount: 2,
+    inboundCount: 1,
+    lastDirection: "inbound",
+    category: null,
+    priority: null,
+    ...overrides,
+  };
+}
+
+describe("the inbox item's priority field", () => {
+  it("accepts every level the engine can return", () => {
+    for (const priority of [...MESSAGE_PRIORITIES, null] as const) {
+      const parsed = inboxItemSchema.safeParse(item({ priority }));
+      expect(parsed.success, String(priority)).toBe(true);
+      expect(parsed.success && parsed.data.priority).toBe(priority);
+    }
+  });
+
+  it("accepts exactly HIGH, MEDIUM, LOW and null — nothing else", () => {
+    for (const invalid of ["HIGHEST", "URGENT", "high", "Medium", "", "none", 1, true, {}]) {
+      expect(
+        inboxItemSchema.safeParse(item({ priority: invalid as never })).success,
+        String(invalid),
+      ).toBe(false);
+    }
+  });
+
+  it("requires the field rather than letting it be forgotten", () => {
+    // A projection that simply omits it must fail loudly. `undefined` in a JSON
+    // response is a dropped field, and a dropped priority is indistinguishable
+    // from an established absence — which is the one thing null has to mean.
+    const withoutPriority: Record<string, unknown> = { ...item() };
+    delete withoutPriority.priority;
+    expect(inboxItemSchema.safeParse(withoutPriority).success).toBe(false);
+  });
+
+  it("takes the levels from the engine, not from a second copy of them", () => {
+    // One definition, so a level cannot exist in the classifier and be
+    // unrepresentable on the wire, or the reverse.
+    expect([...MESSAGE_PRIORITIES]).toEqual(["HIGH", "MEDIUM", "LOW"]);
+  });
+
+  /**
+   * ADDITIVE, PINNED FIELD BY FIELD. The response gained exactly one key and
+   * lost, renamed and re-typed none — which is what "backward compatible"
+   * has to mean for a contract an existing client already reads.
+   */
+  it("adds one field to the item and changes no other", () => {
+    expect(Object.keys(inboxItemSchema.shape).sort()).toEqual(
+      [
+        "id",
+        "marketplace",
+        "subSourceId",
+        "counterpartyRef",
+        "listingItemRef",
+        "workflowState",
+        "needsContext",
+        "inboxPlacement",
+        "firstSourceTimestamp",
+        "lastSourceTimestamp",
+        "messageCount",
+        "inboundCount",
+        "lastDirection",
+        "category",
+        "priority",
+      ].sort(),
+    );
+  });
+
+  it("parses an item back exactly as it was given", () => {
+    const before = item({ priority: "HIGH", category: "Delivery queries" });
+    expect(inboxItemSchema.parse(before)).toEqual(before);
   });
 });

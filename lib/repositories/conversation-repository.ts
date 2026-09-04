@@ -16,6 +16,10 @@ import {
   classifyConversationCategory,
   classifyMessageCategoryWithFallback,
 } from "@/lib/knowledge/message-category";
+import {
+  type MessagePriority,
+  classifyConversationPriority,
+} from "@/lib/knowledge/message-priority";
 import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
 
 /**
@@ -371,6 +375,41 @@ function categoryFor(row: ConversationRow): MessageCategory | null {
   return Number(row.inbound_count) > 0 ? UNREADABLE_CONTENT_CATEGORY : null;
 }
 
+/**
+ * How urgently the conversation needs handling.
+ *
+ * A SECOND, INDEPENDENT READING OF THE SAME COLUMN. It is deliberately not part
+ * of `categoryFor` above and shares no code with it: the two answer different
+ * questions ("what is this about" and "how soon"), they disagree on purpose,
+ * and folding them together would make one unable to change without the other.
+ * Nothing here reads or alters the category.
+ *
+ * NO NEW QUERY, NO NEW COLUMN. `INBOUND_TEXTS` is already selected for the
+ * category, so this costs one more pass over text the row is already carrying.
+ *
+ * THE PER-MESSAGE ARRAY OR NOTHING. `classifyConversationPriority` reads each
+ * customer message on its own — that is what stops two unrelated sentences in
+ * two unrelated messages forming a phrase neither contains, and it is what lets
+ * a closing "all sorted" drop a thread's urgency. The concatenated
+ * `inbound_text` column cannot supply that, so a projection that selects only
+ * that one yields null rather than a reading taken from glued-together text.
+ * `GET_CONVERSATION` selects neither, so a single-conversation read is
+ * unranked; the inbox list is where priority is shown.
+ *
+ * SUPPRESSED THE SAME WAY THE CATEGORY IS, and for the same measured reason.
+ * B&Q's and Temu's stored `body_text` is known to carry raw email transport
+ * headers and corporate boilerplate with no structural filter in front of it —
+ * see `CATEGORY_SUPPRESSED_MARKETPLACES`. Ranking that would not produce a
+ * blank, it would produce confident HIGHs off supplier marketing that happens
+ * to say "urgent". The constant is read here, never modified.
+ */
+function priorityFor(row: ConversationRow): MessagePriority | null {
+  if (CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)) return null;
+  const messages = row.inbound_texts;
+  if (messages === null || messages === undefined) return null;
+  return classifyConversationPriority(messages);
+}
+
 function toInboxItem(row: ConversationRow): InboxItem {
   return {
     id: row.id,
@@ -401,6 +440,8 @@ function toInboxItem(row: ConversationRow): InboxItem {
     // message earned. The concatenated column remains the fallback for any
     // caller or older projection that does not select the array.
     category: categoryFor(row),
+    // Alongside the category, not derived from it. See `priorityFor`.
+    priority: priorityFor(row),
   };
 }
 

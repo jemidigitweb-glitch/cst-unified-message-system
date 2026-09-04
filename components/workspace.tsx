@@ -16,8 +16,16 @@ import { ContextPanel, SECTION_HEADING_CLASS } from "./context-panel";
 import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
-import { ALL_CATEGORIES, type CategoryFilter, InboxList } from "./inbox-list";
+import {
+  ALL_CATEGORIES,
+  ALL_PRIORITIES,
+  type CategoryFilter,
+  InboxList,
+  type PriorityFilter,
+} from "./inbox-list";
 import { MESSAGE_CATEGORIES } from "@/lib/knowledge/message-category";
+import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
+import { PRIORITY_LABEL } from "./priority-ribbon";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
@@ -85,6 +93,16 @@ export function Workspace() {
   const [readFilter, setReadFilter] = useState<ReadState>("unread");
   /** Client-side over the same loaded `items` as `readFilter` — see InboxList. */
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(ALL_CATEGORIES);
+  /**
+   * How urgent a conversation has to be to stay in the list. Client-side over
+   * the same loaded `items` as the two filters above — `priority` is already on
+   * every `InboxItem`, so changing this fetches nothing and reorders nothing.
+   *
+   * Starts on "all", and deliberately not on HIGH: a filter that hides most of
+   * the inbox by default is a filter that makes work disappear rather than one
+   * that finds it.
+   */
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>(ALL_PRIORITIES);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /**
    * Which list the selection came from.
@@ -478,6 +496,34 @@ export function Workspace() {
                 ))}
               </select>
             )}
+            {/*
+              * The second half of the same control group, and shown under the
+              * same condition for the same reason: it narrows the conversation
+              * list, and on No Rule or AI Usage there is no such list.
+              *
+              * Beside the category filter rather than anywhere else, because a
+              * reviewer narrowing the inbox is doing one thing — "show me the
+              * delivery queries that are urgent" is a single thought, and the
+              * two controls that express it belong together.
+              *
+              * Narrower than the category select: its longest option is
+              * "All priorities", not "Order change, before shipping queries".
+              */}
+            {view === "inbox" && (
+              <select
+                aria-label="Filter by priority"
+                value={priorityFilter}
+                onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)}
+                className="mb-1.5 max-w-[8rem] shrink-0 truncate rounded-md border border-black/10 bg-transparent px-1.5 py-1 text-xs font-medium dark:border-white/15"
+              >
+                <option value={ALL_PRIORITIES}>All priorities</option>
+                {MESSAGE_PRIORITIES.map((priority) => (
+                  <option key={priority} value={priority}>
+                    {PRIORITY_LABEL[priority]}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {/*
@@ -647,6 +693,7 @@ export function Workspace() {
                 readFilter={readFilter}
                 onReadFilterChange={setReadFilter}
                 categoryFilter={categoryFilter}
+                priorityFilter={priorityFilter}
                 hasMore={inboxHasMore}
                 loadingMore={inboxLoadingMore}
                 onLoadMore={() => void loadMoreInbox()}
