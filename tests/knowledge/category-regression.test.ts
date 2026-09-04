@@ -907,6 +907,190 @@ describe("issue and requested action are read separately", () => {
   });
 
   /* ----------------------------------------------------------------------- *
+   * THE ROOT CATEGORY AND THE CURRENT ACTION, STATED TOGETHER
+   *
+   * Every row asserts BOTH axes on one reading, which is what makes it a test of
+   * the separation rather than of either half. The category answers "what made
+   * the customer write to us"; the action answers "what do they want done now".
+   * Five of these six passed before the change beside them and are here so they
+   * cannot quietly stop: a remedy named in the same breath as a problem must
+   * leave the problem's category alone.
+   * ----------------------------------------------------------------------- */
+
+  it.each([
+    [
+      "a non-arrival with a conditional refund",
+      "My parcel has not arrived. If it does not come tomorrow I want a refund.",
+      "Delivery queries",
+      "refund_or_return",
+    ],
+    [
+      "a non-arrival with a refund asked for",
+      "My parcel has not arrived. Can I get a refund?",
+      "Delivery queries",
+      "refund_or_return",
+    ],
+    [
+      "damage with the money asked for",
+      "The item arrived damaged. I want my money back.",
+      "Damage queries",
+      "refund_or_return",
+    ],
+    [
+      "a fault with a refund asked for",
+      "The bulb stopped working. I want a refund.",
+      "Defective items",
+      "refund_or_return",
+    ],
+    [
+      "a wrong item with a refund asked for",
+      "I received the wrong product. Can I get a refund?",
+      "Wrong item sent messages",
+      "refund_or_return",
+    ],
+    [
+      "a wrong colour with a refund asked for",
+      "I received the wrong colour. Please refund me.",
+      "Wrong item sent messages",
+      "refund_or_return",
+    ],
+    [
+      "a mis-order cancelled outright",
+      "Please cancel my order, I ordered by mistake.",
+      "Order change, before shipping queries",
+      "order_amendment",
+    ],
+    [
+      "an address change before dispatch",
+      "Can you change my delivery address before you send the parcel?",
+      "Order change, before shipping queries",
+      "order_amendment",
+    ],
+  ])("reads %s as its own problem with the remedy attached", (_name, text, category, action) => {
+    const reading = readConversation(turns(text));
+    expect(reading.category).toBe(category);
+    expect(reading.requestedAction).toBe(action);
+  });
+
+  /* ----------------------------------------------------------------------- *
+   * A CANCELLATION BEING WEIGHED IS NOT A CANCELLATION BEING ASKED FOR
+   *
+   * REPORTED FROM THE LIVE INBOX. A customer chasing a parcel that was never
+   * posted asked whether they would have to cancel, and the thread came out as
+   * Order change — an order nobody had asked us to cancel, with the delivery
+   * problem that prompted the message nowhere in the category.
+   *
+   * WHY THE TWO AXES DID NOT ALREADY CATCH IT. They do catch the plainest form:
+   * "My parcel has not arrived, please cancel my order" was ALREADY Delivery
+   * queries before this change, because `HAS_NOT_ARRIVED` raises an issue and
+   * the issue outranks the remedy. What defeated it was two gaps rather than the
+   * precedence rule:
+   *
+   *   the vocabulary   a parcel that was never SENT, and tracking that has not
+   *                    MOVED, reached no delivery witness at all. "Item not even
+   *                    posted" on its own was an Admin message.
+   *   the exception    `refine` and `semanticsOf` both let the bare word
+   *                    `cancel` escape their delivery gates, for the good reason
+   *                    that "cancel it, the address is wrong" is a real
+   *                    amendment. A question about whether to cancel is not.
+   *
+   * SO THE FIX IS ADDITIVE ON BOTH COUNTS, and the negative controls below are
+   * the ones that bound it: an outright cancellation still owns its category,
+   * and a cancellation weighed with no parcel problem behind it is still an
+   * order-change question.
+   * ----------------------------------------------------------------------- */
+
+  /** The reported conversation, verbatim. */
+  it("keeps the delivery problem behind a cancellation the customer is weighing", () => {
+    const reading = readConversation(
+      turns(
+        "I was expecting the delivery today but nothing. Checked tracking, item not even posted. Can you come back to me ASAP or do I have to cancel and place with another seller.",
+      ),
+    );
+    expect(reading.category).toBe("Delivery queries");
+    expect(reading.requestedAction).toBe("cancellation_considered");
+  });
+
+  /** The same shape, in the wordings customers actually use for it. */
+  it.each([
+    ["a cancellation asked about", "My parcel is late, should I cancel?"],
+    ["a cancellation asked as permission", "My tracking has not updated, can I cancel?"],
+    ["a cancellation put as an obligation", "Item not even posted, do I have to cancel?"],
+    ["a cancellation weighed against a condition", "I may cancel if my parcel does not arrive tomorrow"],
+    ["a cancellation threatened", "My order has not been dispatched, I will cancel and buy elsewhere"],
+  ])("gives %s to Delivery queries", (_name, text) => {
+    const reading = readConversation(turns(text));
+    expect(reading.category).toBe("Delivery queries");
+    expect(reading.requestedAction).toBe("cancellation_considered");
+  });
+
+  /**
+   * THE NEGATIVE CONTROLS, and they are what keep the rule narrow.
+   *
+   * Both halves are required. A cancellation the customer has DECIDED on still
+   * owns its category however the parcel is doing, and a cancellation merely
+   * weighed with no parcel problem behind it is an order-change question — which
+   * is why "Could I cancel the order and get a refund please" (a customer who
+   * ordered by mistake) is untouched, despite matching the weighed shape word
+   * for word.
+   */
+  it.each([
+    ["an outright cancellation", "Please cancel my order, I ordered by mistake."],
+    ["a cancellation asked of us", "Can you cancel my order please?"],
+    ["a cancellation asked about, with no parcel problem", "Should I cancel my order?"],
+    ["a mis-order cancelled with the money", "I purchased these by mistake. Could I cancel the order and get a refund please."],
+    ["an amendment with a delivery reason", "Please cancel my order, the address is wrong"],
+    ["an address change before dispatch", "Can you change my delivery address before you send the parcel?"],
+  ])("keeps %s on Order change", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Order change, before shipping queries");
+  });
+
+  /**
+   * THE DISPATCH COMPLAINT IS NOT THE DISPATCH CONDITION.
+   *
+   * "If the order has not been dispatched yet, would you be able to update the
+   * delivery address?" (live conversation 1297) states the non-dispatch as the
+   * condition attached to a request, not as the problem being reported. It is
+   * the clearest pre-dispatch amendment in the golden set, and the new dispatch
+   * vocabulary would have claimed it for Delivery without the lookbehind that
+   * `NOT_INSIDE_A_CONDITION` supplies.
+   */
+  it("does not read a dispatch condition as a dispatch complaint", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi, I have just realised that I accidentally used my old delivery address for this order. If the order has not been dispatched yet, would you be able to update the delivery address?",
+      ]),
+    ).toBe("Order change, before shipping queries");
+  });
+
+  /**
+   * THE NEW DELIVERY VOCABULARY, ON ITS OWN. Each of these reached no intent and
+   * no event before; "Item not even posted" was an Admin message, which is the
+   * one category that cannot help with a parcel.
+   */
+  it.each([
+    ["a parcel never sent", "Item not even posted"],
+    ["an order never dispatched", "My order has not been dispatched yet"],
+    ["tracking that has not moved", "Tracking has not updated"],
+    ["tracking that has not moved, contracted", "My tracking hasn't updated since Monday"],
+    ["no tracking information at all", "There are no tracking updates on my order"],
+    ["a German non-dispatch", "Meine Bestellung wurde noch nicht versandt"],
+  ])("gives %s to Delivery queries", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Delivery queries");
+  });
+
+  /**
+   * AND THE DISPATCH VOCABULARY IS BOUND TO THE CONSIGNMENT. A customer who has
+   * not posted their OWN return says the same words about the opposite parcel,
+   * and Return owns that.
+   */
+  it("does not read the customer's own unposted return as a dispatch complaint", () => {
+    expect(classifyConversationCategory(["I have not posted it back yet"])).toBe(
+      "Return and refunds",
+    );
+  });
+
+  /* ----------------------------------------------------------------------- *
    * TWO CONVERSATIONS REPORTED FROM THE LIVE INBOX, 2026-09-03
    * ----------------------------------------------------------------------- */
 
@@ -1591,4 +1775,226 @@ describe("a defect reported in German is a defect", () => {
    * that movement is recorded in the measurement, not asserted from a truncated
    * copy of the thread here.
    */
+});
+
+/* ========================================================================= *
+ * 5. INTENT AND EVIDENCE, NOT KEYWORDS
+ *
+ * WHAT THIS SECTION IS FOR. The rows above are, one by one, a wording that was
+ * wrong and is now right. This section is different: most rows here are wordings
+ * NOBODY HAS SEEN in the inbox, written to check that a REASONING rule holds
+ * rather than that a phrase was added. If a row can only be made to pass by
+ * adding the phrase it contains, the rule it is testing does not exist.
+ *
+ * The four questions the reading answers, in the brief's own terms:
+ *
+ *   1. the problem            `semanticsOf(...).event`   — the issue axis
+ *   2. the requested action   `...requestedAction`       — the action axis
+ *   3. the evidence           `...claims`                — asserted / asked /
+ *                                                          negated / not_stated
+ *   4. reporting or asking    `speechActOf`, read per clause
+ *
+ * All four already existed. What did not was any obligation on the phrase
+ * table, the intent layer or the corpus to CONSULT them — see
+ * `aProblemOnlyAskedAbout`, which is the gate most of these rows exercise.
+ * ========================================================================= */
+
+describe("a problem asked about is not a problem reported", () => {
+  /**
+   * THE HYPOTHETICAL QUESTION. Each names a problem in vocabulary the phrase
+   * table knows, and each asks what WOULD happen rather than saying it did. The
+   * guarantee is that the problem's category does not take the message; where it
+   * lands instead is a separate question this rule does not decide.
+   */
+  it.each([
+    ["damage asked about generally", "Do these ever arrive damaged in the post?", "Damage queries"],
+    ["damage asked about conditionally", "What happens if it arrives damaged?", "Damage queries"],
+    ["a wrong item asked about", "What do you do if the wrong item is sent?", "Wrong item sent messages"],
+    ["a missing part asked about", "If a part is missing what is the process?", "Parts missing queries"],
+    ["a fault asked about", "Do you replace items that turn up faulty?", "Defective items"],
+    [
+      "a description mismatch asked about",
+      "What is the procedure if the item does not match the description?",
+      "Wrong description issues",
+    ],
+  ])("does not give %s to the problem's category", (_name, text, category) => {
+    expect(classifyConversationCategory([text])).not.toBe(category);
+  });
+
+  /** The same claims, ASSERTED. Nothing here may have moved. */
+  it.each([
+    ["damage", "It arrived damaged", "Damage queries"],
+    ["a wrong item", "You sent the wrong item", "Wrong item sent messages"],
+    ["a missing part", "A part is missing", "Parts missing queries"],
+    ["a fault", "The bulb is faulty", "Defective items"],
+  ])("still gives %s reported as fact to %s", (_name, text, category) => {
+    expect(classifyConversationCategory([text])).toBe(category);
+  });
+
+  /**
+   * A QUESTION THAT PRESUPPOSES ITS ANSWER IS A REPORT.
+   *
+   * "Why did you send the wrong one" does not ask WHETHER we sent the wrong one.
+   * All three were measured moving the wrong way across the workbook corpus when
+   * this gate was first written without the hypothetical bound, and they are the
+   * reason it has one.
+   */
+  it.each([
+    ["a wrong item asked as a reason", "why did you send the wrong one", "Wrong item sent messages"],
+    ["a substitution asked as a reason", "why was a different item sent", "Wrong item sent messages"],
+    ["a missing part chased", "has the missing one been sent", "Parts missing queries"],
+  ])("keeps %s on %s", (_name, text, category) => {
+    expect(classifyConversationCategory([text])).toBe(category);
+  });
+
+  /**
+   * AND A CUSTOMER HOLDING THE GOODS IS REPORTING, however politely. A request
+   * frame — "could you", "can you" — is a genuine interrogative and the claim
+   * sits inside it; receipt is what says the claim is a report regardless.
+   */
+  it("keeps a report made inside a polite request", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "Could you send a returns label so I can return the wrong item that was delivered.",
+      ),
+    ).toBe("Wrong item sent messages");
+  });
+});
+
+describe("a clause carries its own speech act", () => {
+  /**
+   * A question in one clause does not make the next clause a question. Both of
+   * these are unseen wordings of the shape that cost thread after thread: the
+   * customer opens by chasing and then states what actually went wrong.
+   */
+  it.each([
+    ["a chase then a wrong colour", "When will it arrive, you sent the wrong colour", "Wrong item sent messages"],
+    ["a chase then damage", "Any news on this, it arrived smashed", "Damage queries"],
+  ])("reads %s as %s", (_name, text, category) => {
+    expect(classifyConversationCategory([text])).toBe(category);
+  });
+
+  /** And a statement followed by a question keeps the question out of the statement. */
+  it("does not read a wiring question as a missing part", () => {
+    expect(
+      classifyConversationCategory(["No manual came with it, how do I connect the driver?"]),
+    ).not.toBe("Parts missing queries");
+  });
+});
+
+describe("an absence stated in a grammar nobody wrote down", () => {
+  /**
+   * `SOMETHING_ABSENT` knew "missing", "not included" and "no <part>". These say
+   * the same thing about the CONTAINER, or as an exception to a complete
+   * delivery, and reached nothing at all.
+   */
+  it.each([
+    ["the container did not hold it", "The box did not contain the fixing screws."],
+    ["the container did not include it", "The package didn't include the manual."],
+    ["everything except one thing", "Everything arrived except the mounting bracket."],
+    ["everything apart from one thing", "Everything was there apart from the driver."],
+  ])("reads %s as a missing part", (_name, text) => {
+    expect(classifyConversationCategory([text])).toBe("Parts missing queries");
+  });
+
+  /**
+   * AND THE EXCEPTION MUST NOT READ AS A RESOLUTION. "Everything arrived" is
+   * word for word a resolution confirmation, and a resolved message contributes
+   * to neither axis — so before this the row above came back with NO CATEGORY AT
+   * ALL rather than with the wrong one.
+   */
+  it("does not read a partial delivery as a resolved case", () => {
+    expect(
+      classifyConversationCategory(["Everything arrived except the mounting bracket."]),
+    ).not.toBeNull();
+  });
+});
+
+describe("a document is not always a part", () => {
+  /**
+   * THE REPORTED CONVERSATION. `instructions` sits in `COMPONENT_NOUN`, so "no
+   * instructions" asserted a missing component and the message — a wiring
+   * question — was filed as Parts missing. The customer is not short of a
+   * leaflet in any sense an agent can act on; they want to know how to wire it,
+   * and a documentation request is Admin's (ADMIN.xlsx sheet C, INT-AD06).
+   */
+  it("does not read a wiring question as a missing part", () => {
+    expect(
+      classifyConversationCategory([
+        "Hi this transformer has two outputs and no instructions. is both outlet 24v, or how is it supposed to be wired on the output side to give one24v output please. A wiring diagram would be very helpful",
+      ]),
+    ).toBe("Admin related issues");
+  });
+
+  /** With no question about the product in it, the same absence is a parts case. */
+  it("still reads a reported absence of the instructions as a missing part", () => {
+    expect(
+      classifyConversationCategory([
+        "The wiring instructions that came with the transformer are missing.",
+      ]),
+    ).toBe("Parts missing queries");
+  });
+
+  /**
+   * AND ONLY THE DOCUMENT'S OWN EVIDENCE IS SET ASIDE. A message naming a
+   * document AND a part as absent still asserts the part, which is what keeps
+   * this from being a licence to ignore absences inside questions.
+   */
+  it("keeps a part that is missing alongside the instructions", () => {
+    expect(classifyConversationCategory(["no instructions and no screws, how do I wire it?"])).toBe(
+      "Parts missing queries",
+    );
+  });
+});
+
+describe("a count is a count however the customer writes it", () => {
+  /**
+   * THE REPORTED CONVERSATION, and a whole class with it: "1x" and "4x" is how a
+   * quantity is written on a marketplace, and there is no word boundary between
+   * the digit and the x — so this message carried two counts, a receipt verb and
+   * an order verb, and reached no count at all.
+   */
+  it("reads a German shortfall written with the x multiplier", () => {
+    expect(
+      classifyConversationCategory([
+        "Hallo, warum habe ich nur 1x erhalten und nicht 4x wie bestellt??",
+      ]),
+    ).toBe("Wrong quantity sent issues");
+  });
+
+  /** The same notation in English, unseen. */
+  it("reads an English shortfall written with the x multiplier", () => {
+    expect(classifyConversationCategory(["I ordered 2x but only got 1x"])).toBe(
+      "Wrong quantity sent issues",
+    );
+  });
+
+  /**
+   * THE SECOND REPORTED CONVERSATION. Two gaps at once: the shortfall shape
+   * required "in THE box" and the customer wrote "in box", and with no order
+   * verb anywhere the reading had nothing to tell a quantity case from a parts
+   * case. The NOUN says it — an "item" and "the other one" are units of the
+   * order, not components of one product.
+   */
+  it("reads a short delivery counted in items as a quantity error", () => {
+    expect(
+      classifyConversationCategory([
+        "Received package  but only one item in box what happened to the other one?",
+      ]),
+    ).toBe("Wrong quantity sent issues");
+  });
+
+  /** The counter-example that keeps the noun rule narrow: a part is not a unit. */
+  it("still reads a shortfall counted in parts as a missing part", () => {
+    expect(
+      classifyConversationCategory([
+        "I have just received my lampshades, however there was only one white plastic bit",
+      ]),
+    ).toBe("Parts missing queries");
+  });
+
+  /** And a voltage is still not a quantity, which is what bounds the x suffix. */
+  it("does not read a voltage as a count", () => {
+    expect(quantityShortfallEvidence("is both outlet 24v or 12v")).toBeNull();
+  });
 });

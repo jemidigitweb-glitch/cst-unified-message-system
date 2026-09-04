@@ -108,9 +108,49 @@ export type ClaimStatus =
  *
  * `since` is deliberately absent. It is temporal at least as often as causal —
  * "since receiving it" — and nothing measured needs it.
+ *
+ * ------------------------------------------------------------------------
+ * A COMMA FOLLOWED BY A PRONOUN SUBJECT IS AN INDEPENDENT CLAUSE.
+ * ------------------------------------------------------------------------
+ * The bare comma stays refused, for the reason given above. A comma followed by
+ * a PERSONAL PRONOUN is a different thing and does not strand anything: the
+ * pronoun IS the subject, so what follows the comma is a whole clause with its
+ * own subject and verb. "I received the lamp, THE SCREWS are missing" — the
+ * case the bare-comma refusal is built on — begins with a determiner and is
+ * untouched.
+ *
+ * It is here because it is the last shape in the FP-1 family. A customer who
+ * opens with a question and then states the problem put both in one clause:
+ *
+ *   "Where is my order, YOU SENT ME the wrong item"   claim: asked, and the
+ *                                                     wrong item was invisible
+ *
+ * `INTERROGATIVE_FRAME` matched "Where is" at the front of the whole sentence,
+ * so a flat assertion of a seller error came back as a question about one — the
+ * same failure as "Could you send another part BECAUSE it arrived broken",
+ * which the `because` boundary above already fixed.
+ *
+ * FOLLOWED BY WHITESPACE, so the abbreviation "i.e." cannot be read as the
+ * pronoun "I".
+ *
+ * ------------------------------------------------------------------------
+ * AND A COMMA FOLLOWED BY A WH-WORD PLUS AN AUXILIARY.
+ * ------------------------------------------------------------------------
+ * The same idea for the other way a second clause opens: "No manual came with
+ * it, HOW DO I connect the driver?" is a statement and a question, and with no
+ * boundary between them the question mark at the end made the statement read as
+ * part of the question — the failure the ", and" boundary above was added for.
+ *
+ * THE AUXILIARY IS REQUIRED, AND `which` IS EXCLUDED ENTIRELY, because a comma
+ * before a bare wh-word is a RELATIVE clause far more often than a question:
+ * "the shade, WHICH IS broken" and "the box, WHERE THE screws were" are one
+ * thought each, and splitting them would hand a damage report to the
+ * interrogative frame — exactly the mistake the wh-word rule at the top of this
+ * file exists to prevent. A wh-word directly followed by an auxiliary is not a
+ * relative: "how DO I", "what SHOULD I", "when WILL it".
  */
 const CLAUSE_BOUNDARY =
-  /[.!?;]+|\n+|\s[-–—]+\s|,\s*(?:and|or|so|then|plus)\b|,\s*(?=(?:can|could|would|will|shall|may|please|do|does|is|are|any)\b)|\b(?:but|however|although|though|whereas|except\s+that|aber|jedoch|allerdings)\b|\b(?:because|cos|'cause|weil)\b|\bas\s+(?=(?:one|it|its|they|this|that|these|those|the|my|our|his|her|their|i|we|you|he|she|there)\b)/gi;
+  /[.!?;]+|\n+|\s[-–—]+\s|,\s*(?:and|or|so|then|plus)\b|,\s*(?=(?:can|could|would|will|shall|may|please|do|does|is|are|any)\b)|,\s*(?=(?:i|we|you|they|it|he|she)\s)|,\s*(?=(?:how|what|when|where|why)\s+(?:do|does|did|should|can|could|would|will|shall|must|is|are|am)\b)|\b(?:but|however|although|though|whereas|except\s+that|aber|jedoch|allerdings)\b|\b(?:because|cos|'cause|weil)\b|\bas\s+(?=(?:one|it|its|they|this|that|these|those|the|my|our|his|her|their|i|we|you|he|she|there)\b)/gi;
 
 /** The message split into clauses, with their offsets in the original text. */
 export type Clause = { readonly text: string; readonly start: number; readonly end: number };
@@ -195,8 +235,28 @@ export function clauseAt(text: string, index: number): Clause {
  * its own clause wherever a customer actually asks something. An explicit
  * question mark still counts on its own, independently of any of this.
  */
+/**
+ * A CONDITION IS NOT A CLAIM, WHATEVER ITS SUBJECT IS.
+ *
+ * The `if` frame recognised a hypothetical only where a PRONOUN carried it —
+ * "let me know if IT has two windings" — and customers put the noun there just
+ * as often:
+ *
+ *   "If A PART is missing what is the process?"     claim: asserted
+ *   "What do you do if THE WRONG ITEM is sent?"     (the pronoun form worked;
+ *                                                    this one did not)
+ *
+ * The first is a customer asking how we handle a shortfall, and it came back as
+ * a live parts case with a part that is not missing. Allowing a determiner and
+ * up to two words before the verb reads the noun subject the same way the
+ * pronoun was already read.
+ *
+ * THE VERB IS STILL REQUIRED, which is what keeps the conditional bounded to a
+ * clause with something predicated in it: "if the item arrives" qualifies, "if
+ * possible" does not.
+ */
 const INTERROGATIVE_FRAME =
-  /\?|^\s*[\p{P}\s]*(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|advise|clarify)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:it|this|that|they|these)\s+(?:has|have|is|are|comes?|contains?)\b/iu;
+  /\?|^\s*[\p{P}\s]*(?:does|do|did|is|are|was|were|has|have|can|could|would|will|shall|should)\s+(?:it|this|that|these|they|the|you|i|there|my)\b|^\s*[\p{P}\s]*(?:what|which|how|when|where|why|whether)\b|\b(?:know|tell\s+me|let\s+me\s+know|confirm|advise|clarify)\b[^.!?;\n]{0,25}?\b(?:what|which|how|when|where|why|whether|if)\b|\b(?:wanted|want|need|like)\s+to\s+know\b|\bif\s+(?:a|an|the|any|my|our|one|it|this|that|they|these)\s+(?:\w+\s+){0,2}?(?:has|have|is|are|was|were|comes?|contains?|arrives?|turns?)\b/iu;
 
 /**
  * A clause that says the message is NOT about something.

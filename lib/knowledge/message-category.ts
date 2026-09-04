@@ -36,6 +36,7 @@ import {
   type SpeechAct,
   asserts,
   claimStatus,
+  clausesOf,
   speechActOf,
 } from "./message-semantics";
 import { type RuleRole, corpusMatches } from "./cst-corpus-match";
@@ -1290,6 +1291,88 @@ const ASKING_FOR_PAPERWORK =
   /\b(?:invoice|vat|receipt|proof\s+of\s+purchase|rechnung|beleg|quittung|kaufbeleg)\b|\b(?:instruction|installation|user|product|assembly)\s+manual\b|\bwiring\s+diagram\b|\b(?:fitting|installation|assembly)\s+instructions\b|\b(?:ce|ukca|safety|compliance|conformity)\s+(?:certificate|declaration|mark)\b|\btest\s+report\b|\bdatasheet\b|\bdata\s+sheet\b/i;
 
 /**
+ * The documents that describe the PRODUCT — and the parts of `COMPONENT_NOUN`
+ * that are paper rather than parts.
+ *
+ * One list, two uses, and they are the same idea seen from both sides: a manual
+ * is a thing that can be ABSENT from a box (Parts missing) and a thing that can
+ * be ASKED FOR (Admin), and in a message that is really a technical question it
+ * is neither.
+ */
+const DOCUMENT_NOUN =
+  "instructions?|manual|manuals|leaflet|booklet|guide|diagram|datasheet|data\\s+sheet|" +
+  "anleitung|bedienungsanleitung|handbuch";
+
+const DOCUMENT_MENTIONED = new RegExp(`\\b(?:${DOCUMENT_NOUN})\\b`, "i");
+
+/**
+ * A QUESTION ABOUT THE PRODUCT, ASKED ALONGSIDE A DOCUMENT.
+ *
+ * WHAT THIS IS FOR, AND WHAT IT IS NOT FOR. Documentation requests belong to
+ * Admin — `ADMIN.xlsx` sheet C, INT-AD06 (MANUAL / WIRING DIAGRAM) — and that
+ * is not in question here: "Is there a wiring diagram for this fitting?" is
+ * Admin's and stays Admin's. This decides something narrower and earlier:
+ * whether a document named as ABSENT is a missing part.
+ *
+ * THE DISTINCTION, AND WHY IT IS A CLAUSE TEST RATHER THAN A WORD LIST. These
+ * two messages share almost all their vocabulary and are different cases:
+ *
+ *   "The wiring instructions that came with the      the box is short of
+ *    transformer are missing."                       something — a parts case.
+ *   "...two outputs and no instructions. is both     the customer wants to know
+ *    outlet 24v, or how is it supposed to be         how to wire it. The absent
+ *    wired..."                                       leaflet is the REASON.
+ *
+ * No keyword separates them; the absence vocabulary is the same. What separates
+ * them is whether the message ASKS ANYTHING ABOUT THE PRODUCT — and where that
+ * question is. So this looks for a question whose own clause does not mention a
+ * document. The clause splitter does the work, which is why it keeps working on
+ * wordings nobody has written down:
+ *
+ *   "this transformer has two outputs and no instructions | is both outlet 24v |
+ *    or HOW IS IT SUPPOSED TO BE WIRED on the output side | A wiring diagram
+ *    would be very helpful"
+ *
+ * The third clause is a question about the product and names no document. That
+ * is an enquiry with a documentation gap as its reason — not a missing part.
+ */
+function asksAboutTheProductItself(text: string): boolean {
+  return clausesOf(text).some(
+    (clause) =>
+      speechActOf(clause.text) === "question" && !DOCUMENT_MENTIONED.test(clause.text),
+  );
+}
+
+/**
+ * A DOCUMENT NAMED AS ABSENT, INSIDE A QUESTION ABOUT THE PRODUCT.
+ *
+ * `COMPONENT_NOUN` contains `instructions` and `manual`, so "no instructions"
+ * asserts a missing component — which is right when the customer is reporting
+ * what was in the box, and wrong when they are explaining why they are asking:
+ *
+ *   "this transformer has two outputs and NO INSTRUCTIONS. is both outlet 24v,
+ *    or how is it supposed to be wired ... A wiring diagram would be very
+ *    helpful"
+ *
+ * That is a wiring question, and it was filed as Parts missing.
+ *
+ * ONLY THE DOCUMENT'S OWN EVIDENCE IS NEUTRALISED, never the claim. A message
+ * that names a document AND a part as absent — "no instructions and no screws,
+ * how do I wire it?" — still asserts the part, because only the `no <document>`
+ * span is removed before the claim is read. And with no product question in it,
+ * "The wiring instructions that came with the transformer are missing" is
+ * untouched and stays a parts case.
+ */
+const DOCUMENT_ABSENCE = new RegExp(
+  `\\b(?:no|without|missing|keine?)\\s+(?:${DOCUMENT_NOUN})\\b`,
+  "gi",
+);
+
+function absenceEvidenceFor(text: string): string {
+  return asksAboutTheProductItself(text) ? text.replace(DOCUMENT_ABSENCE, " ") : text;
+}
+
+/**
  * A RETURN ALREADY UNDER WAY — post-purchase, whatever specifications it quotes.
  *
  * `!HAS_THE_GOODS` is the usual test for "this customer has not bought yet",
@@ -2091,7 +2174,30 @@ const COMPONENT_NOUN =
 const SOMETHING_ABSENT = new RegExp(
   String.raw`\b(?:missing|incomplete|not\s+included|nothing\s+to\s+(?:hang|fix|attach|mount|secure|hold|screw|fasten)|short\s+of|(?:arrived|received|recieved|came)\s+without\s+(?!a\s+(?:mark|scratch|scratches|blemish|problem|issue|hitch|fault)\b)|(?:are|is|was|were)\s?n[o']?t\s+(?:there|in\s+the\s+box|included|present)|fehl\w*|unvollst(?:ä|ae)ndig|nicht\s+enthalten)\b` +
     String.raw`|\bno\s+(?:${COMPONENT_NOUN})\b` +
-    String.raw`|\b(?:but|and)\s+not\s+(?:the\s+|a\s+|an\s+|any\s+)?(?:${COMPONENT_NOUN})\b(?!\s+(?:i|we|that|which|you)\b)`,
+    String.raw`|\b(?:but|and)\s+not\s+(?:the\s+|a\s+|an\s+|any\s+)?(?:${COMPONENT_NOUN})\b(?!\s+(?:i|we|that|which|you)\b)` +
+    /*
+     * THE CONTAINER, SAID TO HAVE HELD NOTHING OF THE SORT.
+     *
+     * "The box did not contain the fixing screws" is the same report as "the
+     * screws are missing" in a grammar none of the shapes above reach: the
+     * absence is predicated of the PACKAGE rather than of the part. It reached
+     * no claim, no event and no intent, and landed on the Admin residue.
+     *
+     * BOUNDED TO A COMPONENT, like every shape here, because the same verb
+     * carries complaints that are not absences at all — "the listing did not
+     * include the dimensions" is a description problem, and Wrong description
+     * owns it.
+     */
+    String.raw`|\b(?:did|does|do|has|have|was|were)\s?n[o']?t\s+(?:contain|contained|include|included)\b[^.!?;\n]{0,20}?\b(?:${COMPONENT_NOUN})\b` +
+    /*
+     * AND THE ABSENCE STATED AS AN EXCEPTION TO A COMPLETE DELIVERY.
+     *
+     * "Everything arrived except the mounting bracket" names what came rather
+     * than what did not, which is why no absence vocabulary reaches it. It is
+     * also the shape most likely to be read as a RESOLUTION — see
+     * `AN_EXCEPTION_FOLLOWS`, which is the other half of this fix.
+     */
+    String.raw`|\b(?:everything|all)\b[^.!?;\n]{0,25}?\b(?:except|excepting|apart\s+from|other\s+than|aside\s+from)\b[^.!?;\n]{0,15}?\b(?:${COMPONENT_NOUN})\b`,
   "i",
 );
 
@@ -2138,8 +2244,30 @@ const COUNT_TOKEN = `\\d{1,3}|${Object.keys(COUNT_WORD).join("|")}`;
  */
 const QUANTITY = `(?<![£$€\\d.,])(?:${COUNT_TOKEN})(?!\\d*\\s*[.,]\\d)`;
 
+/**
+ * THE END OF A COUNT, WHICH MAY BE AN "x".
+ *
+ * "1x", "2x", "4x" is how a customer writes a quantity on a marketplace, and it
+ * was invisible to every reader here. The count patterns close with `\b`, and
+ * there is no word boundary between the digit and the x — so the reported
+ * message
+ *
+ *   "warum habe ich nur 1x erhalten und nicht 4x wie bestellt??"
+ *
+ * had two counts, a receipt verb, an order verb and a shortfall stated outright,
+ * and reached NO count at all. It fell to the Admin residue.
+ *
+ * WRITTEN AS A LOOKAHEAD so the "x" is not captured: `countValue` parses the
+ * captured group, and "1x" is not a number. And the ordinary boundary is still
+ * accepted, so nothing that matched before stops matching.
+ *
+ * `24v` STAYS OUT, which is what keeps this safe: the suffix admitted is `x`
+ * alone, so a voltage, a wattage and a size are still not quantities.
+ */
+const QUANTITY_END = "(?=x\\b|\\b)";
+
 const ONLY_THIS_MANY = new RegExp(
-  `\\b(?:nur|only|just|lediglich)\\s+(?:noch\\s+)?(${QUANTITY})\\b`,
+  `\\b(?:nur|only|just|lediglich)\\s+(?:noch\\s+)?(${QUANTITY})${QUANTITY_END}`,
   "i",
 );
 
@@ -2156,7 +2284,7 @@ function looksLikeShortfall(text: string): boolean {
 
   // A fresh regex each call: a global one carries `lastIndex` between calls, and
   // this function has to stay pure.
-  for (const match of text.matchAll(new RegExp(`\\b(${QUANTITY})\\b`, "gi"))) {
+  for (const match of text.matchAll(new RegExp(`\\b(${QUANTITY})${QUANTITY_END}`, "gi"))) {
     if (countValue(match[1] ?? "") > got) return true;
   }
   return false;
@@ -2309,7 +2437,7 @@ function orderedMoreThanArrived(text: string): boolean {
   const expected: number[] = [];
   const arrived: number[] = [];
 
-  for (const match of text.matchAll(new RegExp(`\\b(${QUANTITY})\\b`, "gi"))) {
+  for (const match of text.matchAll(new RegExp(`\\b(${QUANTITY})${QUANTITY_END}`, "gi"))) {
     const value = countValue(match[1] ?? "");
     if (!Number.isFinite(value)) continue;
 
@@ -2431,7 +2559,17 @@ const MEASURED_AGAINST_THE_ORDER =
   /\b(?:ordered|order|orders|bought|purchased|paid\s+for|expected|expecting|should\s+have\s+(?:received|recieved|got|had|been\s+sent)|fewer\s+than|short\s+delivery|bestellt|bestellung|gekauft|erwartet)\b/i;
 
 export function quantityShortfallEvidence(customerText: string | null): ShortfallReason | null {
-  const text = normalise(customerText?.trim() ?? "");
+  // A DOCUMENT NAMED AS ABSENT INSIDE A TECHNICAL QUESTION IS THE REASON FOR
+  // THE QUESTION, and it is neutralised here for the same reason the invoice is
+  // guarded three lines below: this reader is a SECOND route to
+  // `component_missing`, and the claim reader refusing the evidence does not
+  // stop it arriving this way. The reported wiring question came back as Parts
+  // missing with `absent_component: not_stated`, entirely through here.
+  //
+  // Only the document's own span is removed, and only where the message asks
+  // about the product — so every count in the message is untouched, and a bare
+  // "no instructions" with no question in it is still a parts case.
+  const text = absenceEvidenceFor(normalise(customerText?.trim() ?? ""));
   if (text === "") return null;
 
   // "uns fehlt die Rechnung" — the absent thing is the paperwork. Guarded at the
@@ -2467,7 +2605,10 @@ export function quantityShortfallEvidence(customerText: string | null): Shortfal
    * The arrival test is what keeps it off "could I have only one please".
    */
   if (BARE_SHORTFALL.test(text) && HAS_THE_GOODS.test(text)) {
-    return MEASURED_AGAINST_THE_ORDER.test(text)
+    // The order verb decides it where there is one; where there is none, the
+    // NOUN can still say the count is of order units — see
+    // `SHORT_OF_AN_ORDER_UNIT`.
+    return MEASURED_AGAINST_THE_ORDER.test(text) || SHORT_OF_AN_ORDER_UNIT.test(text)
       ? "ORDERED_QUANTITY_GREATER_THAN_RECEIVED"
       : "MISSING_ORDER_COMPONENT";
   }
@@ -2532,10 +2673,36 @@ const BARE_SHORTFALL = new RegExp(
   [
     `\\b(?:there\\s+(?:was|were)|was)\\s+only\\s+(?:one|1|a\\s+single)\\s+${NAMES_WHAT_IS_SHORT}`,
     `\\bonly\\s+(?:received|recieved|got|sent|had)\\s+(?:one|1|a\\s+single)\\s+${NAMES_WHAT_IS_SHORT}`,
-    "\\bonly\\s+(?:one|1)\\s+(?:\\w+\\s+){0,3}?in\\s+the\\s+(?:box|package|parcel|bag|envelope)\\b",
+    // THE ARTICLE IS OPTIONAL. "only one item in box" is how the reported
+    // message writes it, and requiring "in THE box" was the whole of why that
+    // conversation reached no shortfall and fell to the Admin residue.
+    "\\bonly\\s+(?:one|1)\\s+(?:\\w+\\s+){0,3}?in\\s+(?:the\\s+|my\\s+|its\\s+)?(?:box|package|parcel|bag|envelope)\\b",
   ].join("|"),
   "i",
 );
+
+/**
+ * WHAT IS SHORT IS A UNIT OF THE ORDER, not a part of one product.
+ *
+ * `MEASURED_AGAINST_THE_ORDER` decides between the quantity case and the parts
+ * case by looking for an ORDER VERB — "ordered", "bought", "should have
+ * received". The reported message has none of them and is still plainly a
+ * quantity case:
+ *
+ *   "Received package but only one ITEM in box what happened to THE OTHER ONE?"
+ *
+ * The customer names no order and no purchase, and says twice over that they
+ * are counting units of it: what arrived is an "item", and they are asking
+ * after "the other one". Neither is how anybody describes a component of a
+ * single product — nobody calls a missing bracket "the other one".
+ *
+ * SO THE NOUN IS THE ANCHOR WHERE THE VERB IS ABSENT. Deliberately narrow, and
+ * the counter-example is the one the parts reading is built on: "there was only
+ * one white plastic BIT", "only 2 light BULBS in the box" both name the part
+ * itself, match nothing here, and stay parts cases.
+ */
+const SHORT_OF_AN_ORDER_UNIT =
+  /\bonly\s+(?:one|1|a\s+single)\s+(?:item|unit|piece|product|article|artikel|st(?:ü|ue)ck)\b|\b(?:the\s+)?other\s+(?:one|ones|item|items|unit|units)\b/i;
 
 /**
  * A count of units DELIVERED, stated as short — "only 1 pendant was delivered".
@@ -2559,7 +2726,7 @@ const NOT_A_MODAL_OR_A_TIME =
   "minutes?|hours?|days?|weeks?|months?|years?|tagen?|wochen?|monaten?)\\b)\\w+\\s+)";
 
 const DELIVERY_WAS_SHORT = new RegExp(
-  `\\b(?:only|just|nur|lediglich)\\s+(?:${QUANTITY})\\s+${NOT_A_MODAL_OR_A_TIME}{0,5}?(?:delivered|geliefert)\\b`,
+  `\\b(?:only|just|nur|lediglich)\\s+(?:${QUANTITY})x?\\s+${NOT_A_MODAL_OR_A_TIME}{0,5}?(?:delivered|geliefert)\\b`,
   "i",
 );
 
@@ -3271,6 +3438,159 @@ const CHASING_A_CONSIGNMENT = new RegExp(
   "i",
 );
 
+/**
+ * A negation, however the customer contracts it.
+ *
+ * Shared by the two patterns below because both have to read "has not updated"
+ * and "hasn't updated" as the same claim, and `\bn[o']?t\b` cannot: there is no
+ * word boundary inside "hasn't", so the contracted form was invisible to it.
+ */
+const NEGATED = "(?:not|never|no|(?:has|have|had|is|are|was|were|do|does|did)\\s?n[o']?t)";
+
+/**
+ * A CONDITION IS NOT A COMPLAINT.
+ *
+ * "If the order has not been dispatched yet, would you be able to update the
+ * delivery address?" states the non-dispatch as the CONDITION attached to a
+ * request, not as the problem being reported. It is a pinned Order change (live
+ * conversation 1297, in the golden set), and without this lookbehind the
+ * dispatch pattern below would claim it for Delivery — turning the clearest
+ * pre-dispatch amendment in the set into a delivery chase.
+ */
+const NOT_INSIDE_A_CONDITION = "(?<!\\bif\\b[^.!?;\\n]{0,40})";
+
+/**
+ * THE PARCEL HAS NOT STARTED ITS JOURNEY, or its tracking has not moved.
+ *
+ * `DELIVERY_PROBLEM` owns what goes wrong once a parcel IS moving — a missed
+ * attempt, a wrong postcode, a depot hold — and `CONSIGNMENT_IS_LATE` owns
+ * lateness. Neither owns the complaint that comes before both: the order has
+ * not been sent at all, or the tracking number has sat unchanged since it was
+ * issued. Measured on the reported conversation, "item not even posted" reached
+ * no intent and no event, and "Item not even posted" on its own landed on the
+ * Admin residue — the one place that cannot help with a parcel.
+ *
+ * DELIBERATELY NOT PART OF `DELIVERY_PROBLEM`. That pattern gates the order
+ * amendment in `semanticsOf`, so anything added to it stops being an amendment
+ * request — and "My order has not been dispatched yet. Please change my
+ * delivery address." is exactly the pre-dispatch amendment Order change exists
+ * for. This is a separate witness with two narrow uses: it raises the delivery
+ * intent, and it bounds the conditional-cancellation rule below.
+ *
+ * BOUND TO THE CONSIGNMENT, like every other delivery pattern here. A bare "not
+ * posted" is something a customer says about their own return at least as often
+ * as about our dispatch — "I have not posted it back yet" — so the negation has
+ * to sit within a clause of a consignment noun to count.
+ */
+const DISPATCH_HAS_NOT_HAPPENED = new RegExp(
+  [
+    `\\b(?:${CONSIGNMENT})\\b[^.!?;\\n]{0,20}?${NOT_INSIDE_A_CONDITION}\\b${NEGATED}\\b` +
+      `[^.!?;\\n]{0,12}?\\b(?:posted|dispatched|despatched|shipped|sent)\\b`,
+    // German: "die Bestellung wurde noch nicht versandt".
+    `\\b(?:${CONSIGNMENT})\\b[^.!?;\\n]{0,25}?\\bnicht\\b[^.!?;\\n]{0,12}?\\b(?:versandt|verschickt|abgeschickt)\\b`,
+  ].join("|"),
+  "i",
+);
+
+const TRACKING_HAS_NOT_MOVED = new RegExp(
+  [
+    `\\btracking\\b[^.!?;\\n]{0,25}?\\b${NEGATED}\\b[^.!?;\\n]{0,15}?\\b(?:updat\\w*|mov\\w*|chang\\w*|progress\\w*)\\b`,
+    "\\bno\\s+tracking\\s+(?:update|updates|movement|progress|info|information)\\b",
+  ].join("|"),
+  "i",
+);
+
+/** A delivery that has not started, or has stopped telling the customer anything. */
+const DELIVERY_HAS_STALLED = new RegExp(
+  `${DISPATCH_HAS_NOT_HAPPENED.source}|${TRACKING_HAS_NOT_MOVED.source}`,
+  "i",
+);
+
+/**
+ * A CANCELLATION THE CUSTOMER IS WEIGHING, not one they are asking for.
+ *
+ * THE DISTINCTION THIS DRAWS. "Please cancel my order" instructs us; "do I have
+ * to cancel?" asks whether they should have to. The first is what the reply must
+ * carry out, and Order change owns it. The second is a customer telling us how
+ * close they are to giving up on a parcel — the reason they wrote is the parcel,
+ * and answering it as an order amendment cancels an order nobody asked to
+ * cancel. The reported conversation is exactly this shape:
+ *
+ *   "I was expecting the delivery today but nothing. Checked tracking, item not
+ *    even posted. Can you come back to me ASAP or do I have to cancel and place
+ *    with another seller."
+ *
+ * THE SUBJECT IS THE TELL, and it is what keeps this from taking real
+ * cancellations. "Can YOU cancel my order" is a request; "can I cancel" is the
+ * customer asking about their own options. Only the second shape is here.
+ *
+ * IT IS NEVER READ ALONE — see `cancellationIsOnlyBeingConsidered`, which
+ * requires a delivery problem alongside it. On its own "should I cancel?" IS an
+ * order-change question and stays one, and the pinned "Could I cancel the order
+ * and get a refund please" — a customer who ordered by mistake, with no parcel
+ * problem anywhere in the message — is untouched by this for the same reason.
+ */
+const CANCELLATION_IS_WEIGHED = new RegExp(
+  [
+    // "should I cancel?", "do I have to cancel", "can I cancel"
+    "\\b(?:should|shall|do|did|would|will|can|could|may|might|must)\\s+i\\s+" +
+      "(?:(?:have|need)\\s+to\\s+|now\\s+|just\\s+)?cancel\\b",
+    // "I may cancel", "I will have to cancel", "I might just cancel"
+    "\\bi\\s+(?:may|might|will|would|could|shall)\\s+(?:(?:have|need)\\s+to\\s+|just\\s+|then\\s+)?cancel\\b",
+    // "if it does not arrive by Friday I will cancel"
+    "\\bif\\b[^.!?;\\n]{0,60}?\\bcancel\\w*\\b",
+  ].join("|"),
+  "i",
+);
+
+/**
+ * A NON-ARRIVAL THE CUSTOMER IS ANTICIPATING rather than reporting.
+ *
+ * "I will cancel if it does not arrive tomorrow" names no problem in the past
+ * tense, so every witness here refuses it: `HAS_NOT_ARRIVED` is built on
+ * `arrived`, `delivered`, `received`, and the parcel in this sentence has not
+ * failed to arrive YET. The customer is still telling us their order has not
+ * turned up and that they are close to giving up on it.
+ *
+ * READ NOWHERE ELSE. This is deliberately not added to `HAS_NOT_ARRIVED` or
+ * `DELIVERY_PROBLEM`, both of which decide categories on their own: a future
+ * tense is weak evidence, and the only place it is weighed is beside a
+ * cancellation the customer has already said they are considering, where the
+ * message has independently established what it is about.
+ */
+const NON_ARRIVAL_IS_FEARED = new RegExp(
+  [
+    `\\b(?:${CONSIGNMENT})\\b[^.!?;\\n]{0,20}?\\b${NEGATED}\\b[^.!?;\\n]{0,12}?\\b(?:arrive|arrives|come|comes|turn\\s+up|turns\\s+up)\\b`,
+    `\\bif\\b[^.!?;\\n]{0,30}?\\b${NEGATED}\\b[^.!?;\\n]{0,12}?\\b(?:arrive|arrives|come|comes|turn\\s+up|turns\\s+up)\\b`,
+  ].join("|"),
+  "i",
+);
+
+/**
+ * A DELIVERY PROBLEM OUTRANKS A CANCELLATION THE CUSTOMER IS ONLY CONSIDERING.
+ *
+ * Both halves are required, and the delivery half is what makes this safe. A
+ * cancellation weighed with no parcel problem behind it is an order-change
+ * question and keeps that category; a cancellation weighed BECAUSE a parcel has
+ * not turned up is the parcel's case with the customer's patience attached.
+ *
+ * Every witness of a delivery problem is consulted rather than just
+ * `DELIVERY_PROBLEM`, because the two commonest wordings in the reported
+ * conversations — a parcel that has not been sent, and tracking that has not
+ * moved — are deliberately outside that pattern (see `DELIVERY_HAS_STALLED`).
+ */
+function cancellationIsOnlyBeingConsidered(text: string): boolean {
+  if (!CANCELLATION_IS_WEIGHED.test(text)) return false;
+  return (
+    DELIVERY_PROBLEM.test(text) ||
+    DELIVERY_HAS_STALLED.test(text) ||
+    HAS_NOT_ARRIVED.test(text) ||
+    CHASING_A_CONSIGNMENT.test(text) ||
+    NON_ARRIVAL_IS_FEARED.test(text) ||
+    deliveredButNotReceived(text)
+  );
+}
+
 const ADMIN_MATTER =
   /\b(?:invoice|receipt|vat|business\s+account|payment|paid|order\s+number|statement|rechnung|beleg|quittung|zahlung)\b/i;
 
@@ -3734,10 +4054,31 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
    * CANCELLATION STILL WINS, and that exception is the reason this is safe.
    * "Cancel it, the address is wrong" is an amendment with a delivery reason
    * attached, and the customer has said plainly what they want done.
+   *
+   * UNLESS THE CANCELLATION IS ONLY BEING WEIGHED. "Do I have to cancel?" said
+   * over a parcel that was never posted has not said plainly what they want
+   * done — it has said the opposite, that they would rather not. The exception
+   * above is for a cancellation the customer has decided on, and a question
+   * about whether to cancel is not one. See `cancellationIsOnlyBeingConsidered`.
+   *
+   * A STALLED DELIVERY COUNTS HERE TOO. `DELIVERY_HAS_STALLED` is kept out of
+   * `DELIVERY_PROBLEM` so it cannot gate the order amendment, but a parcel that
+   * was never sent is as much Delivery's as one stranded at a depot, and
+   * "Item not even posted" raised no intent at all before this.
+   *
+   * AND SO DOES A CANCELLATION BEING WEIGHED, which carries its OWN delivery
+   * bound rather than borrowing the one above — it is true only where a parcel
+   * problem is already established, including the anticipated non-arrival
+   * ("if it does not arrive tomorrow") that no other witness here reads. Without
+   * it the intent layer kept `wants_order_change` and handed the message back to
+   * Order change after `semanticsOf` had refused it.
    */
-  if (DELIVERY_PROBLEM.test(text)) {
+  const weighingACancellation = cancellationIsOnlyBeingConsidered(text);
+  if (DELIVERY_PROBLEM.test(text) || DELIVERY_HAS_STALLED.test(text) || weighingACancellation) {
     if (!found.includes("delivery_request")) found = [...found, "delivery_request"];
-    if (!/\bcancel/i.test(text)) found = drop("wants_order_change");
+    if (!/\bcancel/i.test(text) || weighingACancellation) {
+      found = drop("wants_order_change");
+    }
   }
 
   /*
@@ -3841,6 +4182,41 @@ function refine(found: MessageIntent[], text: string): MessageIntent[] {
   // invoice?" is untouched and stays a parts case.
   if (found.includes("missing_component") && ADMIN_IS_WHAT_IS_MISSING.test(text)) {
     return drop("missing_component");
+  }
+
+  /*
+   * AND THE MISSING THING IS THE INSTRUCTIONS, INSIDE A WIRING QUESTION.
+   *
+   * The same collision one noun along, and the reported message is the clearest
+   * instance of it:
+   *
+   *   "this transformer has two outputs and NO INSTRUCTIONS. is both outlet 24v,
+   *    or how is it supposed to be wired on the output side ... A wiring diagram
+   *    would be very helpful"
+   *
+   * `instructions` sits in `COMPONENT_NOUN`, so "no instructions" is a missing
+   * component to the phrase table and to the claim reader alike. It is a missing
+   * component when the customer is telling us what the box held; here it is the
+   * REASON they are asking how to wire the thing, and the answer they want is
+   * the wiring, not a leaflet.
+   *
+   * BOTH CONDITIONS, and `absenceEvidenceFor` supplies the second: the message
+   * asks something about the product itself, and once the document's own absence
+   * is taken out there is no absence left. "No instructions and no screws, how do
+   * I wire it?" keeps the intent, because the screws survive that removal.
+   *
+   * THE ABSENCE MUST ALSO BE WHERE THE INTENT CAME FROM. `missing_component` is
+   * raised by the quantity arithmetic and by the phrase table as well, and
+   * neither is touched here: the intent is only dropped where `SOMETHING_ABSENT`
+   * matched the message and stops matching once the document is taken out.
+   */
+  if (
+    found.includes("missing_component") &&
+    asksAboutTheProductItself(text) &&
+    SOMETHING_ABSENT.test(text) &&
+    !SOMETHING_ABSENT.test(absenceEvidenceFor(text))
+  ) {
+    found = drop("missing_component");
   }
 
   // THE THING NOT RECEIVED IS THE INVOICE — the same collision as the rule
@@ -4349,8 +4725,14 @@ export function classifyMessageCategoryWithFallback(
   // its witnesses — see `intentsFromPhraseTable`. Where the two would disagree,
   // intent is what comes out, because ownership order encodes which problem a
   // message is ABOUT while scoring only counts how many words it happened to use.
+  // THE CLAIM READING, ONCE, AND EVERY PROPOSAL BELOW IS PUT THROUGH IT. A
+  // category that reports a problem may not be named by a message that only
+  // ASKS about that problem — see `aProblemOnlyAskedAbout`. Read here rather
+  // than inside each layer so the three witnesses cannot drift apart.
+  const { claims } = semanticsOf(text);
+
   const intents = detectIntents(text);
-  const owned = ownedIntentCategory(intents, text);
+  const owned = unlessOnlyAsked(ownedIntentCategory(intents, text), text, claims);
   if (owned !== null) return owned;
 
   // The strict table still gets the last word on anything intent could not
@@ -4363,7 +4745,7 @@ export function classifyMessageCategoryWithFallback(
   // and letting it return here hid the two layers below from every message that
   // happened to use an admin word. "I paid for next day and it's a week late"
   // is a courier complaint that reached Admin on the word "paid".
-  const strict = classifyMessageCategory(customerText);
+  const strict = unlessOnlyAsked(classifyMessageCategory(customerText), text, claims);
   if (strict !== null && strict !== "Admin related issues") return strict;
 
   // A customer telling us the thing is sorted is not raising an admin matter.
@@ -4379,7 +4761,7 @@ export function classifyMessageCategoryWithFallback(
   // legitimate answer for a genuine admin matter and for a message nothing can
   // name. It is not the right answer for a customer asking whether a driver is
   // dimmable, and before this layer existed it was the answer they got.
-  const fromCorpus = readCorpus(text).category;
+  const fromCorpus = unlessOnlyAsked(readCorpus(text).category, text, claims);
   if (fromCorpus !== null) return fromCorpus;
 
   // And last of all, the reading of the message itself — see
@@ -4531,6 +4913,16 @@ export type RequestedAction =
   | "refund_or_return"
   | "exchange_or_replacement"
   | "order_amendment"
+  /**
+   * A cancellation the customer is WEIGHING rather than asking for.
+   *
+   * Its own value rather than `order_amendment` because the two need different
+   * answers, and because this one may never decide a category: it is absent
+   * from `ACTION_CATEGORY` on purpose, so the reason the customer wrote — the
+   * parcel — keeps the conversation while the reply still knows how close they
+   * are to walking away. See `cancellationIsOnlyBeingConsidered`.
+   */
+  | "cancellation_considered"
   | "report_problem"
   | "documentation"
   | "none";
@@ -4600,9 +4992,12 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
     // "uns fehlt die Rechnung" is an absent INVOICE, not an absent component.
     // ADMIN.xlsx sheet A owns it, and reading it as a component claim is what
     // put six live invoice requests into Parts missing.
+    // A document named as absent inside a technical question is the REASON for
+    // the question, not the case — see `absenceEvidenceFor`, which removes that
+    // one span and leaves every other absence in the message intact.
     absent_component: ADMIN_IS_WHAT_IS_MISSING.test(text)
       ? "not_stated"
-      : claimStatus(text, SOMETHING_ABSENT),
+      : claimStatus(absenceEvidenceFor(text), SOMETHING_ABSENT),
     listing_mismatch: claimStatus(text, LISTING_MISMATCH, { negationReverses: false }),
     // A "different one" the CUSTOMER bought is not one we supplied. Checked
     // here rather than only in the category predicate because this claim sets
@@ -4643,7 +5038,13 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
     ? "refund_or_return"
     : WANTS_A_REPLACEMENT.test(text) && hasTakenDelivery(text)
       ? "exchange_or_replacement"
-      : // The same two conditions the corpus applies to this category — a
+      : // A CANCELLATION BEING WEIGHED IS READ BEFORE ONE BEING ASKED FOR, because
+        // the wording of the first is a subset of the second: "do I have to
+        // cancel" satisfies `AMENDMENT_REQUEST` word for word. Testing it after
+        // the amendment would never reach it.
+        cancellationIsOnlyBeingConsidered(text)
+        ? "cancellation_considered"
+        : // The same two conditions the corpus applies to this category — a
         // delivery problem and somebody's electrician changing a fitting are
         // neither of them a request to amend an order. Applied here too because
         // this is a second, independent route to `order_amendment`, and gating
@@ -4679,7 +5080,20 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
     ? "wrong_item_supplied"
     : shortfall === "ORDERED_QUANTITY_GREATER_THAN_RECEIVED" || shortfall === "PARTIAL_ORDER_RECEIVED"
       ? "quantity_mismatch"
-      : asserted("absent_component") || shortfall === "MISSING_ORDER_COMPONENT"
+      : // THE SHORTFALL READER REACHES THE ISSUE AXIS WITHOUT PASSING THROUGH
+        // `claimStatus`, so the asked/asserted distinction has to be applied to
+        // it here. "If a part is missing what is the process?" has
+        // `absent_component: asked` — the reader got it right — and still came
+        // back as a live parts case, because `SOMETHING_ABSENT` matched inside
+        // `quantityShortfallEvidence` where no speech act is read.
+        //
+        // `asserted` is deliberately still enough on its own: a claim the
+        // reader positively asserts needs no second opinion, and the arithmetic
+        // routes (`ORDERED_QUANTITY_GREATER_THAN_RECEIVED`, `PARTIAL_ORDER_RECEIVED`)
+        // are untouched above — counting is not claiming.
+        asserted("absent_component") ||
+          (shortfall === "MISSING_ORDER_COMPONENT" &&
+            !aProblemOnlyAskedAbout("Parts missing queries", text, claims))
         ? "component_missing"
         : asserted("listing_mismatch")
           ? "listing_mismatch"
@@ -4702,6 +5116,121 @@ export function semanticsOf(customerText: string | null): MessageSemantics {
                 : "none";
 
   return { journey, event, requestedAction, speechAct: speechActOf(text), claims };
+}
+
+/**
+ * The claim a category is a REPORT OF, for the five categories that are reports.
+ *
+ * Delivery, Return, Pre sales, Admin and Order change are absent on purpose:
+ * none of them is a claim about the goods, so none has a claim to check. Wrong
+ * quantity is absent too — its evidence is arithmetic (`quantityShortfallEvidence`)
+ * rather than a claim concept, and it has its own reading.
+ */
+const CATEGORY_CLAIM: Readonly<Partial<Record<MessageCategory, ClaimName>>> = {
+  "Damage queries": "physical_damage",
+  "Defective items": "functional_fault",
+  "Parts missing queries": "absent_component",
+  "Wrong description issues": "listing_mismatch",
+  "Wrong item sent messages": "wrong_item",
+};
+
+/**
+ * ASKING WHETHER A PROBLEM HAPPENS IS NOT REPORTING THAT IT HAS.
+ *
+ * THE DEFECT THIS CLOSES, AND WHY IT KEPT COMING BACK AS PATCHES. `semanticsOf`
+ * has always read the difference correctly — `claimStatus` returns `asked` for
+ * "what do you do if the wrong item is sent?" and `asserted` for "you sent the
+ * wrong item" — and the issue axis honours it. But the issue axis is only ONE of
+ * the four witnesses. The phrase table, the intent layer and the corpus all name
+ * a category from vocabulary alone, and none of them had ever been shown the
+ * claim reading. Measured over the probe set, every one of these came back as a
+ * live problem case:
+ *
+ *   "Do these ever arrive damaged in the post?"      -> Damage queries
+ *   "What happens if it arrives damaged?"            -> Damage queries
+ *   "What do you do if the wrong item is sent?"      -> Wrong item sent messages
+ *
+ * In each, `claims` already said `asked`. The information was computed, correct,
+ * and thrown away.
+ *
+ * SO THIS IS A GATE, NOT A PATTERN. It adds no vocabulary and knows no wording:
+ * it asks the reading that already exists whether the customer ASSERTED the
+ * thing the proposed category is a report of, and refuses the category when the
+ * answer is that they only asked about it. New phrasings are handled because
+ * `claimStatus` and `speechActOf` handle them — a question nobody has seen
+ * before is still a question.
+ *
+ * ONLY `asked` REFUSES, and the bound matters:
+ *
+ *   `negated`     already handled upstream, and refusing here as well would
+ *                 change behaviour this brief did not ask about.
+ *   `not_stated`  is the COMMON case for a category named by another witness —
+ *                 German fault vocabulary, corpus rows, quantity arithmetic —
+ *                 and refusing on it would silence most of the classifier.
+ *                 A claim the reader never saw is not evidence of a question.
+ *
+ * ------------------------------------------------------------------------
+ * AND ONLY WHERE THE CUSTOMER DOES NOT HOLD THE GOODS.
+ * ------------------------------------------------------------------------
+ * THIS BOUND IS NOT A REFINEMENT, IT IS WHAT MAKES THE GATE SAFE, and three
+ * pinned cases proved it within minutes of the gate being written:
+ *
+ *   "Can you send the correct one please and I will return the one I received"
+ *   "Could you send a returns label so I can return the wrong item that was
+ *    delivered."
+ *   "Box arrived damaged and the shade is smashed"
+ *
+ * All three are REPORTS, and all three read as `asked` — because a customer
+ * being polite opens with "Can you"/"Could you", which is a genuine
+ * interrogative frame, and the evidence phrase sits inside that same clause.
+ * `speechActOf` is right about the sentence and wrong about the claim.
+ *
+ * RECEIPT IS WHAT SEPARATES THEM, and it is the same evidence the wrong-item
+ * receipt gate already turns on: a customer who has taken delivery and names a
+ * problem is reporting it, however politely they phrase the sentence.
+ *
+ * ------------------------------------------------------------------------
+ * AND THE QUESTION HAS TO BE A HYPOTHETICAL ONE.
+ * ------------------------------------------------------------------------
+ * THE SECOND BOUND, AND IT WAS MEASURED RATHER THAN REASONED. Run across the
+ * 5,538 customer phrasings in the workbook corpus, the gate as first written
+ * moved four of them the WRONG way — every one a report the customer phrased as
+ * a question:
+ *
+ *   "why did you send the wrong one"       Wrong item -> Admin
+ *   "why was a different item sent"        Wrong item -> Admin
+ *   "has the missing one been sent"        Parts missing -> Admin
+ *
+ * A "why did you send the wrong one" does not ask WHETHER we sent the wrong one.
+ * It takes that as given and asks the reason — the fact is presupposed, and the
+ * customer is as much reporting it as if they had used a full stop.
+ *
+ * What the cases this gate exists for have in common, and these do not, is that
+ * they are HYPOTHETICAL: they ask what would happen, or what the procedure is,
+ * in a situation the customer is not claiming to be in. That is the difference
+ * the brief asked for in its own words — reporting an actual event, or asking
+ * for information — and it is what the marker below tests.
+ */
+const A_HYPOTHETICAL =
+  /\bif\b|\bever\b|\bin\s+case\b|\bwhat\s+happens\b|\bwould\s+happen\b|\bwhat\s+(?:is|are)\s+(?:the|your)\s+(?:process|procedure|policy|policies|rules?|options?)\b|\bdo\s+you\s+(?:replace|refund|accept|cover|offer|do)\b|\bfalls\b/i;
+function aProblemOnlyAskedAbout(
+  category: MessageCategory | null,
+  text: string,
+  claims: MessageSemantics["claims"],
+): boolean {
+  if (category === null) return false;
+  const claim = CATEGORY_CLAIM[category];
+  if (claim === undefined || claims[claim] !== "asked") return false;
+  return !hasTakenDelivery(text) && A_HYPOTHETICAL.test(text);
+}
+
+/** The same test, shaped for a ladder: the proposal, or null where it is a question. */
+function unlessOnlyAsked(
+  category: MessageCategory | null,
+  text: string,
+  claims: MessageSemantics["claims"],
+): MessageCategory | null {
+  return aProblemOnlyAskedAbout(category, text, claims) ? null : category;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -5190,6 +5719,11 @@ function categoryFromSemantics(semantics: MessageSemantics, text: string): Messa
     // customer asked for a document, not Admin because nothing matched.
     case "documentation":
       return "Admin related issues";
+    // A CANCELLATION BEING WEIGHED NAMES NO CATEGORY, deliberately, and this is
+    // the single-message twin of its absence from `ACTION_CATEGORY`. The whole
+    // point of the value is that the reason the customer wrote keeps the
+    // message; saying "Order change" here would hand it straight back.
+    case "cancellation_considered":
     case "report_problem":
     case "none":
       break;
@@ -5315,8 +5849,30 @@ const RESOLUTION_CONFIRMATION = new RegExp(
   "i",
 );
 
+/**
+ * AN EXCEPTION CANCELS THE CONFIRMATION.
+ *
+ * "Everything arrived except the mounting bracket" opens with the exact words of
+ * a resolution — `everything arrived` — and then names the one thing that did
+ * not. Read as a confirmation it silenced the message completely: a resolved
+ * message contributes to neither axis and is skipped by the positional reading
+ * too, so the thread came back with NO CATEGORY AT ALL. The customer is
+ * reporting a partial delivery in the plainest words there are for it.
+ *
+ * THE EXCEPTION HAS TO FOLLOW THE CONFIRMATION, inside its clause. That is what
+ * separates it from the ordinary closing message, where the exception comes
+ * first and the confirmation resolves it: "I was missing a screw but everything
+ * is sorted now" is a customer telling us the matter is closed, and stays one.
+ */
+const AN_EXCEPTION_FOLLOWS =
+  /\b(?:except|excepting|apart\s+from|other\s+than|aside\s+from|save\s+for)\b|\bbut\s+(?:not|no)\b|\bau(?:ß|ss)er\b/i;
+
 function looksResolved(text: string): boolean {
-  return RESOLUTION_CONFIRMATION.test(text);
+  const confirmation = RESOLUTION_CONFIRMATION.exec(text);
+  if (confirmation === null) return false;
+  const restOfClause =
+    text.slice(confirmation.index + confirmation[0].length).split(/[.!?;\n]/)[0] ?? "";
+  return !AN_EXCEPTION_FOLLOWS.test(restOfClause);
 }
 
 /**
@@ -5538,6 +6094,13 @@ const PLATFORM_ADDRESS_SELF_SERVICE =
 const ASKS_US_TO_CHANGE_IT =
   /\b(?:can|could|would|will)\s+(?:you|we)\b[^.!?]{0,40}\b(?:change|update|amend|alter|correct)\b|\bplease\s+(?:can\s+you\s+)?(?:change|update|amend|alter|correct)\b|\bis\s+it\s+possible\s+to\s+(?:change|update|amend)\b/i;
 
+/*
+ * `cancellation_considered` IS ABSENT FROM THIS MAP ON PURPOSE, and that
+ * absence is the whole mechanism: this map is consulted at the end of
+ * `readConversation`, so an action with no entry here can never take a category
+ * from the problem the customer reported. It is the one action that says what a
+ * customer might do rather than what they are asking us to do.
+ */
 const ACTION_CATEGORY: Readonly<Partial<Record<RequestedAction, MessageCategory>>> = {
   whereabouts: "Delivery queries",
   refund_or_return: "Return and refunds",
@@ -6181,13 +6744,19 @@ function positionalConversationCategory(
     // hand the thread to a town name that reached a delivery or damage rule.
     if (!speaks[index]) return null;
 
+    // THE SAME EVIDENCE GATE THE SINGLE-MESSAGE PATH APPLIES, and it has to be
+    // here too for the same reason the corpus step below does: this function
+    // does not call `classifyMessageCategoryWithFallback`, so without it a
+    // question about a problem still reaches every conversation in the inbox.
+    const { claims } = semanticsOf(text);
+
     const intents = detectIntents(text);
-    const owned = ownedIntentCategory(intents, text);
+    const owned = unlessOnlyAsked(ownedIntentCategory(intents, text), text, claims);
     if (owned !== null) return owned;
 
     // Admin is the fallback and outranks nothing — see the same step in
     // `classifyMessageCategoryWithFallback`.
-    const strict = classifyMessageCategory(text);
+    const strict = unlessOnlyAsked(classifyMessageCategory(text), text, claims);
     if (strict !== null && strict !== "Admin related issues") return strict;
 
     // THE SAME LAST STEP THE SINGLE-MESSAGE PATH TAKES, and it has to be here
@@ -6200,7 +6769,7 @@ function positionalConversationCategory(
     // raising whichever family their wording happens to brush against.
     if (strict === null && looksResolved(text)) return null;
     return (
-      readCorpus(text).category ??
+      unlessOnlyAsked(readCorpus(text).category, text, claims) ??
       categoryFromSemantics(semanticsOf(text), text) ??
       strict ??
       (intents.includes("admin_issue") ? "Admin related issues" : null)
