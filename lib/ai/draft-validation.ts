@@ -2,7 +2,9 @@ import type { BundleContext } from "@/lib/domain/bundle-context";
 import { type VerifiedFact, ungroundedClaims } from "@/lib/domain/draft";
 import { type ConversationMessageView, displayBody } from "@/lib/domain/inbox";
 import {
+  carrierHasReportedMovement,
   customerDeliveryStatus,
+  movementClaimIn,
   technicalTrackingLanguageIn,
 } from "@/lib/domain/tracking-customer-language";
 import {
@@ -1377,8 +1379,125 @@ function trackingLanguageCheck(draft: DraftUnderReview): DraftFinding[] {
   return findings;
 }
 
+/**
+ * Wording that negates the movement it names.
+ *
+ * "Tracking has not shown it moving", "it is not yet in transit" and "it has
+ * not left the depot" all contain a movement phrase and assert its opposite —
+ * and the middle one is close to the sentence this system now supplies for an
+ * unscanned parcel. A check that fired on them would reject the correct draft.
+ */
+const MOVEMENT_NEGATED =
+  /\b(?:not|never|n[o']t|no|without|yet\s+to\s+be)\b[^.!?;]{0,40}?(?:on\s+(?:its|it's|the)\s+way|in\s+transit|en\s+route|mov|travel|unterwegs)/i;
+
+/**
+ * Things that travel and are not the parcel.
+ *
+ * "YOUR REFUND IS ON ITS WAY" IS NOT A CARRIER CLAIM. A refund goes to a card,
+ * a label and a returns form go by email, and none of them is a physical item a
+ * courier has scanned — so none of them is gated by whether the courier scanned
+ * anything. Without this the check fired on a correct refund confirmation and
+ * spent the regeneration fixing a sentence that was true.
+ *
+ * The parcel list exists to settle which of two subjects the wording belongs
+ * to, for the sentence that names both: "we have issued your refund and your
+ * parcel is on its way" is still a claim about the parcel.
+ */
+const NOT_THE_PARCEL =
+  /\b(?:refunds?|repayments?|reimbursements?|payments?|money|credits?|vouchers?|labels?|invoices?|receipts?|e-?mails?|messages?|repl(?:y|ies)|responses?)\b/gi;
+const THE_PARCEL =
+  /\b(?:parcels?|orders?|items?|packages?|packets?|consignments?|deliver(?:y|ies)|shipments?|goods|replacements?|bestellung|paket|sendung|it|they|them)\b/gi;
+
+/** The index of the last match, or -1. */
+function lastMatchIndex(text: string, pattern: RegExp): number {
+  let last = -1;
+  for (const match of text.matchAll(pattern)) last = match.index;
+  return last;
+}
+
+/**
+ * Whether the movement wording at `at` is about something other than the parcel.
+ *
+ * READS THE NEAREST SUBJECT BEFORE THE PHRASE, not the sentence as a whole. The
+ * subject of "is on its way" is whatever was last named in front of it, so the
+ * later of the two lists wins and a sentence naming a refund first and a parcel
+ * second is read as a parcel claim.
+ *
+ * DEFAULTS TO TREATING IT AS THE PARCEL. Where neither list matches — "It is
+ * moving through the network", or wording nobody anticipated — the claim is
+ * checked rather than waved through. An unrecognised subject is a reason for the
+ * gate to look, not a reason for it to look away.
+ */
+function movementIsNotAboutTheParcel(sentence: string, at: number): boolean {
+  const before = sentence.slice(0, at);
+  const other = lastMatchIndex(before, NOT_THE_PARCEL);
+  if (other === -1) return false;
+  return other > lastMatchIndex(before, THE_PARCEL);
+}
+
+/**
+ * The reply putting the parcel in the carrier's network.
+ *
+ * TWO FACTS, TWO SOURCES, AND THE SECOND IS NOT OURS TO GIVE. That the goods
+ * left us is an order fact — `dispatchState` reads it from a booked shipment.
+ * That the parcel is moving is a carrier fact, and only a scan establishes it.
+ * Collapsing the two produced "your order has been dispatched and is on its
+ * way" over a shipment whose only tracking event was the carrier being told a
+ * label existed; the customer chasing it was looking at that same empty
+ * tracking page while reading our reassurance.
+ *
+ * NOT A BAN ON "DISPATCHED". The order fact stays sayable, and the CST delivery
+ * rules require it — the sheet for an unscanned parcel says to tell the
+ * customer it was handed to the courier and that scans can take 48 hours, and
+ * warns in terms against implying it was never sent. Only the movement half is
+ * gated.
+ *
+ * QUESTIONS, CONDITIONS AND NEGATIONS ARE NOT CLAIMS, the same three exemptions
+ * `deliveryStateClaim` already makes and for the same reason: "it is not yet on
+ * its way" is the honest sentence, not the offence. AND NEITHER IS A SUBJECT NO
+ * COURIER CARRIES — see `movementIsNotAboutTheParcel`.
+ */
+function movementClaim(reply: string): string | null {
+  for (const sentence of sentences(reply)) {
+    const claim = movementClaimIn(sentence);
+    if (claim === null) continue;
+    if (sentence.trim().endsWith("?")) continue;
+    if (NOT_AN_ASSERTION.test(sentence)) continue;
+    if (MOVEMENT_NEGATED.test(sentence)) continue;
+    if (movementIsNotAboutTheParcel(sentence, sentence.indexOf(claim))) continue;
+    return sentence;
+  }
+  return null;
+}
+
 function hallucinationCheck(draft: DraftUnderReview): DraftFinding[] {
   const findings: DraftFinding[] = [];
+
+  /*
+   * MOVEMENT IS THE CARRIER'S TO REPORT. Checked before the delivery-state
+   * claim below, because "on its way" is the milder-sounding sentence and the
+   * likelier one to slip past a reviewer — it reads as reassurance rather than
+   * as a claim about the physical world, which is exactly what it is.
+   */
+  const moving = movementClaim(draft.reply);
+  if (moving !== null && !carrierHasReportedMovement(draft.tracking)) {
+    findings.push({
+      issue: "unsupported_claim",
+      severity: "critical",
+      incorrectStatement: moving,
+      verifiedFact:
+        draft.tracking == null
+          ? null
+          : `carrier has reported no movement (status ${draft.tracking.currentStatus})`,
+      ruleThatApplies: "Delivery status: dispatch is ours to state, movement is the carrier's",
+      regenerationReason:
+        dispatchState(draft.facts) === "dispatched"
+          ? `The reply says the parcel is moving. Dispatch and movement are separate facts: the order establishes that it was dispatched, and no carrier scan establishes that it has moved. Say "${
+              customerDeliveryStatus(draft.tracking, true).sentence
+            }" in your own words — keep "dispatched", and drop "on its way", "in transit" and anything else that puts the parcel between places.`
+          : "The reply says the parcel is moving. Nothing establishes that: no carrier scan reports movement and the verified context does not establish dispatch either. Remove it and say only what the verified context supports.",
+    });
+  }
 
   /*
    * A DELIVERY STATE MAY ONLY COME FROM A CARRIER.

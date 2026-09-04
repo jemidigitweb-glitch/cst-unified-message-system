@@ -521,6 +521,16 @@ export function verifiedTrackingBlock(
     spoken.statesAPosition
       ? null
       : "  Nothing above states where the parcel is, so the reply may not either. Say this, apply the CST rules for the case, and do not build an arrival, a delay or a movement on top of it.",
+    /*
+     * DISPATCH AND MOVEMENT ARE TWO FACTS FROM TWO SOURCES, and this is the
+     * line that keeps them apart in the reply. Without it the model read "your
+     * order has been dispatched" as licence for "and is on its way" over a
+     * shipment the carrier had never scanned — a reassurance the customer can
+     * disprove by refreshing the same tracking page we are reading.
+     */
+    spoken.movementConfirmed
+      ? "  The carrier has scanned this parcel, so movement is established: you may also say the order has been dispatched and is on its way."
+      : "  THE CARRIER HAS NOT REPORTED THE PARCEL MOVING. Dispatch is ours to state and movement is the carrier's, so you may say the order was dispatched, sent or handed to the courier — and you may NOT say it is \"on its way\", \"in transit\", \"en route\", \"moving through the network\" or anything else that puts it between places. Say it was dispatched and that tracking has not shown further movement yet.",
     "  Say it in your own courteous words, in the customer's language, and add what it means for them under the CST rules. Do not go beyond it: it is the whole of what may be stated about this parcel's position.",
     "",
     "INTERNAL TRACKING EVIDENCE — FOR YOUR REASONING ONLY, NEVER FOR THE REPLY:",

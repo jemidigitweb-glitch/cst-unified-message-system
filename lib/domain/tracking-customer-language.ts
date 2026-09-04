@@ -71,8 +71,31 @@ export type DeliveryWording = {
  *
  * The CST delivery rules take the same view, and say so in the sheet that
  * governs this exact state: "⚠ Do NOT say parcel was not sent."
+ *
+ * AND DISPATCH IS NOT MOVEMENT EITHER. These are two facts from two sources: we
+ * handed the parcel over (the order says so) and the carrier has scanned it
+ * somewhere (the carrier says so). The first was being read as both, so a
+ * shipment sitting at "Data Received" — the carrier holding a label and nothing
+ * else — was answered "dispatched and is on its way". The customer chasing it
+ * can see the same tracking page we can, showing no movement at all, and a
+ * reassurance they can disprove in one click is worse than the silence it
+ * replaced. Hence two sentences below, and `carrierHasReportedMovement` to
+ * choose between them.
  */
 export const DISPATCHED_SENTENCE = "Your order has been dispatched and is on its way.";
+
+/**
+ * Dispatched, and the carrier has not scanned it yet.
+ *
+ * SAYS BOTH FACTS AND CLAIMS NEITHER MORE. It states what we know — it left us
+ * — and is honest about what we do not, which is where it has got to. That is
+ * also what the CST delivery rules prescribe for this exact state: the sheet
+ * covering an unscanned parcel says to tell the customer the courier has not
+ * yet scanned it and that scans can take up to 48 hours, never that it is on
+ * its way and never that it was not sent.
+ */
+export const DISPATCHED_NO_MOVEMENT_SENTENCE =
+  "Your order has been dispatched, but tracking has not shown further movement yet.";
 
 /** What we say while there is nothing to say. */
 export const CHECKING_WITH_COURIER_SENTENCE =
@@ -158,7 +181,48 @@ export type CustomerDeliveryStatus = {
   readonly sentence: string;
   readonly statesAPosition: boolean;
   readonly source: DeliveryWordingSource;
+  /**
+   * Whether the CARRIER has the parcel moving, as distinct from us having sent
+   * it. Only this licenses "on its way", "in transit" or any other wording that
+   * puts the parcel in the network.
+   */
+  readonly movementConfirmed: boolean;
 };
+
+/**
+ * The two statuses that are not movement.
+ *
+ * `pre_transit` is a label the carrier has been told about; `unknown` is a
+ * status we could not map, which supports nothing at all. Everything else means
+ * the carrier has physically handled the parcel at least once — including
+ * `exception` and `returned_to_sender`, which are movement in a direction
+ * nobody wanted but movement all the same.
+ */
+function isMovement(status: TrackingStatus): boolean {
+  return status !== "pre_transit" && status !== "unknown";
+}
+
+/**
+ * Whether the carrier has reported the parcel moving.
+ *
+ * READS THE SCANS AS WELL AS THE HEADLINE STATUS, and the second half is what
+ * makes it right rather than merely convenient. A row whose coarse status this
+ * system could not map comes through as `unknown`, and the scans underneath it
+ * may still show a parcel halfway across the country — see `statusFromScan` in
+ * `lib/tracking/source-database-provider.ts`, which reads each scan on its own
+ * terms for exactly that reason.
+ *
+ * NO TRACKING IS NOT MOVEMENT. Absence of a lookup is absence of evidence, and
+ * this returns false — the same discipline the rest of the draft layer applies
+ * to every fact it was not given.
+ */
+export function carrierHasReportedMovement(
+  tracking: TrackingResult | null | undefined,
+): boolean {
+  if (tracking === null || tracking === undefined) return false;
+  if (isMovement(tracking.currentStatus)) return true;
+  return tracking.trackingEvents.some((event) => isMovement(event.status));
+}
 
 /**
  * The one sentence a reply may use for where this parcel is.
@@ -174,6 +238,13 @@ export type CustomerDeliveryStatus = {
  * position either, and it is emphatically not a case for "on its way" — see
  * `dispatchMaySpeakInstead`.
  *
+ * DISPATCH SPEAKS IN TWO VOICES, and which one depends on the carrier, not on
+ * us. Having sent a parcel says nothing about where it is; only a scan does.
+ * So a confirmed dispatch with no movement gets the sentence that says exactly
+ * that, and "on its way" is reserved for the case where something actually
+ * moved. This is the whole of the difference between a true reassurance and one
+ * the customer can disprove by refreshing the tracking page.
+ *
  * `dispatchConfirmed` is passed in rather than derived here: what establishes
  * dispatch is verified order context, and this module is not given facts. See
  * `dispatchState` in `lib/ai/draft-validation.ts`, which is the one place that
@@ -187,19 +258,37 @@ export function customerDeliveryStatus(
     tracking === null || tracking === undefined
       ? null
       : CUSTOMER_DELIVERY_LANGUAGE[tracking.currentStatus];
+  const movementConfirmed = carrierHasReportedMovement(tracking);
 
   if (wording !== null && wording.statesAPosition) {
-    return { sentence: wording.sentence, statesAPosition: true, source: "tracking" };
+    return {
+      sentence: wording.sentence,
+      statesAPosition: true,
+      source: "tracking",
+      movementConfirmed,
+    };
   }
 
   if (dispatchConfirmed && (wording?.dispatchMaySpeakInstead ?? true)) {
-    return { sentence: DISPATCHED_SENTENCE, statesAPosition: true, source: "order" };
+    return {
+      sentence: movementConfirmed ? DISPATCHED_SENTENCE : DISPATCHED_NO_MOVEMENT_SENTENCE,
+      /*
+       * "Dispatched, nothing scanned" states no position and must not be built
+       * on — no arrival, no delay, no journey. It is a fact about us, not about
+       * the parcel's whereabouts, so the caller still gets `false` here and the
+       * block still tells the model not to construct movement on top of it.
+       */
+      statesAPosition: movementConfirmed,
+      source: "order",
+      movementConfirmed,
+    };
   }
 
   return {
     sentence: wording?.sentence ?? CHECKING_INFORMATION_SENTENCE,
     statesAPosition: false,
     source: "none",
+    movementConfirmed,
   };
 }
 
@@ -294,6 +383,42 @@ export const TECHNICAL_TRACKING_LANGUAGE: readonly TechnicalTrackingTerm[] = [
     pattern: /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}:\d{2}\b/,
   },
 ];
+
+/**
+ * Wording that puts the parcel IN THE NETWORK.
+ *
+ * A CLAIM ABOUT THE CARRIER, NOT ABOUT US. "Dispatched" is ours to state — we
+ * either handed the parcel over or we did not. Every phrase below says
+ * something further: that it is moving, that it is between places, that it is
+ * on its way to someone. Only a scan supports that, and the failure this list
+ * exists for is a draft saying "dispatched and is on its way" over a shipment
+ * whose tracking page — which the customer is looking at — shows nothing but a
+ * label.
+ *
+ * DELIBERATELY NOT INCLUDING "dispatched", "sent", "posted" or "handed to the
+ * courier". Those are order facts, they are what the CST delivery rules tell an
+ * agent to say while a parcel is unscanned, and flagging them would take away
+ * the one true thing there is to tell the customer.
+ */
+export const MOVEMENT_CLAIM = new RegExp(
+  [
+    "\\bon\\s+(?:its|it's|the)\\s+way\\b",
+    "\\bin\\s+transit\\b",
+    "\\ben\\s+route\\b",
+    "\\bmaking\\s+its\\s+way\\b",
+    "\\bmov(?:ing|es|ed)\\s+through\\s+(?:the\\s+)?(?:network|system|depot)",
+    "\\bworking\\s+its\\s+way\\b",
+    "\\btravel(?:ling|ing|s)\\s+(?:to|through|towards)\\b",
+    // German, matching the vocabulary the rest of this layer already handles.
+    "\\bunterwegs\\b",
+  ].join("|"),
+  "i",
+);
+
+/** The movement wording in this text, or null. */
+export function movementClaimIn(text: string): string | null {
+  return MOVEMENT_CLAIM.exec(text)?.[0] ?? null;
+}
 
 /** The first kind of internal wording this text exposes, or null. */
 export function technicalTrackingLanguageIn(text: string): TechnicalTrackingTerm | null {
