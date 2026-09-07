@@ -27,7 +27,9 @@
  *           request, an explicitly urgent customer, or one chasing an unanswered
  *           message.
  *   MEDIUM  a real problem or a request that needs work — delivery, damage,
- *           wrong item, missing parts, returns, refunds, order amendments.
+ *           wrong item, missing parts, returns, refunds, order amendments; and,
+ *           at conversation level only, a readable customer conversation none of
+ *           the specific rules could place — see `explainConversationPriority`.
  *   LOW     pre-sales, compatibility, general information, and a customer
  *           closing the case.
  *   null    nothing established. NOT "low" — see `classifyMessagePriority`.
@@ -86,6 +88,13 @@ export type PriorityReason =
   /* MEDIUM */
   | "problem_reported"
   | "action_required"
+  /**
+   * A readable customer conversation that none of the specific rules above
+   * could place. CONVERSATION-LEVEL ONLY — `explainMessagePriority` never
+   * produces it, because a single unplaceable message is not yet a finding
+   * about the thread. See `explainConversationPriority`.
+   */
+  | "customer_conversation_unclassified"
   /* LOW */
   | "pre_sales_enquiry"
   | "case_closed_by_customer";
@@ -100,11 +109,18 @@ const REASON_PRIORITY: Readonly<Record<PriorityReason, MessagePriority>> = {
   workbook_highest: "HIGH",
   problem_reported: "MEDIUM",
   action_required: "MEDIUM",
+  customer_conversation_unclassified: "MEDIUM",
   pre_sales_enquiry: "LOW",
   case_closed_by_customer: "LOW",
 };
 
 export type PriorityReading = {
+  /**
+   * Null only where nothing was read at all. At message level that is an empty
+   * or unrecognised message; at conversation level it is narrower still — a
+   * thread with no readable customer text in it — because a readable
+   * conversation always ranks. See `explainConversationPriority`.
+   */
   readonly priority: MessagePriority | null;
   /** Every reason that applied, most urgent first. Empty when none did. */
   readonly reasons: readonly PriorityReason[];
@@ -523,10 +539,12 @@ export function explainMessagePriority(customerText: string | null): PriorityRea
  * How urgently one customer message needs handling, or null when nothing in it
  * says.
  *
- * NULL IS NOT LOW. A message nothing recognises is unranked, and the interface
- * must render that as no priority established rather than as the least urgent
- * thing in the inbox — a conversation nobody could read is not a conversation
- * that can wait.
+ * NULL IS NOT LOW, and it is not the inbox's answer either. A single message
+ * nothing recognises is unranked HERE, at message level, because that is what
+ * was read. The inbox shows conversations rather than messages, and a readable
+ * conversation the rules cannot place falls back to MEDIUM one level up — see
+ * `explainConversationPriority`. Keeping the two apart is what lets a thread's
+ * closing "all sorted" still win over an unplaceable message beside it.
  */
 export function classifyMessagePriority(customerText: string | null): MessagePriority | null {
   return explainMessagePriority(customerText).priority;
@@ -535,6 +553,55 @@ export function classifyMessagePriority(customerText: string | null): MessagePri
 /* ------------------------------------------------------------------------- *
  * READING A CONVERSATION
  * ------------------------------------------------------------------------- */
+
+/**
+ * Whether a stored body is customer text at all, as opposed to an absence.
+ *
+ * THE ONLY THING THAT SEPARATES "unranked" FROM "ranked MEDIUM" BELOW, so it is
+ * deliberately the narrowest possible test: a body that is null, missing, or
+ * nothing but whitespace is not a message somebody wrote, it is a message whose
+ * content did not survive. Everything else — including text no rule in this
+ * module recognises — is a customer having written something, which is exactly
+ * the case the fallback exists for.
+ *
+ * It is the SAME readability test `explainMessagePriority` applies at its first
+ * line, and the same one `conversation-repository.ts` uses to decide whether a
+ * conversation has readable customer text for its category. One definition of
+ * "readable", so the ribbon and the chip can never disagree about whether a
+ * conversation was legible.
+ */
+function isReadableCustomerText(text: string | null): boolean {
+  return (text?.trim() ?? "") !== "";
+}
+
+/**
+ * The neutral operational fallback: a genuine, readable customer conversation
+ * that none of the specific rules could place.
+ *
+ * WHY MEDIUM AND NOT null. Null was the right answer while this module's job was
+ * "report what you read". It is the wrong answer for an inbox: measured against
+ * the live store, 4,582 of 9,445 readable customer conversations — 48% — came
+ * back unranked, so half the reply inbox wore no ribbon at all. A reviewer
+ * cannot triage by a signal that is missing from half the rows, and a blank
+ * there does not read as "unknown", it reads as "nothing here".
+ *
+ * WHY NOT LOW. Green is a claim that this can wait, and nothing in a message the
+ * rules could not read supports that claim. Defaulting the unknown to the
+ * quietest level is how a real cancellation ends up at the bottom of a queue.
+ *
+ * WHY NOT HIGH. Red is a claim that this cannot wait, and 4,582 red rows is the
+ * same failure from the other end: a level everything wears is a level that
+ * says nothing.
+ *
+ * MEDIUM is the only level that adds no claim of its own — "somebody has to
+ * work this, on the ordinary queue" — which is precisely what is known about a
+ * customer conversation whose specifics are not established.
+ */
+const UNCLASSIFIED_CUSTOMER_CONVERSATION: PriorityReading = {
+  priority: "MEDIUM",
+  reasons: ["customer_conversation_unclassified"],
+  closesTheCase: false,
+};
 
 /**
  * How urgently a conversation needs handling, from its customer messages.
@@ -557,13 +624,29 @@ export function classifyMessagePriority(customerText: string | null): MessagePri
  * OUR OWN REPLIES ARE NOT AN INPUT. The parameter is customer messages; a
  * caller must filter before calling, or it would be grading our urgency rather
  * than the customer's.
+ *
+ * A READABLE CONVERSATION IS ALWAYS RANKED. Where the loop below establishes
+ * nothing but the customer did write something, the thread falls back to MEDIUM
+ * rather than to null — see `UNCLASSIFIED_CUSTOMER_CONVERSATION`. This is the
+ * ONLY place that fallback is applied, and it is deliberately not in
+ * `explainMessagePriority`: one unplaceable message inside a thread must stay
+ * unplaceable, or a message that says nothing would out-rank a sibling that says
+ * "thanks, all sorted" and hold the whole conversation at MEDIUM forever.
+ *
+ * NULL SURVIVES FOR AN ABSENCE, and only for one: an empty thread, or one whose
+ * every stored body is null or blank. Those are the conversations the rest of
+ * the application already treats as having no readable customer content, and
+ * inventing an urgency for a message nobody can read would be a claim about
+ * text that is not there.
  */
 export function explainConversationPriority(
   customerMessages: readonly (string | null)[],
 ): PriorityReading {
   let best: PriorityReading = { priority: null, reasons: [], closesTheCase: false };
+  let sawReadableCustomerText = false;
 
   for (const text of customerMessages) {
+    if (isReadableCustomerText(text)) sawReadableCustomerText = true;
     const reading = explainMessagePriority(text);
 
     // A customer closing the case clears what came before it. `closesTheCase`
@@ -580,9 +663,20 @@ export function explainConversationPriority(
     if (best.priority === null || RANK[reading.priority] > RANK[best.priority]) best = reading;
   }
 
+  if (best.priority === null && sawReadableCustomerText) {
+    return UNCLASSIFIED_CUSTOMER_CONVERSATION;
+  }
+
   return best;
 }
 
+/**
+ * How urgently a conversation needs handling.
+ *
+ * NEVER NULL FOR A CONVERSATION CARRYING READABLE CUSTOMER TEXT — that is the
+ * guarantee the inbox ribbon depends on, and the only null left is the one that
+ * means "no customer message here to read". See `explainConversationPriority`.
+ */
 export function classifyConversationPriority(
   customerMessages: readonly (string | null)[],
 ): MessagePriority | null {

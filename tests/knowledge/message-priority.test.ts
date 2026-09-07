@@ -1,7 +1,14 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { CST_CATEGORY_CORPUS } from "@/lib/knowledge/cst-corpus-match";
-import { classifyConversationCategory, classifyMessageCategory } from "@/lib/knowledge/message-category";
+import {
+  classifyConversationCategory,
+  classifyMessageCategory,
+  semanticsOf,
+} from "@/lib/knowledge/message-category";
 import {
   MESSAGE_PRIORITIES,
   PRIORITY_CORPUS_STATS,
@@ -500,10 +507,15 @@ describe("a conversation is ranked on its current issue", () => {
     expect(classifyConversationPriority([null, "Where is my parcel?", null])).toBe("MEDIUM");
   });
 
+  /**
+   * NULL SURVIVES ONLY FOR AN ABSENCE. A thread with no message in it, and one
+   * whose every stored body is null or blank, are the two things the engine was
+   * given nothing to read — the fallback below deliberately does not reach them.
+   */
   it("returns null for a thread with nothing in it", () => {
     expect(classifyConversationPriority([])).toBeNull();
     expect(classifyConversationPriority([null, null])).toBeNull();
-    expect(classifyConversationPriority(["Hello.", "asdf"])).toBeNull();
+    expect(classifyConversationPriority(["", "   ", null])).toBeNull();
   });
 
   it("explains the thread with the reasons that decided it", () => {
@@ -513,6 +525,169 @@ describe("a conversation is ranked on its current issue", () => {
     ]);
     expect(reading.priority).toBe("HIGH");
     expect(reading.reasons).toContain("customer_urgency");
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE FALLBACK
+ * ------------------------------------------------------------------------- */
+
+/**
+ * EVERY READABLE CUSTOMER CONVERSATION RANKS.
+ *
+ * Measured against the live store before this rule existed, 4,582 of 9,445
+ * readable customer conversations — 48% — came back null, so half the reply
+ * inbox wore no ribbon. The specific rules above are unchanged; what changed is
+ * what happens when none of them fires on a conversation somebody actually
+ * wrote.
+ */
+describe("a readable customer conversation is never unranked", () => {
+  /**
+   * The shapes the diagnostic found behind the unranked half, reproduced as
+   * synthetic text. Each one is an ordinary sentence a customer might send that
+   * names no event, requests no action `semanticsOf` has a word for, and reaches
+   * no phrase in the strict category table.
+   */
+  const UNPLACEABLE = [
+    "Hello.",
+    "Hi there.",
+    "What happens next?",
+    "Just checking in on this.",
+    "Please let me know.",
+    "I have just moved house recently.",
+    "That is fine by me.",
+    "asdf qwerty",
+    "...",
+  ] as const;
+
+  /** 1, 2. */
+  it("gives every unplaceable customer conversation a level", () => {
+    for (const text of UNPLACEABLE) {
+      expect(classifyConversationPriority([text]), text).not.toBeNull();
+      expect(MESSAGE_PRIORITIES, text).toContain(classifyConversationPriority([text]));
+    }
+  });
+
+  /** 6. The neutral operational fallback, stated as a level and as a reason. */
+  it("falls back to MEDIUM, and says so", () => {
+    for (const text of UNPLACEABLE) {
+      expect(classifyConversationPriority([text]), text).toBe("MEDIUM");
+      expect(explainConversationPriority([text]).reasons, text).toEqual([
+        "customer_conversation_unclassified",
+      ]);
+    }
+  });
+
+  /**
+   * NOT LOW, AND NOT HIGH. Green claims it can wait and red claims it cannot;
+   * a conversation the rules could not read supports neither claim.
+   */
+  it("never defaults the unknown to LOW or to HIGH", () => {
+    for (const text of UNPLACEABLE) {
+      expect(classifyConversationPriority([text]), text).not.toBe("LOW");
+      expect(classifyConversationPriority([text]), text).not.toBe("HIGH");
+    }
+  });
+
+  /**
+   * 7. THE FALLBACK REACHES NOTHING THE ENGINE WAS NOT GIVEN. An empty thread
+   * and one whose every stored body is null or blank are absences, not
+   * conversations — the application already suppresses classification for both,
+   * and inventing an urgency for a message nobody can read would be a claim
+   * about text that is not there.
+   */
+  it("does not invent a level where there is no customer text to read", () => {
+    expect(classifyConversationPriority([])).toBeNull();
+    expect(classifyConversationPriority([null])).toBeNull();
+    expect(classifyConversationPriority([null, null])).toBeNull();
+    expect(classifyConversationPriority([""])).toBeNull();
+    expect(classifyConversationPriority(["", "   ", "\n\t", null])).toBeNull();
+  });
+
+  /**
+   * THE FALLBACK IS LAST, NEVER FIRST. It only applies where nothing else did,
+   * so no existing answer moves — a specific rule always beats it.
+   */
+  it("yields to every rule that does fire", () => {
+    expect(classifyConversationPriority(["Please cancel my order.", "Hello."])).toBe("HIGH");
+    expect(classifyConversationPriority(["Hello.", "The item arrived damaged."])).toBe("MEDIUM");
+    expect(classifyConversationPriority(["Hello.", "Is this light dimmable?"])).toBe("LOW");
+  });
+
+  /**
+   * A CLOSING MESSAGE STILL CLEARS THE THREAD. `closesTheCase` resets the
+   * reading to LOW, and the fallback must not then overwrite it back to MEDIUM —
+   * the customer said it was sorted, which is a reading, not an absence.
+   */
+  it("leaves a closed case at LOW", () => {
+    expect(classifyConversationPriority(["Hello.", "Thank you, all sorted now."])).toBe("LOW");
+    expect(
+      classifyConversationPriority([
+        "My electrician is coming on Friday and I need this urgently.",
+        "Thank you, all sorted now.",
+      ]),
+    ).toBe("LOW");
+  });
+
+  /**
+   * MESSAGE LEVEL IS UNTOUCHED. One unplaceable message stays unplaceable —
+   * the fallback is a fact about a conversation, and putting it a level lower
+   * would let a message saying nothing out-rank a sibling saying "all sorted".
+   */
+  it("changes nothing about reading a single message", () => {
+    for (const text of UNPLACEABLE) {
+      expect(classifyMessagePriority(text), text).toBeNull();
+      expect(explainMessagePriority(text).reasons, text).toEqual([]);
+    }
+  });
+
+  /**
+   * 8. THE THREE REPORTED CASES, COVERED BY GENERAL LOGIC.
+   *
+   * Read-only inspection of the live store found all three unranked for one
+   * reason and one only: readable eBay customer text on which the strict phrase
+   * table named no case area and the semantic layer named no event and no
+   * requested action — classifier fall-through, not anything about who sent it.
+   * The stand-ins below carry those exact semantic profiles.
+   *
+   * No handle, counterparty or marketplace appears in the engine, which is what
+   * makes the coverage general rather than three special cases.
+   */
+  it("covers the reported profiles without knowing whose they were", () => {
+    const REPORTED_PROFILES = [
+      // question / unknown / none / none, strict category null
+      "What happens next?",
+      // assertion / unknown / none / none, strict category null
+      "I have just moved house recently.",
+      // request / unknown / none / none, strict category null
+      "Please let me know.",
+    ];
+    for (const text of REPORTED_PROFILES) {
+      const semantics = semanticsOf(text);
+      // The measured cause, asserted rather than described.
+      expect(classifyMessageCategory(text), text).toBeNull();
+      expect(semantics.event, text).toBe("none");
+      expect(semantics.requestedAction, text).toBe("none");
+      // ...and the conversation ranks anyway.
+      expect(classifyConversationPriority([text]), text).toBe("MEDIUM");
+    }
+
+    // Prose stripped: the module's comments discuss marketplace cases and who
+    // is handling what, and this is an assertion about the CODE.
+    const engine = readFileSync(
+      join(__dirname, "..", "..", "lib", "knowledge", "message-priority.ts"),
+      "utf8",
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    for (const handle of ["3035simon", "menander58", "krystalkrazi"]) {
+      expect(engine, handle).not.toContain(handle);
+    }
+    // Nothing about the sender reaches this module at all: it takes text.
+    expect(engine).not.toMatch(/counterparty|username|senderId|customerId/i);
+    // And its two entry points take customer text, nothing else.
+    expect(classifyConversationPriority.length).toBe(1);
+    expect(classifyMessagePriority.length).toBe(1);
   });
 });
 

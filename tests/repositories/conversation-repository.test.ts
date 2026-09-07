@@ -729,14 +729,41 @@ describe("inbox priority", () => {
   });
 
   /**
-   * NULL SURVIVES THE WHOLE PATH. The classifier refuses to rank what it cannot
-   * read, and nothing between it and the browser is allowed to turn that refusal
-   * into "LOW" — a conversation nobody could read is not one that can wait.
+   * EVERY READABLE CUSTOMER CONVERSATION REACHES THE INBOX RANKED. A genuine
+   * enquiry the specific rules cannot place is MEDIUM — the neutral "somebody
+   * has to work this" level — rather than arriving blank, so a reply-inbox row
+   * always carries a ribbon.
    */
-  it("carries an unreadable conversation through as null, never LOW", async () => {
-    for (const texts of [["Hello."], ["asdf qwerty"], [""], [null]]) {
+  it("carries a conversation no rule can place through as MEDIUM", async () => {
+    for (const texts of [["Hello."], ["asdf qwerty"], ["What happens next?"], ["Please let me know."]]) {
+      const { item } = await listed(texts);
+      expect(item.priority, JSON.stringify(texts)).toBe("MEDIUM");
+    }
+  });
+
+  /**
+   * NULL SURVIVES THE WHOLE PATH FOR AN ABSENCE, and only for one. Where every
+   * stored body arrived empty there is no customer text to read, and nothing
+   * between the classifier and the browser is allowed to turn that into "LOW" —
+   * a conversation nobody could read is not one that can wait.
+   */
+  it("carries a conversation with nothing readable in it through as null", async () => {
+    for (const texts of [[""], [null], ["", "   ", null]]) {
       const { item } = await listed(texts);
       expect(item.priority, JSON.stringify(texts)).toBeNull();
+    }
+  });
+
+  /**
+   * THE FALLBACK IS NOT A CATEGORY DECISION. A conversation ranked MEDIUM by it
+   * keeps whatever category the classifier gave it, including none — the two
+   * readings stay independent.
+   */
+  it("leaves the category alone when the fallback supplies the level", async () => {
+    for (const text of ["Hello.", "asdf qwerty", "What happens next?"]) {
+      const { item } = await listed([text]);
+      expect(item.priority, text).toBe("MEDIUM");
+      expect(item.category, text).toBe(classifyConversationCategory([text]));
     }
   });
 
@@ -774,6 +801,26 @@ describe("inbox priority", () => {
     expect(page.items[0]!.priority).toBeNull();
     expect(page.items[0]!.category).toBeNull();
     expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * 7. THE FALLBACK MUST NOT WALK PAST THE SUPPRESSION GATE. A suppressed
+   * marketplace's stored text is boilerplate and email transport headers, which
+   * is exactly the shape no rule can place — so the level a blank used to say
+   * "not classified" is the level the fallback would now hand it. It is
+   * suppressed before the engine is called at all, and stays blank.
+   */
+  it("keeps suppressed marketplaces blank even for text no rule can place", async () => {
+    for (const marketplace of ["bandq", "temu"] as const) {
+      for (const text of ["Hello.", "asdf qwerty", "Please let me know."]) {
+        const { client } = fake([
+          [conversationRow({ marketplace, inbound_texts: [text], inbound_count: 1 })],
+        ]);
+        const page = await listConversations(client, { marketplace });
+        expect(page.items[0]!.priority, `${marketplace}/${text}`).toBeNull();
+        expect(page.items[0]!.category, `${marketplace}/${text}`).toBeNull();
+      }
+    }
   });
 
   /** 9. No extra round trip. */

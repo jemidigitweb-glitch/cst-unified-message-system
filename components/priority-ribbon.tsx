@@ -35,9 +35,9 @@ export const PRIORITY_RIBBON_CLASS: Readonly<Record<MessagePriority, string>> = 
 };
 
 /**
- * How a priority is said in English, for the dropdown and for the ribbon's
- * accessible name. One table, so the filter and the marker can never disagree
- * about what to call the same level.
+ * How a priority is said in English, for the filter control and for the
+ * ribbon's accessible name. One table, so the filter and the marker can never
+ * disagree about what to call the same level.
  */
 export const PRIORITY_LABEL: Readonly<Record<MessagePriority, string>> = {
   HIGH: "High",
@@ -73,11 +73,16 @@ const RIBBON_SHAPE =
 /**
  * Renders NOTHING when no priority was established.
  *
- * An unranked conversation gets no ribbon at all — never a green one. Green is
- * a claim that this can wait, and the engine returning null means it could not
- * read the conversation well enough to make any claim. A message nobody could
- * read is not a message that can wait, and colouring it as though it were is
- * the one way this marker could actively mislead.
+ * WHICH IS NOW RARE, AND MEANS SOMETHING NARROWER. Every conversation carrying
+ * readable customer text ranks — an enquiry the specific rules cannot place
+ * falls back to MEDIUM — so an ordinary reply-inbox row always wears a ribbon.
+ * Null is left for a conversation with nothing to read: a suppressed
+ * marketplace, no inbound message, or every stored body empty.
+ *
+ * Those still get no ribbon at all, and never a green one. Green is a claim that
+ * this can wait, and null means there was no customer text to make any claim
+ * about. A message nobody could read is not a message that can wait, and
+ * colouring it as though it were is the one way this marker could mislead.
  */
 export function PriorityRibbon({ priority }: { priority: MessagePriority | null }) {
   if (priority === null) return null;

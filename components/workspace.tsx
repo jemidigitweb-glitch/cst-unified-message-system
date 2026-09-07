@@ -24,8 +24,7 @@ import {
   type PriorityFilter,
 } from "./inbox-list";
 import { MESSAGE_CATEGORIES } from "@/lib/knowledge/message-category";
-import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
-import { PRIORITY_LABEL } from "./priority-ribbon";
+import { PriorityFilterControl } from "./priority-filter";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
@@ -506,23 +505,15 @@ export function Workspace() {
               * delivery queries that are urgent" is a single thought, and the
               * two controls that express it belong together.
               *
-              * Narrower than the category select: its longest option is
-              * "All priorities", not "Order change, before shipping queries".
+              * NOT A SECOND SELECT. This one was a dropdown too, and a dropdown
+              * could not show what the levels are: the four options were hidden
+              * behind a click and the colour identifying each one appeared
+              * nowhere, so nothing on screen connected "High" to the red mark on
+              * a row. Laid flat it is the ribbon's legend as well as its filter.
+              * The control's own layout lives in `PriorityFilterControl`.
               */}
             {view === "inbox" && (
-              <select
-                aria-label="Filter by priority"
-                value={priorityFilter}
-                onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)}
-                className="mb-1.5 max-w-[8rem] shrink-0 truncate rounded-md border border-black/10 bg-transparent px-1.5 py-1 text-xs font-medium dark:border-white/15"
-              >
-                <option value={ALL_PRIORITIES}>All priorities</option>
-                {MESSAGE_PRIORITIES.map((priority) => (
-                  <option key={priority} value={priority}>
-                    {PRIORITY_LABEL[priority]}
-                  </option>
-                ))}
-              </select>
+              <PriorityFilterControl value={priorityFilter} onChange={setPriorityFilter} />
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1">

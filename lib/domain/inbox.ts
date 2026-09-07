@@ -69,12 +69,17 @@ export const inboxItemSchema = z.object({
    * both admin work and rank differently; a recall and a cancellation rank the
    * same and are nothing alike.
    *
-   * NULL IS NOT "LOW". Null means no urgency was established — the classifier
-   * refuses to guess rather than ranking a conversation it cannot read. An
-   * interface must render that as no priority shown, never as the least urgent
-   * thing in the inbox: a conversation nobody could read is not one that can
-   * wait. Null is also what a marketplace whose stored text is known to carry
-   * non-customer content gets, for the same reason its category is suppressed.
+   * NON-NULL FOR EVERY CONVERSATION CARRYING READABLE CUSTOMER TEXT. An
+   * ordinary enquiry the specific rules cannot place ranks MEDIUM — the neutral
+   * "somebody has to work this" level — rather than arriving blank, so a genuine
+   * reply-inbox row always shows a ribbon.
+   *
+   * NULL IS NOT "LOW", AND NOW MEANS ONLY "NOTHING TO READ": a marketplace whose
+   * stored text is known to carry non-customer content (suppressed for exactly
+   * the reason its category is), a conversation with no inbound message, or one
+   * whose every stored body arrived empty. An interface must render that as no
+   * priority shown, never as the least urgent thing in the inbox — a
+   * conversation nobody could read is not one that can wait.
    */
   priority: z.enum(MESSAGE_PRIORITIES).nullable(),
 });

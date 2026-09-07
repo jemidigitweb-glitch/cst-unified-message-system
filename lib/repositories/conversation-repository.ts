@@ -402,6 +402,22 @@ function categoryFor(row: ConversationRow): MessageCategory | null {
  * see `CATEGORY_SUPPRESSED_MARKETPLACES`. Ranking that would not produce a
  * blank, it would produce confident HIGHs off supplier marketing that happens
  * to say "urgent". The constant is read here, never modified.
+ *
+ * WHAT IS LEFT BLANK, AND ONLY WHAT. Past those two gates the engine now ranks
+ * every conversation carrying readable customer text — an ordinary enquiry the
+ * specific rules cannot place falls back to MEDIUM rather than to null, so a
+ * genuine reply-inbox row always wears a ribbon. Three cases still come back
+ * null, and each is an absence rather than a judgement:
+ *
+ *   1. A SUPPRESSED MARKETPLACE, above.
+ *   2. NO PER-MESSAGE ARRAY. `GET_CONVERSATION` selects neither text column, and
+ *      a conversation with no inbound row at all aggregates to SQL NULL. Neither
+ *      is a conversation this function was given anything to read.
+ *   3. AN ARRAY WITH NO READABLE TEXT IN IT — every inbound body stored empty,
+ *      the 97 threads `categoryFor` step 3 describes. The engine's own
+ *      readability test declines these, and that suppression is deliberate: an
+ *      urgency invented for a message nobody can read is a claim about text that
+ *      is not there. They keep `UNREADABLE_CONTENT_CATEGORY` and no ribbon.
  */
 function priorityFor(row: ConversationRow): MessagePriority | null {
   if (CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)) return null;

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -11,8 +11,14 @@ import {
   visibleConversations,
 } from "@/components/inbox-list";
 import {
+  ALL_PRIORITIES_SWATCH_CLASS,
+  PRIORITY_FILTER_OPTIONS,
+  PriorityFilterControl,
+} from "@/components/priority-filter";
+import {
   PRIORITY_LABEL,
   PRIORITY_RIBBON_CLASS,
+  PriorityRibbon,
   priorityDescription,
 } from "@/components/priority-ribbon";
 import type { InboxItem } from "@/lib/domain/inbox";
@@ -42,6 +48,7 @@ const read = (...p: string[]) => readFileSync(join(ROOT, ...p), "utf8");
 const stripComments = (source: string) =>
   source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 const ribbon = stripComments(read("components", "priority-ribbon.tsx"));
+const priorityFilterSource = stripComments(read("components", "priority-filter.tsx"));
 const inboxList = stripComments(read("components", "inbox-list.tsx"));
 const workspace = stripComments(read("components", "workspace.tsx"));
 
@@ -213,24 +220,162 @@ describe("the ribbon hangs off the right edge of the row", () => {
 });
 
 /* ------------------------------------------------------------------------- *
- * THE DROPDOWN
+ * EVERY RANKED ROW WEARS ONE
  * ------------------------------------------------------------------------- */
 
-describe("the priority filter is a dropdown beside the category one", () => {
-  /** 8. */
-  it("offers All, High, Medium and Low", () => {
-    expect(workspace).toContain('aria-label="Filter by priority"');
-    expect(workspace).toContain("All priorities");
-    expect(workspace).toContain("MESSAGE_PRIORITIES.map");
-    expect(workspace).toContain("PRIORITY_LABEL[priority]");
+/**
+ * The engine now ranks every conversation carrying readable customer text, so
+ * the ribbon has to appear for every one of them. Asserted by CALLING the
+ * component: it is a plain function of its props, and its return value is an
+ * element or null — which is exactly the question here, and needs no DOM.
+ */
+describe("the ribbon appears on every ranked row", () => {
+  /** 9. */
+  it("renders a marker for each of the three levels", () => {
+    for (const priority of MESSAGE_PRIORITIES) {
+      const element = PriorityRibbon({ priority });
+      expect(element, priority).not.toBeNull();
+      const className = String(
+        (element as { props: { className: unknown } }).props.className,
+      );
+      expect(className, priority).toContain(PRIORITY_RIBBON_CLASS[priority]);
+    }
+  });
+
+  /** Still nothing where there was no customer text to read. */
+  it("renders nothing only where no priority was established", () => {
+    expect(PriorityRibbon({ priority: null })).toBeNull();
+  });
+
+  /**
+   * THE ROW RENDERS IT UNCONDITIONALLY, passing whatever the item carries —
+   * there is no branch in the list that could skip a ranked row's marker.
+   */
+  it("is rendered by the row for whatever the item carries", () => {
+    expect(inboxList).toContain("<PriorityRibbon priority={item.priority} />");
+    // Not behind a condition of the row's own.
+    expect(inboxList).not.toMatch(/\{[^}]*&&\s*<PriorityRibbon/);
+  });
+
+  /**
+   * COLOUR ONLY, in the row. The selector below carries words; the marker on a
+   * row must not, or the list becomes a wall of text again.
+   */
+  it("still puts no HIGH/MEDIUM/LOW text inside the row marker", () => {
+    expect(ribbon).not.toMatch(/>\s*(?:HIGH|MEDIUM|LOW|High|Medium|Low)\s*</);
+    expect(inboxList).not.toContain("PRIORITY_LABEL");
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE SELECTOR
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Walks a returned element tree into a flat list of elements and text nodes.
+ *
+ * The components under test are plain functions of their props, so the tree they
+ * return can be read directly. This suite configures no DOM and does not need
+ * one to answer "what does this control offer".
+ */
+type Element = { type: unknown; props: Record<string, unknown> };
+function flatten(node: unknown, out: (Element | string)[] = []): (Element | string)[] {
+  if (node === null || node === undefined || node === false || node === true) return out;
+  if (Array.isArray(node)) {
+    for (const child of node) flatten(child, out);
+    return out;
+  }
+  if (typeof node === "object" && "props" in (node as Element)) {
+    const element = node as Element;
+    out.push(element);
+    flatten(element.props.children, out);
+    return out;
+  }
+  out.push(String(node));
+  return out;
+}
+
+describe("the priority filter is a horizontal selector, not a dropdown", () => {
+  const rendered = flatten(PriorityFilterControl({ value: ALL_PRIORITIES, onChange: () => {} }));
+  const text = rendered.filter((node): node is string => typeof node === "string");
+  const options = rendered.filter(
+    (node): node is Element => typeof node !== "string" && node.props.role === "radio",
+  );
+
+  /** 10. */
+  it("shows the label and all four choices, in order", () => {
+    expect(text).toContain("Priority:");
+    expect(options.map((option) => option.props.children)).toBeDefined();
+    expect(PRIORITY_FILTER_OPTIONS.map((option) => option.label)).toEqual([
+      "All",
+      "High",
+      "Medium",
+      "Low",
+    ]);
+    expect(text.filter((word) => ["All", "High", "Medium", "Low"].includes(word))).toEqual([
+      "All",
+      "High",
+      "Medium",
+      "Low",
+    ]);
     expect(PRIORITY_LABEL).toEqual({ HIGH: "High", MEDIUM: "Medium", LOW: "Low" });
   });
 
-  it("is a select, not buttons, chips or tabs", () => {
-    const control = workspace.slice(workspace.indexOf('aria-label="Filter by priority"'));
-    expect(control.slice(0, 400)).not.toMatch(/role="tab"|<button/);
-    const before = workspace.lastIndexOf("<select", workspace.indexOf('aria-label="Filter by priority"'));
-    expect(before).toBeGreaterThan(-1);
+  /** 11. */
+  it("leaves no priority <select> anywhere", () => {
+    expect(priorityFilterSource).not.toMatch(/<select|<option/);
+    // The one select left in the header is the category filter, untouched.
+    expect(workspace.match(/<select/g) ?? []).toHaveLength(1);
+    expect(workspace).toContain('aria-label="Filter by category"');
+    expect(workspace).not.toContain("All priorities");
+    // Nothing anywhere still builds priority <option>s.
+    expect(workspace).not.toMatch(/MESSAGE_PRIORITIES\.map/);
+  });
+
+  /** It is buttons in a row, and exactly one of them is on at a time. */
+  it("is a single-choice control", () => {
+    expect(options).toHaveLength(4);
+    for (const option of options) expect(option.type).toBe("button");
+    const checked = (value: PriorityFilter) =>
+      flatten(PriorityFilterControl({ value, onChange: () => {} }))
+        .filter((node): node is Element => typeof node !== "string")
+        .filter((node) => node.props["aria-checked"] === true);
+    for (const value of [ALL_PRIORITIES, ...MESSAGE_PRIORITIES] as PriorityFilter[]) {
+      expect(checked(value), value).toHaveLength(1);
+    }
+  });
+
+  it("names itself for a screen reader, as the dropdown did", () => {
+    const group = rendered.find(
+      (node): node is Element => typeof node !== "string" && node.props.role === "radiogroup",
+    );
+    expect(group?.props["aria-label"]).toBe("Filter by priority");
+  });
+
+  /**
+   * THE COLOURS ARE THE ROW'S OWN. The control is the ribbon's legend, so a
+   * level's swatch here must be the identical class the marker wears there.
+   */
+  it("wears the same colour for a level as the row ribbon does", () => {
+    for (const priority of MESSAGE_PRIORITIES) {
+      const option = PRIORITY_FILTER_OPTIONS.find((entry) => entry.value === priority);
+      expect(option?.swatchClass, priority).toBe(PRIORITY_RIBBON_CLASS[priority]);
+    }
+  });
+
+  /** All is not a level, so it is grey — never one of the three signal colours. */
+  it("gives All a neutral swatch outside the traffic light", () => {
+    expect(ALL_PRIORITIES_SWATCH_CLASS).toMatch(/\bbg-(?:slate|gray|grey|zinc|neutral|stone)-/);
+    expect(Object.values(PRIORITY_RIBBON_CLASS)).not.toContain(ALL_PRIORITIES_SWATCH_CLASS);
+  });
+
+  /** The swatch is the row's ribbon stood on its end: taller than it is wide. */
+  it("draws the ribbon top-to-bottom", () => {
+    const shape = /"(h-[\d.]+ w-[\d.]+[^"]*clip-path[^"]*)"/.exec(priorityFilterSource)?.[1] ?? "";
+    expect(shape).toContain("clip-path");
+    const height = Number(/\bh-([\d.]+)\b/.exec(shape)?.[1]);
+    const width = Number(/\bw-([\d.]+)\b/.exec(shape)?.[1]);
+    expect(height).toBeGreaterThan(width);
   });
 
   it("sits in the same control group as the marketplace and category controls", () => {
@@ -240,20 +385,19 @@ describe("the priority filter is a dropdown beside the category one", () => {
     );
     expect(group).toContain("<MarketplaceTabs");
     expect(group).toContain('aria-label="Filter by category"');
-    expect(group).toContain('aria-label="Filter by priority"');
+    expect(group).toContain("<PriorityFilterControl");
   });
 
   it("appears only on the inbox view, where there is a list to narrow", () => {
-    const at = workspace.indexOf('aria-label="Filter by priority"');
+    const at = workspace.indexOf("<PriorityFilterControl");
     expect(workspace.lastIndexOf('view === "inbox" &&', at)).toBeGreaterThan(-1);
   });
 
   it("cannot push the header wide on a small screen", () => {
-    const control = workspace.slice(workspace.indexOf('aria-label="Filter by priority"'));
-    const className = /className="([^"]+)"/.exec(control)?.[1] ?? "";
-    expect(className).toContain("shrink-0");
-    expect(className).toMatch(/max-w-\[/);
-    expect(className).toContain("truncate");
+    expect(priorityFilterSource).toMatch(/shrink-0/);
+    expect(priorityFilterSource).toContain("whitespace-nowrap");
+    // Compact: the type is smaller than the header's own, as the selects were.
+    expect(priorityFilterSource).toMatch(/text-\[11px\]/);
   });
 });
 
@@ -400,5 +544,63 @@ describe("narrowing the list fetches nothing", () => {
 
   it("reads the priority already on the loaded item", () => {
     expect(inboxList).toContain("item.priority");
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * WHAT PRIORITY IS NOT ALLOWED TO REACH
+ * ------------------------------------------------------------------------- */
+
+/**
+ * 17. THE ENGINE IS A READ-PATH DISPLAY CONCERN AND NOTHING ELSE.
+ *
+ * A ribbon that could change what the model is told, which state a conversation
+ * is in, or what the sync writes would be a business rule wearing a filter's
+ * clothes. Asserted by reading every source file under the paths that own those
+ * behaviours: none of them may import the module at all.
+ */
+describe("priority reaches no other feature", () => {
+  const FORBIDDEN_TO_IMPORT_IT = ["lib/ai", "lib/sync", "lib/tracking", "lib/context", "prompts"];
+
+  const sources = (dir: string): string[] => {
+    const path = join(ROOT, dir);
+    if (!existsSync(path)) return [];
+    return readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory()
+        ? sources(join(dir, entry.name))
+        : /\.(ts|tsx|mjs)$/.test(entry.name)
+          ? [join(dir, entry.name)]
+          : [],
+    );
+  };
+
+  it("is imported by nothing in the AI, sync, tracking or context paths", () => {
+    const offenders = FORBIDDEN_TO_IMPORT_IT.flatMap(sources).filter((file) =>
+      read(file).includes("knowledge/message-priority"),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * The workflow's own module knows nothing about urgency either — a level must
+   * never decide which state a conversation may move to next.
+   */
+  it("does not reach the workflow state machine", () => {
+    expect(read("lib", "domain", "workflow.ts")).not.toContain("message-priority");
+    expect(read("lib", "domain", "workflow.ts")).not.toMatch(/priority/i);
+  });
+
+  /**
+   * On the read path it is computed beside the category and written nowhere.
+   * The repository issues no write of any kind, and the list query selects no
+   * priority column because there is none to select.
+   */
+  it("is computed on read and stored nowhere", () => {
+    const repository = read("lib", "repositories", "conversation-repository.ts");
+    expect(repository).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|ALTER|CREATE)\b/);
+    // No SQL identifier named priority anywhere in the queries.
+    for (const query of repository.match(/`\nSELECT[\s\S]*?`/g) ?? []) {
+      expect(query.toLowerCase()).not.toContain("priority");
+    }
   });
 });
