@@ -353,9 +353,14 @@ describe("the draft route composes the four sources correctly", () => {
   });
 
   it("guards every lookup separately, so one failure cannot discard the others", () => {
-    // Five resolvers, five independent try/catch blocks.
-    expect(route.match(/console\.error\("\[draft\] [a-z ]+ (context )?resolution failed/g))
-      .toHaveLength(5);
+    // Seven resolvers, seven independent try/catch blocks. The last two are the
+    // reviewer's manual order selection and the same-storefront fallback, both
+    // of which run only where the strict matcher resolved nothing — and, like
+    // the rest, must not be able to take the facts that DID resolve down with
+    // them if the source fails.
+    expect(
+      route.match(/console\.error\("\[draft\] [a-z ]+ (context |order |selection )?resolution failed/g),
+    ).toHaveLength(7);
   });
 
   it("still writes nothing of its own and still cannot send", () => {

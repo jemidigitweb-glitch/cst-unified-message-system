@@ -47,7 +47,12 @@ describe("the order context disclosure", () => {
   it("renders a single order without a disclosure", () => {
     // The non-selectable branch is a plain div with the heading and the list.
     expect(panel).toMatch(/selectable \? \(/);
-    expect(panel).toMatch(/\) : \(\s*<div className="flex flex-col gap-2">\s*<SectionHeading>Order context<\/SectionHeading>/);
+    // The heading is `ORDER_FOR_THIS_MESSAGE_HEADING` since the panel gained a
+    // Related customer orders section — "Order context" no longer said WHICH
+    // orders it meant. The structure it is asserting here is unchanged.
+    expect(panel).toMatch(
+      /\) : \(\s*<div className="flex flex-col gap-2">\s*<SectionHeading>\{ORDER_FOR_THIS_MESSAGE_HEADING\}<\/SectionHeading>/,
+    );
   });
 
   /** 2 and 3. Several candidates get one, and it holds the same list. */

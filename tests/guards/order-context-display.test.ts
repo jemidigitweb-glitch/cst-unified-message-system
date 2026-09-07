@@ -197,9 +197,18 @@ describe("a chosen order grounds one generation, and only if it is real", () => 
 
   it("leaves the resolver untouched and writes nothing", () => {
     expect(resolver).not.toContain("resolveSelectedOrderContext");
-    expect(selected).not.toContain("context-snapshot-repository");
+    // The snapshot is now READ — the manual-selection path gates on
+    // `resolution === "no_order"` so it can never reopen a resolved or
+    // ambiguous conversation. What must stay absent is any WRITE: no save, no
+    // confirmation, no resolution flip. A selection still grounds only the
+    // request that carries it.
+    expect(selected).toContain("getContextSnapshot");
     expect(selected).not.toContain("saveSingleOrderSnapshot");
+    expect(selected).not.toContain("saveNoOrderSnapshot");
+    expect(selected).not.toContain("saveAmbiguousSnapshot");
     expect(selected).not.toContain("verification_method");
+    expect(selected).not.toContain("confirmed_by_user_id");
+    expect(selected).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\b/);
   });
 
   /**

@@ -21,7 +21,29 @@
  * rather than a link to whatever the new format happens to point at.
  */
 
-/** The response of `GET /api/conversations/:id/listing`. */
+/** One variation axis a listing offers, and every option under it. */
+export type ListingVariationView = {
+  readonly name: string;
+  readonly values: readonly string[];
+};
+
+/**
+ * The response of `GET /api/conversations/:id/listing`.
+ *
+ * THE CURRENT LISTING, WHICH IS NOT THE CURRENT ORDER. Everything here is
+ * derived from the conversation's own `listing_item_ref` and storefront, so it
+ * resolves on a conversation that matched no order at all — which is exactly the
+ * conversation a reviewer most needs it on. It says what the customer was
+ * looking at; it says nothing about what they bought.
+ *
+ * NO SKU FIELD, DELIBERATELY. A listing carries many SKUs — one per variant, up
+ * to 24 on live rows — and nothing in an item reference says which one a
+ * customer means. The authoritative SKU lives on an ORDER line
+ * (`order_item_info.item_sku`/`real_sku`), so it is available precisely when an
+ * order matched, and it arrives through the order context that already carries
+ * it. Adding a field here would invite picking one, and picking one arbitrarily
+ * is the failure this contract exists to prevent.
+ */
 export type ListingLinkResponse = {
   readonly conversationId: string;
   /**
@@ -32,6 +54,25 @@ export type ListingLinkResponse = {
    * because they are all the same fact to a reviewer: there is no link to give.
    */
   readonly listingUrl: string | null;
+  /**
+   * The conversation's own item reference, echoed back so the panel renders the
+   * listing block from one payload rather than joining this response to the
+   * conversation by hand. Null where the conversation carries none.
+   */
+  readonly itemRef: string | null;
+  /**
+   * The listing's own title, or null. Null for every case `findListingDetails`
+   * refuses — no parent row on this storefront, several, or a blank title — and
+   * for every non-eBay conversation.
+   */
+  readonly title: string | null;
+  /**
+   * Which options the LISTING offers, never which one this customer chose. A
+   * list of what is sold cannot contradict a record of what was bought, which is
+   * what makes it safe to show beside an order as well as without one. Empty
+   * where nothing resolved.
+   */
+  readonly variations: readonly ListingVariationView[];
 };
 
 /**

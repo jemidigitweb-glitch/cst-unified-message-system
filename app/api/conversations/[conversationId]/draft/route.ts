@@ -6,9 +6,16 @@ import {
   DraftServiceNotConfigured,
   DraftServiceUnavailable,
 } from "@/lib/ai/provider";
+import {
+  fallbackOrderFacts,
+  resolveFallbackCustomerOrder,
+} from "@/lib/context/resolve-fallback-order-context";
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
 import { resolveEbayReturnContext } from "@/lib/context/resolve-return-context";
-import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
+import {
+  resolveManuallySelectedOrderContext,
+  resolveSelectedOrderContext,
+} from "@/lib/context/resolve-selected-order-context";
 import { resolveBundleProductContext } from "@/lib/context/resolve-bundle-product-context";
 import { resolveListingContext } from "@/lib/context/resolve-listing-context";
 import {
@@ -123,6 +130,64 @@ async function verifiedFactsFor(
     }
   }
 
+  /**
+   * MANUAL SELECTION, on a conversation the matcher could not place at all.
+   *
+   * Tried after the ambiguous path and only where that produced nothing, which
+   * is precisely the `no_order` case: an ambiguous conversation's candidates are
+   * non-empty, so its selection resolves above and never reaches this. The
+   * resolver gates on the stored resolution as well, so the two cannot overlap
+   * even if this ordering were ever changed.
+   *
+   * The reviewer has said which order this is, so its order and SHIPMENT facts
+   * take the normal names and may answer a delivery question. Its PRODUCT is
+   * named `customer_order_*` when the order is for a different listing — see
+   * `manualSelectionFacts`, which is where the two products are kept apart.
+   */
+  if (orderFacts.length === 0 && selectedOrderNumber !== null) {
+    try {
+      orderFacts = await resolveManuallySelectedOrderContext(
+        sourcePool,
+        appPool,
+        conversation,
+        selectedOrderNumber,
+      );
+    } catch (cause) {
+      console.error("[draft] manual order selection resolution failed", cause);
+    }
+  }
+
+  /**
+   * LAYER 2, last and least: the one order this buyer has on this storefront,
+   * where the matcher found none and no reviewer picked one.
+   *
+   * SUBORDINATE TWICE OVER. The guard is `orderFacts.length === 0`, so neither
+   * a resolved match nor a reviewer's selection can be replaced or extended by
+   * it; and `resolveFallbackCustomerOrder` refuses again on its own, returning
+   * null for any resolution but `no_order` — so an ambiguous conversation
+   * awaiting a human choice is never answered with a different order.
+   *
+   * FIVE FIELDS, AND ONE OF THEM IS THE DISCLAIMER. `fallbackOrderFacts` states
+   * a number, a date, a status, a storefront and
+   * `customer_order_is_for_this_listing: no`. It carries no SKU, no product
+   * title, no tracking, no carrier and no delivery or refund state, because
+   * every one of those describes a different product or parcel than the message
+   * is about — and `FallbackCustomerOrder` has no field to hold them, so this
+   * cannot start passing them by accident.
+   *
+   * The CURRENT LISTING remains the authoritative product context here:
+   * `listingFacts` below is resolved from the conversation's own item reference
+   * and is unaffected by any of this.
+   */
+  if (orderFacts.length === 0) {
+    try {
+      const fallback = await resolveFallbackCustomerOrder(sourcePool, appPool, conversation);
+      if (fallback !== null) orderFacts = fallbackOrderFacts(fallback);
+    } catch (cause) {
+      console.error("[draft] fallback customer order resolution failed", cause);
+    }
+  }
+
   let returnFacts: VerifiedFact[] = [];
   try {
     returnFacts = await resolveEbayReturnContext(sourcePool, appPool, conversation);
@@ -156,7 +221,25 @@ async function verifiedFactsFor(
    * Guarded separately, like the two above, so a SOT lookup failure cannot
    * discard order or return facts that already resolved.
    */
-  const purchasedSku = orderFacts.find((fact) => fact.name === "sku")?.value ?? null;
+  /**
+   * WHICH PRODUCT'S CATALOGUE TO READ.
+   *
+   * `sku` is the matched order's own SKU. `customer_order_sku` is a
+   * HUMAN-SELECTED order's, named separately so it cannot displace the current
+   * listing's product identity by accident — but for this lookup it is exactly
+   * as authoritative, because a reviewer said this is the order.
+   *
+   * Without the second read the listing-based lookup ran instead, and that
+   * lookup emits a bare `sku` fact of its own: a conversation whose reviewer had
+   * selected a bracket was handed the CABLE's SKU and the cable's dimensions
+   * under the one name the model reads as "the SKU". Resolving by the ordered
+   * SKU is what makes the verified attributes describe the product actually
+   * being asked about.
+   */
+  const purchasedSku =
+    orderFacts.find((fact) => fact.name === "sku")?.value ??
+    orderFacts.find((fact) => fact.name === "customer_order_sku")?.value ??
+    null;
 
   let productFacts: VerifiedFact[] = [];
   try {

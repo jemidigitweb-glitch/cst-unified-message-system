@@ -233,6 +233,113 @@ function usageRule(
   return lines;
 }
 
+/**
+ * The fact that says whether the resolved order is for the listing this message
+ * is attached to. Written by `fallbackOrderFacts`; absent for every conversation
+ * whose order was matched on its own listing, where the question cannot arise.
+ */
+const ORDER_LISTING_RELATIONSHIP = "order_listing_matches_current_message_listing";
+
+/** Provenance: how the order in the ORDER block came to be this conversation's. */
+const ORDER_CONTEXT_SOURCE = "order_context_source";
+const MANUAL_SELECTION = "manual_selected";
+
+/**
+ * The facts describing the product ACTUALLY ORDERED on a selected order.
+ *
+ * They are named `customer_order_*` so they cannot displace the current
+ * listing's `sku`/`product_title` in the draft route, and that naming also files
+ * them into the ORDER block by default. Where a HUMAN selected the order they
+ * belong somewhere else entirely — see `contextBlocks`.
+ */
+const SELECTED_ORDER_PRODUCT_FACTS: ReadonlySet<string> = new Set([
+  "customer_order_product_title",
+  "customer_order_sku",
+  "customer_order_listing_item_id",
+  "customer_order_listing_url",
+]);
+
+/** Whether a human picked the order in the ORDER block. */
+function isHumanSelected(facts: readonly VerifiedFact[]): boolean {
+  return facts.some(
+    (fact) => fact.name === ORDER_CONTEXT_SOURCE && fact.value.trim() === MANUAL_SELECTION,
+  );
+}
+
+/** Whether that order is for a different listing than the message carries. */
+function listingsDiffer(facts: readonly VerifiedFact[]): boolean {
+  const relationship = facts.find((fact) => fact.name === ORDER_LISTING_RELATIONSHIP);
+  return relationship !== undefined && /^\s*no\s*$/i.test(relationship.value);
+}
+
+/**
+ * TWO PRODUCTS ON THE PAGE, AND WHAT THE MODEL MAY DO WITH EACH.
+ *
+ * Emitted only where a layer-2 order was resolved AND it is for a different
+ * listing than the message. That is the one situation in which the prompt
+ * carries two genuine, verified products at once: the listing the customer is
+ * writing about, and the product they actually bought.
+ *
+ * WITHOUT THIS BLOCK THE FACTS ALONE ARE NOT ENOUGH. The order facts sit under a
+ * heading reading VERIFIED CONTEXT — ORDER, and a model reading a real order
+ * number, a real status and a real product title beneath it has every reason to
+ * answer as though that were the order in question. One line of the block saying
+ * `...: no` is a value, not an instruction; this is the instruction.
+ *
+ * IT FORBIDS THE MERGE IN BOTH DIRECTIONS, deliberately. Describing the ordered
+ * product as the one being asked about is the obvious failure; answering a
+ * question about the ORDER using the current listing's specification is the same
+ * error running the other way, and it is just as wrong.
+ *
+ * IT DOES NOT HIDE THE ORDER. The customer is a real customer with a real
+ * purchase, staff can see it, and a reply that refuses to acknowledge it is
+ * worse than one that acknowledges it accurately.
+ */
+export function twoProductsBlock(orderFacts: readonly VerifiedFact[]): string | null {
+  if (!listingsDiffer(orderFacts)) return null;
+  const humanSelected = isHumanSelected(orderFacts);
+
+  const shared = [
+    "RELATIONSHIP BETWEEN THE ORDER ABOVE AND THIS MESSAGE:",
+    `- ${ORDER_LISTING_RELATIONSHIP}: no`,
+    "- The order above is a genuine order belonging to THIS customer. You may acknowledge it and state its number, date and status.",
+    "- The product actually ordered (every `customer_order_*` fact) is a DIFFERENT product from the listing this message is attached to.",
+    "- Do NOT merge their SKUs, titles, specifications, dimensions or prices, and never state one product's detail as though it belonged to the other.",
+  ];
+
+  /**
+   * WHO CHOSE THE ORDER DECIDES WHICH PRODUCT IS THE SUBJECT, and the two cases
+   * need OPPOSITE instructions. Saying the same thing to both is what produced
+   * the defect this branch exists to fix.
+   *
+   * HUMAN-SELECTED. A member of staff looked at this customer's orders and said
+   * it is this one. That is evidence about what the conversation is about, so
+   * the ORDERED product is the subject and the listing on the message is
+   * provenance. Telling the model otherwise here made it answer a question
+   * about a bracket using a cable listing.
+   *
+   * NOT SELECTED. The order was found by the backend on buyer and storefront
+   * alone; nobody has said it is the one being written about, and measured over
+   * 18 months 46% of such orders POST-DATE the message. The listing on the
+   * message is all that is established, so it stays the subject.
+   */
+  if (humanSelected) {
+    return [
+      ...shared,
+      "- A member of CST staff SELECTED this order for this conversation. Treat the ordered product above as the product the customer is asking about, and answer product questions from ITS verified facts.",
+      "- Do NOT identify the product from the listing attached to the message when it conflicts with the selected order. That listing is secondary provenance only — never describe the customer's item by its title, options or specification.",
+      "- If the selected order's verified facts do not answer the question, ask one short clarifying question ABOUT THE SELECTED PRODUCT. Do not invent a dimension, measurement, material or specification for it, and do not answer from the other product instead.",
+      "- Do not read a bare question such as \"how long is it?\" as a question about delivery. Read it as being about the selected product unless the customer's own words, or a verified order or shipment fact, actually raise dispatch, delivery or tracking.",
+    ].join("\n");
+  }
+
+  return [
+    ...shared,
+    "- Do NOT treat the ordered product as the product the customer is asking about, and do NOT treat the listing they are asking about as the thing they ordered.",
+    "- The listing attached to this message is the authoritative product context for the question itself. Use the order for what the order can answer, and the listing for what the listing can answer.",
+  ].join("\n");
+}
+
 export function contextBlocks(request: DraftRequest): string {
   const orderFacts = request.facts.filter((fact) =>
     /order|refund|tracking|delivery/i.test(fact.name),
@@ -242,26 +349,86 @@ export function contextBlocks(request: DraftRequest): string {
     (fact) => !orderFacts.includes(fact) && !returnFacts.includes(fact),
   );
 
+  /**
+   * A HUMAN-SELECTED ORDER CHANGES WHICH PRODUCT IS THE SUBJECT.
+   *
+   * Where a reviewer picked the order and it is for a different listing than the
+   * message carries, two verified products are in the prompt and the ordinary
+   * layout put the WRONG one under the heading the model reads as "the
+   * product": the current listing's title and its catalogue attributes filled
+   * `VERIFIED CONTEXT — PRODUCT/SKU`, while the ordered product sat among the
+   * order facts as `customer_order_*`. Asked "how long is it?", a model given a
+   * fabric-cable listing under PRODUCT and a bracket buried under ORDER answers
+   * about the cable — correctly, from what it was shown.
+   *
+   * So the two swap roles, and ONLY here: the ordered product is promoted into
+   * its own primary block, and the message's listing is retitled as secondary
+   * provenance. Nothing is removed — the listing is still needed for provenance,
+   * mismatch evidence and the genuine cases where it is what the customer means.
+   */
+  const humanSelected = isHumanSelected(request.facts) && listingsDiffer(orderFacts);
+  const selectedOrderProduct = humanSelected
+    ? orderFacts.filter((fact) => SELECTED_ORDER_PRODUCT_FACTS.has(fact.name))
+    : [];
+  const orderOnly = humanSelected
+    ? orderFacts.filter((fact) => !SELECTED_ORDER_PRODUCT_FACTS.has(fact.name))
+    : orderFacts;
+
   const order =
-    orderFacts.length === 0
+    orderOnly.length === 0
       ? "(no order has been resolved and verified for this conversation — you therefore know NO order number, status, date or amount)"
-      : orderFacts.map((fact) => `- ${fact.name}: ${fact.value}`).join("\n");
+      : orderOnly.map((fact) => `- ${fact.name}: ${fact.value}`).join("\n");
+
+  /*
+   * WHERE A SELECTED ORDER SPLITS THE PRODUCT FACTS IN TWO.
+   *
+   * `listing_*` comes from the message's own listing and stays with it. Anything
+   * else in the product set — the catalogue attributes and the `sku` the SOT
+   * lookup emits — was resolved from the ORDERED SKU (see the draft route), so
+   * it describes the selected product and moves to the primary block. Without
+   * the split, the ordered product's own dimensions would be printed beneath a
+   * heading saying they are not what the customer is asking about.
+   */
+  const messageListingFacts = humanSelected
+    ? productFacts.filter((fact) => fact.name.startsWith("listing_"))
+    : productFacts;
+  const orderedProductFacts = humanSelected
+    ? productFacts.filter((fact) => !fact.name.startsWith("listing_"))
+    : [];
 
   const product = [
     request.listingItemRef
       ? `- Marketplace listing reference: ${request.listingItemRef} (this is a listing id, NOT a SKU and NOT a product name — do not describe the product from it)`
       : null,
-    ...productFacts.map((fact) => `- ${fact.name}: ${fact.value}`),
+    ...messageListingFacts.map((fact) => `- ${fact.name}: ${fact.value}`),
   ].filter(Boolean);
 
   const blocks = [
     categoryBlock(request),
     `VERIFIED CONTEXT — ORDER:\n${order}`,
-    `VERIFIED CONTEXT — PRODUCT/SKU:\n${
+    // PRIMARY, and placed before the message's listing so it is read first.
+    // The catalogue attributes join it: with a selected order the SOT lookup is
+    // keyed on the ORDERED SKU, so those specifications describe this product
+    // and belong beside it rather than under the listing they are not about.
+    selectedOrderProduct.length > 0
+      ? [
+          "VERIFIED CONTEXT — PRODUCT ACTUALLY ORDERED (PRIMARY PRODUCT CONTEXT):",
+          ...[...selectedOrderProduct, ...orderedProductFacts].map(
+            (fact) => `- ${fact.name}: ${fact.value}`,
+          ),
+          "This is the product a member of CST staff has confirmed this conversation is about. Identify the product the customer is asking about from THESE facts.",
+        ].join("\n")
+      : null,
+    `${
+      humanSelected
+        ? "VERIFIED CONTEXT — LISTING ATTACHED TO THE MESSAGE (SECONDARY — provenance only, NOT the product the customer is asking about):"
+        : "VERIFIED CONTEXT — PRODUCT/SKU:"
+    }\n${
       product.length === 0
         ? "(no product or SKU has been resolved and verified — you therefore know NO product name, specification or price)"
         : [...product, ...usageRule(productFacts, request.bundle)].join("\n")
     }`,
+    twoProductsBlock(orderFacts),
   ].filter((block): block is string => block !== null);
 
   if (returnFacts.length > 0) {

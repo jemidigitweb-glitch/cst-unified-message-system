@@ -77,7 +77,28 @@ describe("every marketplace gets the same sidebar", () => {
     // reviewer should do, not the raw workflow state name; the guarantee this
     // test protects — one order, every marketplace — is unchanged.
     expect(context.indexOf("Human action needed")).toBeGreaterThan(-1);
-    expect(context.indexOf("Human action needed")).toBeLessThan(context.indexOf(">Context<"));
+    // The single "Context" section became three named ones — Current listing,
+    // Order for this message, Related customer orders — so that a conversation
+    // with no matching order still shows the listing it is about. The ordering
+    // guarantee this test protects is unchanged: the action a reviewer must
+    // take comes first, and the context they need to take it follows.
+    //
+    // Compared on the RENDERED headings, not the constants' declarations: both
+    // are exported from the top of the module, so an index into the raw source
+    // would find `export const CURRENT_LISTING_HEADING` long before the JSX
+    // that uses it and prove nothing about section order.
+    const currentListing = context.indexOf(
+      "<SectionHeading>{CURRENT_LISTING_HEADING}</SectionHeading>",
+    );
+    expect(currentListing).toBeGreaterThan(-1);
+    expect(context.indexOf("Human action needed")).toBeLessThan(currentListing);
+    expect(currentListing).toBeLessThan(context.indexOf("<OrderContextFacts"));
+    // There is no third section: a list of the buyer's other orders was tried
+    // and removed, because a list asks a reviewer to pick and picking is the
+    // judgement nothing here has evidence for. See `FallbackCustomerOrderBlock`,
+    // which renders at most ONE order inside the order section itself.
+    expect(context).not.toContain("<RelatedCustomerOrders");
+    expect(context).not.toContain("Related customer orders");
     // ...and the evidence pane follows it, AI usage before the rules.
     expect(workspace.indexOf("<ContextPanel")).toBeLessThan(
       workspace.indexOf("<DraftEvidencePanel"),

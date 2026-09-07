@@ -2,7 +2,18 @@ import "server-only";
 
 import { ALLOWED_FACT_NAMES } from "@/lib/context/resolve-order-context";
 import { isUnresolvedReference } from "@/lib/domain/conversation-reference";
+import {
+  type EligibleCustomerOrder,
+  MANUAL_SELECTION_SOURCE,
+} from "@/lib/domain/customer-order-fallback";
 import type { VerifiedFact } from "@/lib/domain/draft";
+import { displayableListingUrl } from "@/lib/domain/listing-link";
+import {
+  type Writable as SnapshotReadable,
+  getContextSnapshot,
+} from "@/lib/repositories/context-snapshot-repository";
+import { listEligibleCustomerOrders } from "@/lib/repositories/customer-order-fallback-repository";
+import { findListingUrl } from "@/lib/repositories/ebay-listing-repository";
 import {
   type CandidateOrder,
   type Queryable as SourceQueryable,
@@ -125,4 +136,155 @@ export async function resolveSelectedOrderContext(
   if (matches.length !== 1) return [];
 
   return factsFromOrder(matches[0]!);
+}
+
+/* ------------------------------------------------------------------------- *
+ * MANUAL SELECTION, WHERE THE MATCHER FOUND NOTHING
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The verified facts for an order a reviewer picked on a conversation the
+ * strict matcher could not place at all.
+ *
+ * ------------------------------------------------------------------------
+ * WHY IT IS SEPARATE FROM THE AMBIGUOUS PATH ABOVE
+ * ------------------------------------------------------------------------
+ * The two validate against DIFFERENT SETS, and merging them would quietly widen
+ * one of them. `resolveSelectedOrderContext` checks a choice against
+ * `findCandidateEbayOrders` — buyer + storefront + LISTING — which is exactly
+ * right for an ambiguous conversation, where every candidate is a genuine
+ * purchase OF THIS LISTING. That set is empty for a `no_order` conversation, so
+ * reusing it would make manual selection impossible; but widening it would let
+ * an ambiguous conversation be answered with an order the matcher never
+ * offered. So each path keeps its own set, and the STORED RESOLUTION decides
+ * which path applies.
+ *
+ * GATED ON `no_order`, READ FROM THE SNAPSHOT. A conversation the matcher
+ * answered cannot be overridden, and an ambiguous one keeps the behaviour it
+ * already has.
+ *
+ * ONE ORDER, NEVER A BLEND, and never a rank. The selection must match exactly
+ * one eligible order by number; zero or several produce nothing. The eligible
+ * list's newest-first sort is for reading only — nothing here reads position,
+ * and validation is membership of the set, not rank within it.
+ *
+ * NOTHING IS WRITTEN. No snapshot, no `verification_method`, no resolution
+ * flip. The schema reserves `user_confirmed` for a confirmation that NAMES the
+ * confirming user, and this application still has no user identity to name, so
+ * a selection grounds the request that carries it and nothing more.
+ */
+export type ConversationForManualSelection = ConversationForSelection & {
+  readonly id: string;
+};
+
+/** Provenance and relationship names, so callers and tests share one spelling. */
+export const ORDER_CONTEXT_SOURCE_FACT = "order_context_source";
+export const ORDER_LISTING_RELATIONSHIP_FACT =
+  "order_listing_matches_current_message_listing";
+
+/**
+ * TWO NAMING RULES, AND EACH PREVENTS A DIFFERENT MERGE.
+ *
+ * ORDER, SHIPMENT AND ADDRESS FACTS TAKE THE NORMAL NAMES. They are true of the
+ * order whatever it contains, a reviewer has confirmed this is the order in
+ * question, and the whole point of the flow is that a delivery question can now
+ * be answered — so `order_status`, `tracking_number` and `delivery_courier` are
+ * exactly what they say, and `dispatchState()` may read them.
+ *
+ * PRODUCT IDENTITY IS NAMED BY WHETHER IT IS THE SAME PRODUCT. Where the
+ * selected order carries this conversation's listing, `sku` and `product_title`
+ * are the current product and take the normal names. Where it does NOT, the
+ * same values would be a different product, and under those names they would
+ * drive the SOT catalogue lookup and DROP the current listing's title — so they
+ * are emitted as `customer_order_*` instead. Same data, different claim.
+ */
+function manualSelectionFacts(
+  order: EligibleCustomerOrder,
+  listingUrl: string | null,
+): VerifiedFact[] {
+  const sameProduct = order.listingMatch;
+
+  const facts: [string, string | null][] = [
+    [ORDER_CONTEXT_SOURCE_FACT, MANUAL_SELECTION_SOURCE],
+    ["order_number", order.orderNumber],
+    ["order_status", order.orderStatus],
+    ["order_date", order.orderDate],
+    ["order_storefront", order.storefrontName],
+
+    /* ---- shipment, exactly as recorded; nothing inferred ---- */
+    ["order_shipment_status", order.shipmentStatus],
+    ["tracking_number", order.trackingNumber],
+    ["delivery_courier", order.carrier],
+    ["delivery_carrier_service", order.carrierService],
+    ["order_shipment_created_at", order.shipmentCreatedAt],
+    ["order_dispatched_at", order.shippedAt],
+    ["order_shipment_cancelled_at", order.shipmentCancelledAt],
+    ["delivery_address", order.deliveryAddress],
+
+    /* ---- the product, named by whether it is this message's product ---- */
+    [sameProduct ? "sku" : "customer_order_sku", order.orderSku],
+    [sameProduct ? "product_title" : "customer_order_product_title", order.orderProductTitle],
+    ["customer_order_listing_item_id", sameProduct ? null : order.orderItemRef],
+    ["customer_order_listing_url", sameProduct ? null : listingUrl],
+    [
+      "customer_order_line_count",
+      order.orderLineCount > 1 ? String(order.orderLineCount) : null,
+    ],
+
+    /* ---- the relationship, computed here and never left to the model ---- */
+    [ORDER_LISTING_RELATIONSHIP_FACT, sameProduct ? "yes" : "no"],
+  ];
+
+  return facts
+    .filter((entry): entry is [string, string] => entry[1] !== null && entry[1].trim() !== "")
+    .map(([name, value]) => ({ name, value }));
+}
+
+export async function resolveManuallySelectedOrderContext(
+  sourceClient: SourceQueryable,
+  appClient: SnapshotReadable,
+  conversation: ConversationForManualSelection,
+  selectedOrderNumber: string,
+): Promise<VerifiedFact[]> {
+  if (conversation.marketplace !== "ebay") return [];
+  if (selectedOrderNumber.trim() === "") return [];
+  if (conversation.subSourceId === null) return [];
+  if (isUnresolvedReference(conversation.counterpartyRef)) return [];
+
+  // The matcher speaks first. Only a conversation it could not place at all is
+  // open to a manual choice; `single_order` is answered and `ambiguous` belongs
+  // to the path above.
+  const snapshot = await getContextSnapshot(appClient, conversation.id);
+  if (snapshot?.resolution !== "no_order") return [];
+
+  const eligible = await listEligibleCustomerOrders(sourceClient, {
+    buyerUsername: conversation.counterpartyRef,
+    subSourceId: conversation.subSourceId,
+    currentListingItemRef: conversation.listingItemRef,
+  });
+
+  // Membership, not rank. An order number the reviewer was never offered — a
+  // hand-edited request, another customer's order, another storefront's —
+  // is not in this set and produces nothing.
+  const matches = eligible.filter((order) => order.orderNumber === selectedOrderNumber);
+  if (matches.length !== 1) return [];
+  const order = matches[0]!;
+
+  /*
+   * The ORDER's own listing URL, keyed on the ORDER's item and storefront —
+   * never the conversation's. `displayableListingUrl` requires the path to end
+   * in the reference it is shown against, so a current-message URL could not
+   * pass here even if handed to it. Skipped for a multi-line order, where no
+   * single item is named.
+   */
+  let listingUrl: string | null = null;
+  if (!order.listingMatch && order.orderItemRef !== null) {
+    const stored = await findListingUrl(sourceClient, {
+      itemId: order.orderItemRef,
+      subSourceId: order.storefrontId,
+    });
+    listingUrl = displayableListingUrl(stored, order.orderItemRef);
+  }
+
+  return manualSelectionFacts(order, listingUrl);
 }

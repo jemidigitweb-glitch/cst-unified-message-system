@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 
 import { loadOrderDisplayDetails } from "@/lib/context/load-order-display";
+import { resolveFallbackCustomerOrder } from "@/lib/context/resolve-fallback-order-context";
 import { resolveEbayOrderContext } from "@/lib/context/resolve-order-context";
-import { resolveSelectedOrderContext } from "@/lib/context/resolve-selected-order-context";
+import {
+  resolveManuallySelectedOrderContext,
+  resolveSelectedOrderContext,
+} from "@/lib/context/resolve-selected-order-context";
 import { resolveVerifiedTracking } from "@/lib/context/resolve-tracking-context";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { OrderContextResponse } from "@/lib/domain/order";
@@ -12,6 +16,7 @@ import {
   getContextSnapshot,
   getOrderCandidates,
 } from "@/lib/repositories/context-snapshot-repository";
+import { listEligibleCustomerOrders } from "@/lib/repositories/customer-order-fallback-repository";
 
 /**
  * GET /api/conversations/:id/order-context
@@ -101,6 +106,25 @@ export async function GET(
       }
     }
 
+    /*
+     * MANUAL SELECTION on a `no_order` conversation, mirroring the draft route
+     * exactly so the sidebar and the draft can never disagree about which order
+     * a choice grounded. Tried after the ambiguous path and only where that
+     * produced nothing; the resolver gates on the stored resolution as well.
+     */
+    if (facts.length === 0 && selectedOrderNumber !== null) {
+      try {
+        facts = await resolveManuallySelectedOrderContext(
+          getSourcePool(),
+          pool,
+          detail.conversation,
+          selectedOrderNumber,
+        );
+      } catch (cause) {
+        console.error("[order-context] manual order selection failed", cause);
+      }
+    }
+
     /**
      * Read after resolving, deliberately: the call above is what writes this
      * conversation's snapshot the first time, so reading it second is what
@@ -187,6 +211,65 @@ export async function GET(
       console.error("[order-context] tracking lookup failed", cause);
     }
 
+    /**
+     * LAYER 2, and only where layer 1 established nothing.
+     *
+     * The gate lives in `resolveFallbackCustomerOrder`, not here: it reads the
+     * snapshot this handler already caused to be written and returns null for
+     * every resolution but `no_order`. In particular an AMBIGUOUS conversation
+     * gets nothing — the reviewer has been asked which of several genuine
+     * purchases of this listing applies, and answering them with a different
+     * order would be replacing their question rather than helping with it.
+     *
+     * NEVER FAILS THE REQUEST. The verified answer above is what this route
+     * exists to give, and a fallback lookup must not cost it.
+     */
+    let fallbackOrder: OrderContextResponse["fallbackOrder"] = null;
+    try {
+      // The panel renders the order itself; the ordered product's listing is a
+      // draft-grounding concern and is deliberately not added to the sidebar in
+      // this task, which leaves the existing UI exactly as it was.
+      const context = await resolveFallbackCustomerOrder(getSourcePool(), pool, {
+        ...detail.conversation,
+        subSourceId: detail.conversation.subSourceId,
+      });
+      fallbackOrder = context?.order ?? null;
+    } catch (cause) {
+      console.error("[order-context] fallback order lookup failed", cause);
+    }
+
+    /**
+     * THE ORDERS A REVIEWER MAY CHOOSE FROM, on a conversation the matcher
+     * could not place.
+     *
+     * Loaded for every `no_order` conversation, INCLUDING one whose selection
+     * has already resolved. It used to stop once facts existed, and that made
+     * the two selection flows behave differently: an ambiguous conversation
+     * keeps its radios after choosing, so a reviewer can see which order is
+     * ticked and change it, while a manually selected one lost the list
+     * entirely and could never be re-picked. The list is the control, so it
+     * stays for as long as the choice does.
+     *
+     * An `ambiguous` conversation gets its existing `candidates` instead — the
+     * two lists answer different questions and must not merge.
+     *
+     * NOT A RANKING. Newest-first is a reading order; nothing preselects, and
+     * the server validates a choice by membership of this set rather than by
+     * its position in it.
+     */
+    let eligibleOrders: OrderContextResponse["eligibleOrders"] = [];
+    if (resolution === "no_order") {
+      try {
+        eligibleOrders = await listEligibleCustomerOrders(getSourcePool(), {
+          buyerUsername: detail.conversation.counterpartyRef,
+          subSourceId: detail.conversation.subSourceId ?? 0,
+          currentListingItemRef: detail.conversation.listingItemRef,
+        });
+      } catch (cause) {
+        console.error("[order-context] eligible order lookup failed", cause);
+      }
+    }
+
     const payload: OrderContextResponse = {
       conversationId: id,
       facts,
@@ -195,6 +278,8 @@ export async function GET(
       orders,
       evidence,
       tracking,
+      fallbackOrder,
+      eligibleOrders,
     };
     return NextResponse.json(payload);
   } catch (cause) {

@@ -79,7 +79,7 @@ describe("the link must prove it is the listing beside it", () => {
 
 describe("the sidebar shows a reference with or without a link, never a broken one", () => {
   it("renders the reference through one row component either way", () => {
-    expect(panel).toContain("<ListingReference");
+    expect(panel).toContain("<CurrentListingSection");
     expect(panel).toContain('label="Item reference"');
     // `href` is optional on the row, so the no-link case is the row's own
     // default rather than a second layout that could drift from it.
@@ -117,7 +117,7 @@ describe("the sidebar shows a reference with or without a link, never a broken o
   });
 
   it("remounts per conversation, so one conversation's link cannot appear on another", () => {
-    const mount = panel.slice(panel.indexOf("<ListingReference"));
+    const mount = panel.slice(panel.indexOf("<CurrentListingSection"));
     // Prefixed rather than the bare id: `OrderContextFacts` is a sibling keyed
     // by the same conversation, and duplicate sibling keys are a React error.
     expect(mount.slice(0, mount.indexOf("/>"))).toContain("key={`item-ref-${conversation.id}`}");

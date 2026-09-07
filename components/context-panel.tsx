@@ -21,6 +21,15 @@ import {
   formatSourceTimestamp,
 } from "@/lib/domain/inbox";
 import type { ListingLinkResponse } from "@/lib/domain/listing-link";
+import {
+  CUSTOMER_ORDER_HEADING,
+  type EligibleCustomerOrder,
+  type FallbackCustomerOrder,
+  LISTING_MISMATCH_NOTICE,
+  NO_MATCHING_ORDER_TEXT,
+  SELECTED_ORDER_MISMATCH_NOTICE,
+  SELECT_ORDER_HEADING,
+} from "@/lib/domain/customer-order-fallback";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
 import {
   ORDER_DETAIL_FIELDS,
@@ -87,26 +96,55 @@ import { StatusBadge } from "./status-badge";
  */
 
 /**
- * The item reference, linked to the listing it names when one can be resolved.
+ * THE CURRENT LISTING: what the customer was looking at, whether or not any
+ * order matched.
  *
- * FETCHES ITS OWN ANSWER, and is remounted per conversation by the caller so
- * switching conversations cannot carry one conversation's link into another's
- * row — the same discipline, and for the same reason, as `OrderContextFacts`
- * below.
+ * WHY THIS IS ITS OWN CONCEPT. The panel used to answer "no order matched" and
+ * "nothing is known about the product" with one sentence — "Order and product
+ * details not loaded yet" — and the second half of that was simply untrue. A
+ * listing's title and the options it offers resolve from the item reference
+ * alone (869 of 869 titles live, 867 of 869 option sets), so a reviewer reading
+ * a pre-sales enquiry can be shown exactly what the customer was looking at even
+ * though there is no order to link it to. Conflating the two findings is what
+ * made a fabric-cable question read as an unanswerable blank.
  *
- * NOT PART OF THE ORDER CONTEXT REQUEST, deliberately. The link needs only the
- * item reference, so it is just as available on a pre-sales enquiry that
- * matched no order — which is the conversation where a reviewer most often
- * wants to open the listing.
+ * IT IS NOT AN ORDER, AND SAYS NOTHING ABOUT ONE. Everything here describes the
+ * advertisement; the order block below describes a purchase. Options are the
+ * LISTING's — which colours it sells, not which the customer chose — so they
+ * cannot contradict a matched order sitting beside them.
  *
- * THE ROW IS THE SAME ROW WHETHER OR NOT A LINK ARRIVES. Loading, a marketplace
- * whose listings cannot be resolved from a reference, nothing recorded, and a
- * failed request all render exactly what this panel rendered before there were
- * links: the reference, as text. There is no "unavailable" message, because the
- * absence of a link is not news to a reviewer — and no placeholder link, which
- * is the one outcome that could send them to the wrong product.
+ * NO SKU IS SHOWN, EVER. A listing holds one SKU per variant (24 on live rows)
+ * and the item reference does not say which one a customer means. The
+ * authoritative SKU belongs to an order line and appears with the order. There
+ * is no field for one in `ListingLinkResponse`, so this cannot start showing one
+ * by accident.
+ *
+ * FETCHES ITS OWN ANSWER, remounted per conversation by the caller so switching
+ * conversations cannot carry one conversation's listing into another's section —
+ * the same discipline, and for the same reason, as `OrderContextFacts` below.
+ *
+ * THE REFERENCE ROW IS THE SAME ROW WHETHER OR NOT A LINK ARRIVES. Loading, a
+ * marketplace whose listings cannot be resolved from a reference, nothing
+ * recorded, and a failed request all render what this panel rendered before
+ * there were links: the reference, as text. No "unavailable" message, because
+ * the absence of a link is not news — and no placeholder link, which is the one
+ * outcome that could send a reviewer to the wrong product. Title and options
+ * degrade the same way and independently of each other.
  */
-function ListingReference({
+export const CURRENT_LISTING_HEADING = "Current listing";
+
+/**
+ * The order block's heading, renamed from "Order context".
+ *
+ * IT NAMES THE SCOPE, WHICH IS THE WHOLE DISTINCTION THIS PANEL NOW DRAWS.
+ * With a Related customer orders section on the same screen, "Order context"
+ * no longer says which orders it means. "Order for this message" does, and it
+ * is the sentence that keeps a historical purchase from being read as the one
+ * the customer is writing about.
+ */
+export const ORDER_FOR_THIS_MESSAGE_HEADING = "Order for this message";
+
+function CurrentListingSection({
   conversationId,
   itemRef,
   marketplaceLabel,
@@ -118,7 +156,7 @@ function ListingReference({
   /** Whether this marketplace's item reference names exactly one listing. */
   resolvable: boolean;
 }) {
-  const [listingUrl, setListingUrl] = useState<string | null>(null);
+  const [listing, setListing] = useState<ListingLinkResponse | null>(null);
 
   useEffect(() => {
     if (!resolvable) return;
@@ -128,10 +166,10 @@ function ListingReference({
         const response = await fetch(`/api/conversations/${conversationId}/listing`);
         if (!response.ok) throw new Error("request failed");
         const payload = (await response.json()) as ListingLinkResponse;
-        if (!cancelled) setListingUrl(payload.listingUrl);
+        if (!cancelled) setListing(payload);
       } catch {
-        // A failed lookup is reported as no link, never as a guessed one.
-        if (!cancelled) setListingUrl(null);
+        // A failed lookup is reported as nothing resolved, never as a guess.
+        if (!cancelled) setListing(null);
       }
     })();
     return () => {
@@ -139,15 +177,160 @@ function ListingReference({
     };
   }, [conversationId, resolvable]);
 
+  const listingUrl = listing?.listingUrl ?? null;
+
   return (
-    <Row
-      label="Item reference"
-      value={itemRef}
-      href={listingUrl ?? undefined}
-      linkTitle={
-        listingUrl === null ? undefined : `Open the ${marketplaceLabel} listing for ${itemRef}`
-      }
-    />
+    <>
+      <Row
+        label="Item reference"
+        value={itemRef}
+        href={listingUrl ?? undefined}
+        linkTitle={
+          listingUrl === null ? undefined : `Open the ${marketplaceLabel} listing for ${itemRef}`
+        }
+      />
+      {/* Omitted rather than shown blank: a "Title —" row reports nothing. */}
+      {listing?.title != null && <Row label="Listing title" value={listing.title} />}
+      {(listing?.variations ?? []).map((variation) => (
+        <Row
+          key={variation.name}
+          // "Options: Colour" rather than a bare axis name, so the row cannot be
+          // read as a property of this customer's purchase.
+          label={`Options: ${variation.name}`}
+          value={variation.values.join(", ")}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * LAYER 2: the one order this buyer has on this storefront, where the strict
+ * matcher found none.
+ *
+ * THERE IS NO LIST HERE, AND THAT IS THE DESIGN. An earlier version showed every
+ * other order the buyer had, across every storefront, as "Related customer
+ * orders". It was removed: a list invites a reviewer to pick, and picking is
+ * exactly the judgement neither they nor this panel has evidence for. Either the
+ * backend can name ONE order for this storefront or the panel says nothing —
+ * see `findSoleSameStorefrontOrder`, which refuses on a second row rather than
+ * ranking.
+ *
+ * THE NOTICE IS NOT OPTIONAL. This order is for a different product than the
+ * message is about, so it renders under the same heading as a verified order but
+ * always with `LISTING_MISMATCH_NOTICE` beneath it. Without that line a reviewer
+ * reading quickly would take it for the order the customer is writing about,
+ * which is the one mistake this whole layer has to avoid.
+ *
+ * NO PRODUCT, NO TRACKING, NO ADDRESS — the shape carries none, so there is
+ * nothing here to render even by accident. The Current listing section above
+ * remains the authoritative product context for the message.
+ */
+/**
+ * The choose-an-order control, shown only where the matcher found none.
+ *
+ * A PERSON PICKS, AND NOTHING PICKS FOR THEM. No option is preselected, no row
+ * is highlighted as likely, and the newest-first order is a reading order and
+ * nothing more. That restraint is measured rather than stylistic: across 18
+ * months of listing-mismatch cases, 46% of a buyer's same-storefront orders
+ * POST-DATE the message they would be attached to, so "the newest one" is
+ * frequently the wrong one and must never look like an answer.
+ *
+ * IT REUSES `OrderChoice`, the same radio the ambiguous flow already uses, so a
+ * selection travels by the same `?selectedOrder=` parameter and is validated by
+ * the same membership rule on the server. One selection mechanism, two lists.
+ *
+ * ENOUGH TO RECOGNISE AN ORDER, AND NO MORE. Number, date, status, and — only
+ * where the order has a single line, so nothing is being chosen on the
+ * reviewer's behalf — the ordered product and its exact SKU. No customer name
+ * or email is shown here; the delivery address belongs to the order block that
+ * appears once a choice is made.
+ */
+/**
+ * Whether the resolved order is for a different listing than this message.
+ *
+ * Read from the FACT the server computed, never recomputed here: the panel has
+ * no business comparing item references, and two implementations of the same
+ * comparison would eventually disagree in front of a reviewer.
+ */
+function reportsListingMismatch(facts: readonly { name: string; value: string }[]): boolean {
+  return facts.some(
+    (fact) =>
+      fact.name === "order_listing_matches_current_message_listing" &&
+      /^\s*no\s*$/i.test(fact.value),
+  );
+}
+
+function SelectCustomerOrder({
+  conversationId,
+  orders,
+  selectedOrderNumber,
+  onChoose,
+}: {
+  conversationId: string;
+  orders: readonly EligibleCustomerOrder[];
+  selectedOrderNumber: string | null;
+  onChoose: (orderNumber: string | null) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionHeading>{SELECT_ORDER_HEADING}</SectionHeading>
+      <ul className="flex flex-col gap-2">
+        {orders.map((order) => (
+          <li key={order.orderNumber} className="rounded border border-current/15 px-2 py-1.5">
+            <OrderChoice
+              conversationId={conversationId}
+              orderNumber={order.orderNumber}
+              checked={selectedOrderNumber === order.orderNumber}
+              onChoose={onChoose}
+            />
+            <dl className="flex flex-col gap-0.5 text-xs opacity-80">
+              {order.orderDate !== null && (
+                <Row label="Ordered" value={formatSourceTimestamp(order.orderDate).date} />
+              )}
+              {order.orderStatus !== null && <Row label="Status" value={order.orderStatus} />}
+              {/* Single-line orders only — see `EligibleCustomerOrder`. */}
+              {order.orderProductTitle !== null && (
+                <Row label="Product" value={order.orderProductTitle} />
+              )}
+              {order.orderSku !== null && <Row label="SKU" value={order.orderSku} />}
+              {order.orderLineCount > 1 && (
+                <Row label="Lines" value={`${order.orderLineCount} products on this order`} />
+              )}
+              {!order.listingMatch && (
+                <Row label="Listing" value="Different from the current message" />
+              )}
+            </dl>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function FallbackCustomerOrderBlock({ order }: { order: FallbackCustomerOrder }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionHeading>{CUSTOMER_ORDER_HEADING}</SectionHeading>
+      <dl className="flex flex-col gap-1 text-sm">
+        <Row label="Order No" value={order.orderNumber} />
+        {order.orderDate !== null && (
+          <Row label="Order date" value={formatSourceTimestamp(order.orderDate).date} />
+        )}
+        {order.orderStatus !== null && <Row label="Status" value={order.orderStatus} />}
+        {order.storefrontName !== null && <Row label="Storefront" value={order.storefrontName} />}
+      </dl>
+      {/*
+        Its own block, styled as a notice rather than a row, because it
+        qualifies everything above it. Amber, matching the panel's other
+        "read this before you act" marker.
+      */}
+      {!order.listingMatch && (
+        <p className="rounded bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-800 dark:text-amber-300">
+          {LISTING_MISMATCH_NOTICE}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -246,7 +429,27 @@ function OrderContextFacts({
     const stored = readStoredSelection(storage, conversationId);
     if (stored === null) return;
 
-    const available = context.orders.map((order) => order.orderNumber);
+    /*
+     * WHAT A STORED CHOICE MAY BE RESTORED AGAINST.
+     *
+     * `orders` alone was right while the only selectable orders were an
+     * ambiguous conversation's matches. A manual selection on a `no_order`
+     * conversation is chosen from `eligibleOrders`, and that list is EMPTY once
+     * a choice has produced facts — so checking `orders` first is what lets a
+     * restored selection validate against the order it resolved to, and
+     * checking `eligibleOrders` too is what lets an unresolved one validate
+     * against the list it was picked from. Between them the choice survives a
+     * reload, using the storage the ambiguous flow already had.
+     *
+     * The staleness rule is unchanged and still matters more here: a buyer may
+     * have ordered again, so a stored number that appears in neither list is
+     * discarded rather than quietly grounding a draft in an order the reviewer
+     * can no longer see.
+     */
+    const available = [
+      ...context.orders.map((order) => order.orderNumber),
+      ...context.eligibleOrders.map((order) => order.orderNumber),
+    ];
     const restorable = restorableSelection(stored, available);
     if (restorable === null) {
       saveStoredSelection(storage, conversationId, null);
@@ -303,10 +506,46 @@ function OrderContextFacts({
    * what tracking was resolved from — survived. Hiding a verified shipment
    * because a cosmetic lookup failed would withhold the more useful of the two.
    */
+  /*
+   * NO ORDER MATCHED — SAID AS THAT, AND NOT AS "nothing loaded".
+   *
+   * `orderDetailsFrom` returns an empty list only when the live read, the
+   * candidates AND the facts are all empty, which is precisely the strict
+   * matcher having found no order for this conversation's buyer, storefront and
+   * listing. That is a finding, not a failure, and the old copy — "Order and
+   * product details not loaded yet" — reported it as neither: it implied the
+   * lookup had not happened and that nothing was known about the product, while
+   * the Current listing section above was at that very moment showing the title
+   * and options. The sentence now says the one true thing.
+   *
+   * The heading stays, so the section reads as an answered question rather than
+   * an absence.
+   */
   if (orders.length === 0) {
     return (
       <div className="flex flex-col gap-5">
-        <p className="text-sm opacity-60">{CONTEXT_NOT_LOADED_TEXT}</p>
+        {/*
+          LAYER 2, OR THE PLAIN STATEMENT THAT THERE IS NOTHING.
+          `fallbackOrder` is non-null only where the backend could name exactly
+          one order for this buyer on this storefront; anything else — none, or
+          more than one — arrives null and the reviewer is told plainly that
+          nothing matched rather than being handed a guess to adjudicate.
+        */}
+        {context.eligibleOrders.length > 0 ? (
+          <SelectCustomerOrder
+            conversationId={conversationId}
+            orders={context.eligibleOrders}
+            selectedOrderNumber={selectedOrderNumber}
+            onChoose={chooseOrder}
+          />
+        ) : context.fallbackOrder !== null ? (
+          <FallbackCustomerOrderBlock order={context.fallbackOrder} />
+        ) : (
+          <div className="flex flex-col gap-2">
+            <SectionHeading>{ORDER_FOR_THIS_MESSAGE_HEADING}</SectionHeading>
+            <p className="text-sm opacity-60">{NO_MATCHING_ORDER_TEXT}</p>
+          </div>
+        )}
         <ShipmentTracking tracking={context.tracking} />
       </div>
     );
@@ -361,11 +600,40 @@ function OrderContextFacts({
         choice exists the section starts collapsed, because the chosen order is
         summarised on the control itself.
       */}
+      {/*
+        THE CHOOSER STAYS WHILE THE CHOICE DOES.
+
+        Rendered above the resolved order for a `no_order` conversation, exactly
+        as an ambiguous conversation keeps its radios above its blocks. Without
+        it the two flows diverged: after choosing, an ambiguous reviewer could
+        still see which order was ticked and change it, while a manual one was
+        shown a resolved order with no way back to the list. Same control, same
+        place, both flows.
+      */}
+      {context.eligibleOrders.length > 0 && (
+        <SelectCustomerOrder
+          conversationId={conversationId}
+          orders={context.eligibleOrders}
+          selectedOrderNumber={selectedOrderNumber}
+          onChoose={chooseOrder}
+        />
+      )}
+      {/*
+        A MANUALLY SELECTED ORDER SAYS SO, WHEREVER IT DIFFERS.
+        The relationship is computed on the server and travels as a fact, so the
+        panel reads it rather than comparing item ids itself. Shown above the
+        order block because it qualifies everything in it.
+      */}
+      {reportsListingMismatch(context.facts) && (
+        <p className="rounded bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-800 dark:text-amber-300">
+          {SELECTED_ORDER_MISMATCH_NOTICE}
+        </p>
+      )}
       {selectable ? (
         <details open={selectedOrderNumber === null} className="flex flex-col gap-2">
           <summary className="cursor-pointer list-none select-none">
             <span className="flex items-baseline gap-1.5">
-              <SectionHeading>Order context</SectionHeading>
+              <SectionHeading>{ORDER_FOR_THIS_MESSAGE_HEADING}</SectionHeading>
               <span aria-hidden="true" className="text-[10px] opacity-50">
                 ▼
               </span>
@@ -380,7 +648,7 @@ function OrderContextFacts({
         </details>
       ) : (
         <div className="flex flex-col gap-2">
-          <SectionHeading>Order context</SectionHeading>
+          <SectionHeading>{ORDER_FOR_THIS_MESSAGE_HEADING}</SectionHeading>
           {list}
         </div>
       )}
@@ -567,7 +835,28 @@ function OrderDetailBlock({ order }: { order: OrderDetail }) {
   return (
     <dl className="flex flex-col gap-0.5 text-sm">
       {ORDER_DETAIL_FIELDS.map((field) => (
-        <Row key={field.key} label={field.label} value={order[field.key]} />
+        <Row
+          key={field.key}
+          label={field.label}
+          value={order[field.key]}
+          /*
+           * THE LISTING REFERENCE LINKS TO THIS ORDER'S OWN LISTING, and only
+           * where the backend resolved one for the order's item. It is not the
+           * current message's URL — that arrives on a different payload and
+           * could not pass the check that produced this one, which requires the
+           * URL's path to end in the very reference it is shown against.
+           */
+          href={
+            field.key === "listingReference" && order.listingReferenceUrl !== null
+              ? order.listingReferenceUrl
+              : undefined
+          }
+          linkTitle={
+            field.key === "listingReference" && order.listingReferenceUrl !== null
+              ? `Open the listing for ${order.listingReference}`
+              : undefined
+          }
+        />
       ))}
     </dl>
   );
@@ -896,13 +1185,33 @@ export function ContextPanel({
         </dl>
       </section>
 
+      {/*
+        TWO CONCEPTS, TWO SECTIONS, IN THE ORDER A REVIEWER NEEDS THEM.
+
+          Current listing        what the customer was looking at. Resolves from
+                                 the item reference alone, so it is present on
+                                 the pre-sales enquiries where the order block
+                                 has nothing to say, and it is the authoritative
+                                 product context for the message either way.
+          Customer order         the strict matcher's answer, unchanged — or,
+                                 where it found none, the single same-storefront
+                                 order layer 2 could name, carrying the notice
+                                 that it is for a different product.
+
+        They were one "Context" section, which is what let "no order matched" be
+        rendered as though nothing at all were known — including the listing that
+        had in fact resolved.
+
+        THERE IS NO THIRD, "related orders" SECTION, and there must not be: a
+        list of a buyer's other purchases asks a reviewer to pick one, and
+        picking is the judgement nothing here has evidence for.
+      */}
       <section className="flex flex-col gap-2">
-        <SectionHeading>Context</SectionHeading>
+        <SectionHeading>{CURRENT_LISTING_HEADING}</SectionHeading>
         {conversation.listingItemRef !== null && (
-          <ListingReference
-            // Prefixed, because `OrderContextFacts` below is a sibling in this
-            // same section and is keyed by the same conversation id. Two
-            // siblings sharing a key is a React error, not a style point.
+          <CurrentListingSection
+            // Prefixed, because `OrderContextFacts` below is keyed by the same
+            // conversation id. Two siblings sharing a key is a React error.
             key={`item-ref-${conversation.id}`}
             conversationId={conversation.id}
             itemRef={conversation.listingItemRef}
@@ -914,6 +1223,9 @@ export function ContextPanel({
           !isUnresolvedReference(conversation.counterpartyRef) && (
             <Row label={capability.referenceNoun} value={conversation.counterpartyRef} />
           )}
+      </section>
+
+      <section className="flex flex-col gap-2">
         <OrderContextFacts
           key={conversation.id}
           conversationId={conversation.id}
@@ -925,6 +1237,7 @@ export function ContextPanel({
           }
         />
       </section>
+
 
       {/*
         Its own section, a sibling of Context rather than nested inside it.

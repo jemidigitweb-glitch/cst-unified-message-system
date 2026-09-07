@@ -1,8 +1,10 @@
 import "server-only";
 
+import type { ListingVariationView } from "@/lib/domain/listing-link";
 import { displayableListingUrl } from "@/lib/domain/listing-link";
 import {
   type Queryable as SourceQueryable,
+  findListingDetails,
   findListingUrl,
 } from "@/lib/repositories/ebay-listing-repository";
 
@@ -65,4 +67,72 @@ export async function resolveListingLink(
   // Checked against the reference it will be displayed beside, never merely
   // against itself — see `displayableListingUrl`.
   return displayableListingUrl(stored, itemRef);
+}
+
+/**
+ * Everything the CURRENT LISTING says about itself, for the panel.
+ *
+ * ORDER-INDEPENDENT, WHICH IS THE ENTIRE POINT. The panel used to show one
+ * sentence — "Order and product details not loaded yet" — for every conversation
+ * whose order did not resolve, which conflated two unrelated findings: no order
+ * matched, and nothing is known about the product. The second was never true.
+ * The listing title and its variation axes resolve from the item reference alone
+ * (measured live: 869 of 869 titles, 867 of 869 variation sets), so a reviewer
+ * looking at a pre-sales enquiry can be told exactly what the customer was
+ * looking at even though no order exists to link it to.
+ *
+ * NO SKU IS RETURNED, and none may be added — see `ListingLinkResponse`. A
+ * listing holds one SKU per variant and nothing here says which the customer
+ * means.
+ *
+ * TWO READS, ONE PURPOSE, AND NEITHER IS NEW. `findListingUrl` and
+ * `findListingDetails` both already existed and both already run on the draft
+ * path; this composes them for display. Still no snapshot and no write.
+ *
+ * DEGRADES PIECEWISE. A missing URL does not withhold the title and a missing
+ * title does not withhold the URL — each is refused on its own evidence, because
+ * a reviewer who can see the title but not open the link is better served than
+ * one shown nothing.
+ */
+export type CurrentListing = {
+  readonly listingUrl: string | null;
+  readonly itemRef: string | null;
+  readonly title: string | null;
+  readonly variations: readonly ListingVariationView[];
+};
+
+const NO_LISTING: CurrentListing = {
+  listingUrl: null,
+  itemRef: null,
+  title: null,
+  variations: [],
+};
+
+export async function resolveCurrentListing(
+  sourceClient: SourceQueryable,
+  conversation: ConversationForListingLink,
+): Promise<CurrentListing> {
+  // The same three refusals as `resolveListingLink`, returning before touching
+  // the source. `itemRef` is echoed only where there is genuinely one to echo.
+  if (conversation.marketplace !== "ebay") return NO_LISTING;
+  if (conversation.subSourceId === null) return NO_LISTING;
+
+  const itemRef = conversation.listingItemRef?.trim() ?? "";
+  if (itemRef === "") return NO_LISTING;
+
+  const [listingUrl, details] = await Promise.all([
+    resolveListingLink(sourceClient, conversation),
+    findListingDetails(sourceClient, {
+      itemId: itemRef,
+      subSourceId: conversation.subSourceId,
+    }),
+  ]);
+
+  return {
+    listingUrl,
+    // Known even where neither lookup resolved: the conversation carries it.
+    itemRef,
+    title: details?.title ?? null,
+    variations: details?.variations ?? [],
+  };
 }

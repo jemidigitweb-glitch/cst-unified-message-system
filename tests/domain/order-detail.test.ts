@@ -72,11 +72,21 @@ describe("the field list", () => {
     ]);
   });
 
+  /**
+   * `listingReferenceUrl` is the one field with no row of its own, and it is
+   * still not silently unrendered: it is the LINK TARGET on the "Listing
+   * reference" row above, so its value reaches the screen as that row's `href`.
+   * A row of its own would print a URL beside the reference it already points
+   * at. Exempted by name so a genuinely forgotten field still fails this.
+   */
+  const RENDERED_AS_A_LINK_TARGET: readonly (keyof OrderDetail)[] = ["listingReferenceUrl"];
+
   it("covers every field of an order detail, so no value can be silently unrendered", () => {
     const detail = orderDetailFromFacts(singleOrderFacts, conversationContext);
-    expect(ORDER_DETAIL_FIELDS.map((field) => field.key).sort()).toEqual(
-      (Object.keys(detail) as (keyof OrderDetail)[]).sort(),
+    const displayed = (Object.keys(detail) as (keyof OrderDetail)[]).filter(
+      (key) => !RENDERED_AS_A_LINK_TARGET.includes(key),
     );
+    expect(ORDER_DETAIL_FIELDS.map((field) => field.key).sort()).toEqual(displayed.sort());
   });
 });
 
@@ -104,6 +114,7 @@ describe("a single resolved order", () => {
       sku: "REAL-SKU-1",
       productDetails: "Synthetic Widget",
       listingReference: null,
+      listingReferenceUrl: null,
       });
   });
 
@@ -200,6 +211,7 @@ describe("several matching orders", () => {
       sku: null,
       productDetails: null,
       listingReference: null,
+      listingReferenceUrl: null,
       });
   });
 
@@ -299,6 +311,7 @@ describe("an order read live from the source", () => {
       sku: "REAL-SKU-1",
       productDetails: "Synthetic Widget",
       listingReference: "166239358700",
+      listingReferenceUrl: null,
       });
   });
 

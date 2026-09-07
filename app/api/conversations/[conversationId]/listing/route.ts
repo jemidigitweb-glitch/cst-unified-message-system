@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { resolveListingLink } from "@/lib/context/resolve-listing-link";
+import { resolveCurrentListing } from "@/lib/context/resolve-listing-link";
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import type { ListingLinkResponse } from "@/lib/domain/listing-link";
 import { getConversation, parseConversationId } from "@/lib/repositories/conversation-repository";
@@ -8,9 +8,13 @@ import { getConversation, parseConversationId } from "@/lib/repositories/convers
 /**
  * GET /api/conversations/:id/listing
  *
- * The marketplace listing URL for a conversation's item reference, for the
- * context panel. See `resolveListingLink` for what it will and will not
- * resolve.
+ * The CURRENT LISTING for a conversation's item reference — its URL, its title
+ * and the options it offers — for the context panel. See `resolveCurrentListing`
+ * for what it will and will not resolve.
+ *
+ * NO SKU IS RETURNED. A listing holds one SKU per variant and the item reference
+ * does not say which the customer means; the authoritative SKU belongs to an
+ * order line and travels with the order context. See `ListingLinkResponse`.
  *
  * ITS OWN ROUTE, NOT PART OF /order-context. The link depends on the item
  * reference alone, so it is available on conversations that resolved to no
@@ -46,9 +50,9 @@ export async function GET(
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
     }
 
-    const listingUrl = await resolveListingLink(getSourcePool(), detail.conversation);
+    const listing = await resolveCurrentListing(getSourcePool(), detail.conversation);
 
-    const payload: ListingLinkResponse = { conversationId: id, listingUrl };
+    const payload: ListingLinkResponse = { conversationId: id, ...listing };
     return NextResponse.json(payload);
   } catch (cause) {
     // The underlying error may name schemas, hosts or credentials, so it is

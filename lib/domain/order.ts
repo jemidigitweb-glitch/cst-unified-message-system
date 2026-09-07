@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import type { TrackingResult } from "@/lib/tracking/provider";
 
+import type {
+  EligibleCustomerOrder,
+  FallbackCustomerOrder,
+} from "./customer-order-fallback";
 import type { VerifiedFact } from "./draft";
 import type { OrderMatchEvidence } from "./order-match-evidence";
 
@@ -151,6 +155,31 @@ export type OrderContextResponse = {
    * own tracking through `resolveTrackingContext`, and does not call this route.
    */
   readonly tracking: TrackingResult | null;
+  /**
+   * LAYER 2: the one order this buyer has on this storefront, where the strict
+   * matcher found none at all.
+   *
+   * ITS OWN FIELD, NOT MERGED INTO `facts` OR `orders`. Those describe orders
+   * matched on this conversation's own listing; this one is explicitly for a
+   * different product, and the panel must be able to say so. Merging it would
+   * make the difference invisible at exactly the moment it matters.
+   *
+   * NULL IS THE ORDINARY CASE — a conversation that resolved, one still waiting
+   * on a reviewer to choose between several, and a buyer with no or more than
+   * one order on this storefront all report null. See
+   * `resolveFallbackCustomerOrder`.
+   */
+  readonly fallbackOrder: FallbackCustomerOrder | null;
+  /**
+   * The orders a reviewer may choose from where the matcher found none.
+   *
+   * EMPTY IS THE ORDINARY CASE — a resolved conversation, an ambiguous one
+   * (which carries `candidates` instead), and one where a choice has already
+   * produced facts all report an empty list. Nothing here is selected,
+   * preselected or ranked: newest-first is a reading order, and the server
+   * validates a choice by membership of this set rather than by position in it.
+   */
+  readonly eligibleOrders: readonly EligibleCustomerOrder[];
 };
 
 /**
@@ -254,6 +283,17 @@ export type OrderDetail = {
   readonly sku: string | null;
   readonly productDetails: string | null;
   readonly listingReference: string | null;
+  /**
+   * The listing THIS ORDER's item belongs to, where one resolved.
+   *
+   * Not a display field of its own — `ORDER_DETAIL_FIELDS` does not list it —
+   * it only decides whether `listingReference` renders as a link. It is the
+   * ORDER's URL, resolved from the order's own item reference, and it is null
+   * wherever that could not be established. The current message's listing URL
+   * can never appear here: it is carried on a different payload entirely and
+   * would not survive the reference check that produced this one.
+   */
+  readonly listingReferenceUrl: string | null;
 };
 
 /** The fields, in display order, with the label each is shown under. */
@@ -308,6 +348,7 @@ const EMPTY_DETAIL: OrderDetail = {
   sku: null,
   productDetails: null,
   listingReference: null,
+  listingReferenceUrl: null,
 };
 
 /** Blank rather than empty-string, so "recorded as nothing" reads as "not recorded". */
@@ -347,6 +388,10 @@ export function orderDetailFromSource(
     sku: present(order.sku),
     productDetails: present(order.productTitle),
     listingReference: present(order.listingItemRef),
+    // A matched order's reference stays plain text, exactly as before: the
+    // display lookup carries no URL, and this task adds a link only where the
+    // backend resolved one for a manually selected order's own item.
+    listingReferenceUrl: null,
   };
 }
 
@@ -377,8 +422,26 @@ export function orderDetailFromFacts(
     courier: valueOf("delivery_courier"),
     deliveryAddress: valueOf("delivery_address"),
     market: present(context.market),
-    sku: valueOf("sku"),
-    productDetails: valueOf("product_title"),
+    /*
+     * TWO VOCABULARIES, ONE BLOCK.
+     *
+     * A matched order describes THIS message's product, so its facts are named
+     * `sku` and `product_title`. A manually selected order for a DIFFERENT
+     * listing describes a different product, and is deliberately named
+     * `customer_order_*` so those values cannot drive the SOT catalogue lookup
+     * or displace the current listing's title in the prompt — see
+     * `manualSelectionFacts`.
+     *
+     * Both still belong in the order block on screen: a reviewer looking at
+     * "Order for this message" wants the SKU that was actually ordered. Reading
+     * the prefixed names here is what fills the three rows that were blank; the
+     * unprefixed name is preferred so a matched order is unchanged, and the two
+     * can never both be present.
+     */
+    sku: valueOf("sku") ?? valueOf("customer_order_sku"),
+    productDetails: valueOf("product_title") ?? valueOf("customer_order_product_title"),
+    listingReference: valueOf("customer_order_listing_item_id"),
+    listingReferenceUrl: valueOf("customer_order_listing_url"),
   };
 }
 
