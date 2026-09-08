@@ -821,9 +821,37 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     file: "missing parts query .xlsx",
     sheet: "13 — TRIGGER KEYWORDS",
     condition: "CRITICAL PART — product unusable without it. Urgent priority",
-    phrases: ["LED driver missing", "lamp holder missing", "key component missing", "can't install"],
+    phrases: [
+      "LED driver missing",
+      "lamp holder missing",
+      "key component missing",
+      "can't install",
+      "there are no reducer plates in with the packaging",
+      "supplied without the fixings",
+    ],
+    /**
+     * Three shapes, and the third one exists because the second is not enough.
+     *
+     * `no <component>` names the parts it knows: screws, brackets, fixings, a
+     * driver, instructions. That list can only ever be the parts somebody
+     * thought of. A customer who wrote "there are no reducer plates in with the
+     * packaging" stated an absence just as plainly and matched nothing, so the
+     * message read as a technical question about fitting and landed in Pre
+     * sales — a post-purchase complaint filed as an enquiry.
+     *
+     * The third branch therefore anchors on the CONTAINER, not the component:
+     * "there are no ... in the box / packaging / parcel". Nobody describes what
+     * is absent from a package they have not received, so the shape carries its
+     * own post-purchase proof and any component name works, including the ones
+     * nobody listed.
+     *
+     * The lookahead keeps it off absences that belong elsewhere: "there was no
+     * damage in the box" is a Damage statement, and reading it as a missing part
+     * would be worse than not matching at all. Paperwork and unit shortfalls are
+     * already excluded by `requires` above.
+     */
     pattern:
-      /\b(?:arrived|received|recieved|came|delivered)\s+without\b|\bno\s+(?:screws|bracket|brackets|fixings|driver|instructions)\b/i,
+      /\b(?:arrived|received|recieved|came|delivered|supplied|sent|shipped)\s+without\b|\bno\s+(?:screws|bracket|brackets|fixings|driver|instructions)\b|\bthere\s+(?:(?:are|is|were|was)\s+no|(?:aren'?t|isn'?t|weren'?t|wasn'?t)\s+any)\s+(?!(?:damage|problem|issue|fault|mark|scratch|dent|crack|delay))[^.!?]{0,70}?\b(?:in|inside|with|within)\b[^.!?]{0,25}?\b(?:box|boxes|packaging|package|parcel|packet|bag)\b/i,
   },
 
   /* ---------------- Wrong quantity ---------------- */
@@ -946,9 +974,28 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     file: "PRE-SALES QUERIES.xlsx",
     sheet: "🔑 TRIGGER KEYWORDS · G — STOCK AND AVAILABILITY",
     condition: "STOCK AND AVAILABILITY — check internally first. Customer has not purchased yet",
-    phrases: ["is this in stock", "do you have this in stock", "do you sell", "have you got", "is it available"],
+    phrases: [
+      "is this in stock",
+      "do you have this in stock",
+      "do you sell",
+      "have you got",
+      "is it available",
+      "can I buy extra reducer plates",
+    ],
+    /**
+     * "CAN I BUY ..." IS THE SAME QUESTION AS "DO YOU SELL ...", and it was
+     * missing. A customer asking to buy a part reached no pre-sales trigger at
+     * all and fell through to the Admin fallback, so an ordinary stock enquiry
+     * was filed as an administrative matter.
+     *
+     * It is safe beside the missing-parts work above because of `requires`:
+     * `goods_not_yet_arrived` holds only while the message describes no
+     * arrival. Someone who writes "I received my lamp and a part is missing,
+     * can I buy a replacement?" has stated an arrival, so this row cannot fire
+     * and the absence keeps the message.
+     */
     pattern:
-      /\b(?:in\s+stock|out\s+of\s+stock|back\s+in\s+stock|auf\s+lager)\b|\bdo\s+you\s+(?:sell|stock)\b|\bhave\s+you\s+got\b|\b(?:is|are)\s+(?:it|this|these|they)\s+available\b/i,
+      /\b(?:in\s+stock|out\s+of\s+stock|back\s+in\s+stock|auf\s+lager)\b|\bdo\s+you\s+(?:sell|stock)\b|\bhave\s+you\s+got\b|\b(?:is|are)\s+(?:it|this|these|they)\s+available\b|\b(?:can|could|may)\s+i\s+(?:buy|purchase|order)\b|\bwhere\s+can\s+i\s+(?:buy|get)\b/i,
   },
   {
     id: "INT-PS03",

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { Pool, PoolClient } from "pg";
 
 import { getAppPool, getSourcePool } from "@/lib/db/pools";
+import { runBodyRepair } from "@/lib/sync/body-repair";
 import { assertApplicationDatabase, assertSourceReadOnly } from "@/lib/sync/guard";
 import { SYNC_FEEDS, type Queryable, syncFeed } from "@/lib/sync/message-sync";
 
@@ -35,6 +36,28 @@ export const maxDuration = 60;
 const PAGE_SIZE = 300;
 const MAX_PAGES_PER_FEED = 3;
 const BOOTSTRAP_START = "2026-08-01 00:00:00";
+
+/**
+ * How many stored-blank messages one invocation re-checks, after the feeds.
+ *
+ * WHY THE SYNC ALONE LEAVES BLANK MESSAGES. eBay writes a message in two places:
+ * the header lands in `ebay_message_headers` immediately, the text arrives in
+ * `ebay_messages` later. `syncFeed` reads strictly forward of its
+ * `(timestamp, pk)` watermark, so a header ingested in that gap is stored
+ * honestly as `empty` and the cursor never looks at it again — the customer's
+ * words exist in the source and never reach the reviewer.
+ *
+ * The watermark is not the defect; it is what makes the sync cheap and
+ * resumable. The defect was that the repair pass, which reads by primary key and
+ * consults no cursor at all, only ever ran when someone remembered to run a
+ * script — so production never ran it.
+ *
+ * DELIBERATELY SMALL. This shares a 60-second budget with five feeds. Candidates
+ * are ordered newest-first, so a bounded pass spends itself where a body is most
+ * likely to have just arrived, and anything it does not reach is still a
+ * candidate on the next tick. There is no cursor to leave inconsistent.
+ */
+const REPAIR_CANDIDATE_LIMIT = 200;
 
 /**
  * Vercel Cron Jobs send `Authorization: Bearer $CRON_SECRET` automatically
@@ -119,5 +142,31 @@ export async function GET(request: Request): Promise<NextResponse> {
     }
   }
 
-  return NextResponse.json({ ranAt: new Date().toISOString(), results });
+  // Bodies that arrived after their header did. Runs after the feeds so a
+  // message ingested blank moments ago is already a candidate, and outside the
+  // loop because it consults no watermark and belongs to no single feed.
+  //
+  // Its failure is reported, never fatal: a sync that stored messages correctly
+  // has done its job even if the repair pass could not run.
+  let repair: Record<string, unknown>;
+  try {
+    const outcome = await runBodyRepair(
+      app,
+      source,
+      { limit: REPAIR_CANDIDATE_LIMIT, dryRun: false },
+      begin,
+    );
+    repair = {
+      examined: outcome.examined,
+      repaired: outcome.repaired,
+      skipped: outcome.skipped,
+      skippedByReason: outcome.skippedByReason,
+      moreAvailable: outcome.moreAvailable,
+    };
+  } catch (cause) {
+    console.error("[cron/sync] body repair failed", cause);
+    repair = { error: "body repair failed — see server logs" };
+  }
+
+  return NextResponse.json({ ranAt: new Date().toISOString(), results, repair });
 }
