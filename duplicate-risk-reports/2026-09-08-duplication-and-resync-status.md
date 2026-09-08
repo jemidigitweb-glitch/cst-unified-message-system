@@ -1,0 +1,125 @@
+# Duplication and re-sync risk status — 2026-09-08
+
+## Purpose
+
+Whether re-running a sync, a resolver or the new invoice path produces the same
+result twice or something different, and where duplicate source rows could
+otherwise cause a wrong match.
+
+## Current status
+
+The sync writers are idempotent and the order matchers refuse to collapse a
+duplicate by picking one. The invoice path added no new write, no new cache and
+no new storage, so it introduced no new idempotency surface — but it did add a
+new place where a duplicate source row must not be silently resolved, and that
+is handled by counting rather than picking.
+
+## Implemented features (protections in place)
+
+### Sync idempotency
+
+- `cst_app.conversation_messages` is unique on
+  `(source_database, source_schema, source_table, source_pk)`. A repeated sync
+  run upserts rather than duplicates.
+- `cst_app.conversations` is unique on `(threading_rule_version, thread_key)`.
+  A grouping-rule change produces new conversations under a new version rather
+  than corrupting existing ones.
+- Idempotency does **not** rest on the watermark being correct. The watermark in
+  `cst_app.sync_state` only decides how much work is re-done; the unique
+  constraints decide correctness.
+- The eBay feed key is `ebay-message-headers` (the source table's name), matching
+  the cursor the original bootstrap wrote. A mismatched key would leave two
+  cursor rows for one feed.
+
+### Thread-key collision safety
+
+The thread key is a canonical JSON array, not a delimiter join. With a `|` join
+these two distinct conversations produce an identical key:
+
+```
+{ listingItemRef: "1",   counterpartyRef: "a|b" }
+{ listingItemRef: "1|a", counterpartyRef: "b"   }
+```
+
+Two different customers would silently merge into one thread. JSON escaping makes
+the encoding injective and keeps `null` distinguishable from the empty string.
+
+### Duplicate source data — known and handled
+
+- **One eBay `item_id` is not one listing.** A multi-variation listing stores one
+  row per SKU variant under the same item id (one live listing carried 246
+  variant rows). Order matching therefore never treats an item id as a unique
+  product.
+- **Order numbers are reused.** 655 `orders.order_id` values appear across 1,608
+  source rows, and `(sub_source_id, order_id)` does not disambiguate them. No
+  code anywhere resolves an order from an order number. Everything keys on
+  `orders.id`.
+- **Return evidence** must match on `order_id` + `item_id` + `sub_source`, never
+  `item_id` alone, or a different buyer's return would surface.
+- **Several matching orders is a state, not a problem to be solved.** The
+  matcher reports `ambiguous` and stops. A reviewer picks.
+
+### Invoice-specific duplication risk (new)
+
+`lib/repositories/order-invoice-repository.ts` reads billing, payment and contact
+rows through LATERALs rather than joins, so one order is one header row by
+construction — an order with two billing rows cannot fan out into two invoice
+headers.
+
+Where a LATERAL finds more than one row:
+
+- the value columns come back `NULL` from the database itself
+  (`CASE WHEN count(*) = 1 THEN …`), and
+- the count travels alongside, so the caller is **told** a duplicate exists
+  rather than handed an arbitrary one of them.
+
+The resulting warnings are `billing_address_duplicated` (measured: 1 order in
+1.13M) and `order_info_duplicated`.
+
+`min()` and `bool_or()` are safe here only because they are read exclusively
+under `count(*) = 1`.
+
+The line query's `ORDER BY oii.id` is a **reading order within one invoice**, not
+a ranking between candidates — every row belongs to the one order the caller
+already resolved. Without it the same invoice would print its lines in a
+different sequence on each read.
+
+### Re-generation safety
+
+- The invoice is generated on demand, in memory, and nothing is written. Printing
+  the same invoice twice reads the same rows and produces the same document.
+  There is no invoice record, no file, no URL and no sequence number to collide.
+- Draft revisions are append-only. Regenerating adds a revision; it never
+  overwrites one.
+- A reviewer's order selection is not persisted as a resolution, so it cannot
+  become a stale duplicate answer.
+
+## Database / data source
+
+- Source: read-only, so no duplicate can be created there by this application.
+- Application writes: `cst_app` only, through the existing writers.
+- The header query returns null unless **exactly one** row comes back for the
+  primary key — never "take the first".
+
+## User workflow
+
+Invisible to the agent. The visible consequence is that an ambiguous
+conversation shows candidate orders and asks, instead of showing one.
+
+## Known limitations
+
+- If the order-matching logic changes, `cst_app.context_snapshots` holds the
+  previous answer. A matching-logic fix needs the affected snapshots reset, or
+  conversations keep the old resolution.
+- The sync's unusable-row counts are reported per run but are not aggregated
+  anywhere for trend analysis.
+- No automated check re-runs a full sync against a copy and diffs the result;
+  idempotency is enforced structurally and by tests, not by a periodic audit.
+
+## Next pending items
+
+- A periodic snapshot-health query pack (counts by `resolution` and marketplace)
+  run on a schedule rather than on demand.
+- A recorded procedure for resetting stale context snapshots after a matching
+  change.
+- Nothing invoice-related is pending here: the path holds no state to duplicate.

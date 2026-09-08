@@ -14,3 +14,7 @@ Test plans, acceptance checks, and validation results for CST features — the r
 - The automated tests themselves — those live in `tests/` and run via `npm test`
 - Raw query output containing customer message text or personal data — summarize findings, don't paste rows
 - Final sign-off/closure notes — that's `closure/`; this folder is the checklist and its results, not the decision
+
+## Current status
+
+See [2026-09-08-validation-status.md](2026-09-08-validation-status.md) — the implemented system status as at 2026-09-08.

@@ -13,3 +13,7 @@ How data actually flows from the marketplace source database into this applicati
 
 - The SQL that implements a mapping — that's `lib/repositories/`, parameterised and tested
 - Example rows containing real customer data — describe the shape and the join keys, not actual values
+
+## Current status
+
+See [2026-09-08-implemented-data-map.md](2026-09-08-implemented-data-map.md) — the implemented system status as at 2026-09-08.

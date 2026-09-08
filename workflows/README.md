@@ -13,3 +13,7 @@ Business workflows, process diagrams, and state flows for the CST Unified Messag
 
 - The workflow *implementation* — that's `lib/sync/draft-writer.ts` and `tests/guards/draft-workflow.test.ts`, which are the actual source of truth
 - CST's customer-service business rules (refunds, returns policy, etc.) — those live in the knowledge base this app reads from, not here
+
+## Current status
+
+See [2026-09-08-workflow-status.md](2026-09-08-workflow-status.md) — the implemented system status as at 2026-09-08.

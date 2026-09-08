@@ -15,3 +15,7 @@ Approved, reviewed SQL for reference and inspection — not application code, an
 - Queries containing real customer data in their comments or example output — describe findings in prose instead
 
 Every query kept here must be read-only against the marketplace source, or scoped to `cst_app` only, matching the rest of this project's read/write discipline.
+
+## Current status
+
+See [2026-09-08-sql-status.md](2026-09-08-sql-status.md) — the implemented system status as at 2026-09-08.

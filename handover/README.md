@@ -14,3 +14,7 @@ Everything a new owner or a returning contributor needs to pick this project up 
 - Step-by-step technical documentation of how a feature works — that's `documentation/`
 - Final sign-off records for a specific piece of work — that's `closure/`
 - Credentials or `.env` values themselves — reference where they're stored, never the values
+
+## Current status
+
+See [2026-09-08-handover-status.md](2026-09-08-handover-status.md) — the implemented system status as at 2026-09-08.

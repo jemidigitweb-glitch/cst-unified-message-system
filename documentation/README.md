@@ -16,3 +16,7 @@ Technical and user documentation for the CST Unified Message System that doesn't
 - CST business rules themselves — those live in the knowledge base this app reads from (`Knowledge-source/`), not here
 
 Keep documentation close to what it describes when possible; use this folder for things that genuinely don't have a natural home next to code.
+
+## Current status
+
+See [2026-09-08-implemented-system-overview.md](2026-09-08-implemented-system-overview.md) — the implemented system status as at 2026-09-08.

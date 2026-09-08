@@ -13,3 +13,7 @@ Reusable collections of investigation queries — grouped by the question they a
 - One-off ad hoc queries that answered a single question and won't be needed again
 - Any query that writes to the marketplace source — every query kept here must be read-only there, matching this project's read-only source discipline
 - Query output containing real customer data — keep the query, not the result rows
+
+## Current status
+
+See [2026-09-08-query-pack-status.md](2026-09-08-query-pack-status.md) — the implemented system status as at 2026-09-08.

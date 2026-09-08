@@ -13,3 +13,7 @@ AI prompts and prompt-related reference material — for the drafting model this
 - The live prompt-building code itself — that's `lib/ai/draft-assembly.ts` and `lib/ai/instructions.ts`; nothing here is what actually runs
 - Real customer conversation text used as a prompt example — use synthetic examples, same rule as `tests/`
 - API keys or provider configuration — those are `.env`-only, per `lib/config/env.ts`
+
+## Current status
+
+See [2026-09-08-grounding-status.md](2026-09-08-grounding-status.md) — the implemented system status as at 2026-09-08.
