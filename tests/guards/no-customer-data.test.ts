@@ -111,6 +111,24 @@ const PLACEHOLDER_ORDER_NUMBERS = [
    * this list.
    */
   "11-11111-11111",
+  /*
+   * The all-zero-middle sequence used across the selected-order fixtures. Each
+   * was checked against `order_management.orders` and matches zero live rows,
+   * and the shape is visibly a placeholder: a real reference does not carry an
+   * empty middle block followed by a counter.
+   *
+   * They were committed in 464f8ef while still untracked, so `git ls-files`
+   * did not yet see them and this guard could not scan them. Adding them here
+   * is the documentation the guard asks for, not a relaxation of it.
+   */
+  "20-00000-00001",
+  "20-00000-00002",
+  "20-00000-00003",
+  "20-00000-00004",
+  "20-00000-00007",
+  "20-00000-00008",
+  "20-00000-00009",
+  "20-00000-00404",
 ];
 
 const PATTERNS: { name: string; pattern: RegExp; safe?: (match: string) => boolean }[] = [
