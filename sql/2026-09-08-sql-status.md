@@ -99,6 +99,53 @@ investigators.
   exist, and which are applied to the application database is not recorded
   anywhere in writing.
 
+## Added: one statement, in the repository beside the others
+
+`LIST_AWAITING_RESPONSE` in `lib/repositories/conversation-repository.ts`. It
+follows the same discipline as everything above: parameterised, `cst_app` only,
+SELECT only, and it lives beside the function that runs it rather than as a
+loose copy here.
+
+Reads three tables and nothing else — `conversations`, `conversation_messages`,
+and `draft_replies` for existence. It does not touch `draft_revisions`,
+`draft_revision_sources`, `conversation_rule_analysis`, `ai_usage_log`,
+`context_snapshots` or `audit_log`, and a test asserts that.
+
+Four constructs worth naming, because all four are deliberate:
+
+- **`c.marketplace = ANY($1::text[])`**, so one statement serves the global
+  notification feed and a single-marketplace read alike. The array is always
+  built from a fixed allowlist of literals; nothing a caller supplies reaches
+  it, and it is never omitted.
+- **`row_number() OVER (PARTITION BY c.marketplace ...)` in a CTE, with the
+  expensive reads outside it.** The bound has to be per marketplace: measured
+  live, Shopify has 3,342 unanswered conversations to Amazon's 44, so a shared
+  `LIMIT 100` is ~90% Shopify and returned nothing at all for Amazon. Ranking in
+  the CTE and projecting outside it keeps the three correlated subqueries off
+  the ~3,700 rows that will be discarded. `EXPLAIN ANALYZE` confirms Postgres
+  pushes the bound into the window as a `Run Condition`, so it stops early per
+  partition: 14,915 conversations → 3,695 candidates → **246** rows projected.
+- **`inbox_visibility <> 'filtered'`** — see the data map for why this is not
+  the `reply_inbox`-only filter the inbox query removed on purpose.
+
+- An **inner** `JOIN LATERAL` resolves the newest inbound message by
+  `(source_ts, source_pk)` — the ordering every other view uses. Being inner, it
+  is also the "a customer message exists" condition, so that condition is
+  expressed once rather than duplicated as a second predicate that could
+  disagree with `inbound_count`.
+- A **row-value comparison**,
+  `(o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk)`,
+  decides whether a reply came after that message. The same idiom `sync_state`
+  uses for its watermark, and for the same reason: the source timestamp is not
+  unique, so a reply landing in the same second is ordered by the PK rather than
+  missed.
+
+**Verified by EXPLAIN against the live application schema**, not only by review.
+The plan is index-driven throughout — `ix_conversations_marketplace_sub_source`
+for the marketplace, a hash anti-join against the small `draft_replies` table,
+and `ix_conversation_messages_thread_order` backward for both message lookups.
+No migration was written, and no DDL exists for this feature.
+
 ## Next pending items
 
 - Save the approved inspection queries described in

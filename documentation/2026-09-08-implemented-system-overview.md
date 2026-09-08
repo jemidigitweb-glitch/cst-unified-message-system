@@ -199,6 +199,52 @@ Live message → thread → verify context → AI draft
 - The source timestamp zone is unconfirmed; timestamps are stored naive and
   copied verbatim.
 
+### 8. Order-change notification list
+
+A **notification bell** at the top right of the header, counting the
+conversations classified `"Order change, before shipping queries"` that nobody
+has answered — **across every marketplace, independently of the selected tab**.
+Clicking it opens a right-side drawer; clicking a row closes the drawer,
+switches to that conversation's own marketplace and opens it.
+
+Global by design: an Amazon customer waiting on an order change is waiting
+whether or not the reviewer is looking at eBay. This is the only global list in
+the workspace — the inbox, the No Rule list and the unresolved feed are the
+working lists read inside one tab and stay scoped to it.
+
+- `lib/repositories/conversation-repository.ts :: listAwaitingResponseByCategory`
+  runs one statement: a CTE with an inner `JOIN LATERAL` for the newest customer
+  message, `inbox_visibility <> 'filtered'`, a `NOT EXISTS` on the draft row, a
+  `NOT EXISTS` on any reply ordered after that message by row-value comparison,
+  and a `row_number()` partitioned by marketplace. Then the category is matched
+  in application code, because it is not stored.
+- **The bound is per marketplace, not global.** Measured live: Shopify has 3,342
+  unanswered conversations to eBay's 309 and Amazon's 44, so one shared window
+  is ~90% Shopify and the single Amazon conversation waiting for an order-change
+  reply fell out of it entirely. Every marketplace gets a window of the same
+  size; the expensive per-row reads run only on what survives it.
+- `GET /api/conversations/awaiting-response` — read-only, GET only, **no
+  parameters**: the marketplace list is built server-side from a fixed
+  allowlist, so there is nothing to supply and nothing to validate.
+- `components/notification-bell.tsx` is the header control and the whole of the
+  indicator: no provider, no store, no browser notification, no sound, no
+  polling. `components/notification-drawer.tsx` is a `fixed` overlay, not a
+  layout column — it is read INSTEAD of a conversation, not alongside one, so
+  giving it a grid track would narrow the conversation permanently for something
+  on screen for two seconds. Selecting a row calls the same `select(id)` the
+  inbox list calls, so the conversation view, context panel and draft panel are
+  reached exactly as they always were and know nothing about it.
+- **Bounded by candidates, not by matches.** The query limits the unanswered
+  conversations and the classifier narrows them afterwards, so a page can
+  legitimately return two matches from a hundred candidates. `scanned` and
+  `hasMore` travel with the response and the drawer prints them when it did not
+  reach the end. See `capability/` for what that measures live per marketplace.
+- Nothing here writes, classifies or advances anything. No migration, no stored
+  category, no workflow state.
+
+The design analysis behind it, including why no table was added, is
+[2026-09-08-order-change-notification-analysis.md](2026-09-08-order-change-notification-analysis.md).
+
 ## Next pending items
 
 - Marketplace reply sending — not built; no send button, endpoint, queue,

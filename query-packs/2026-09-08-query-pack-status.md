@@ -96,6 +96,29 @@ folder.
   order context is resolved for those marketplaces.
 - Pack B has no scheduled run; it is executed on demand.
 
+## Added: the awaiting-response query
+
+`LIST_AWAITING_RESPONSE`, in `lib/repositories/conversation-repository.ts`. It
+is application SQL, so it lives beside its function rather than in this folder —
+but its shape is worth recording here, because it answers a question a reviewer
+may want to ask directly.
+
+**The question:** which conversations in one marketplace have a customer message
+that nobody has answered, either with a draft or with a reply?
+
+**Answered by three conditions in SQL** — an inner `JOIN LATERAL` for the newest
+inbound message, `NOT EXISTS` on `cst_app.draft_replies`, and `NOT EXISTS` on
+any outbound message ordered after that inbound one by row-value comparison —
+**plus one in application code**, the category, which cannot be a predicate
+because it is not stored.
+
+Parameters: `$1` marketplace, `$2` row bound. Read-only, `cst_app` only,
+verified by `EXPLAIN` against the live schema.
+
+**A caveat for anyone running it by hand:** the SQL alone answers "unanswered",
+not "unanswered AND an order change". Without the classifier it returns every
+case area, so a count taken from it will be larger than the notification list.
+
 ## Next pending items
 
 - Save the actual SQL for packs A–E in this folder, parameterised and with the

@@ -116,6 +116,25 @@ conversation shows candidate orders and asks, instead of showing one.
 - No automated check re-runs a full sync against a copy and diffs the result;
   idempotency is enforced structurally and by tests, not by a periodic audit.
 
+## Added: order-change notification list — duplication assessed
+
+**No new duplication risk.** The list writes nothing, so it cannot duplicate a
+row, and it introduces no second copy of anything:
+
+| Could have been duplicated | What was done instead |
+| --- | --- |
+| The category detector | `toInboxItem` is called, so a notification row's category is the SAME reading the inbox shows. No second classifier, no keyword match, no stored copy — a test asserts the SQL contains no category, order-change or cancellation vocabulary at all. |
+| The inbox query | A separate statement, because the inbox's contract is "every stored conversation, whatever its placement" and adding a narrowing predicate to it is how 3,046 conversations became unreachable once before. The shared parts (`LAST_DIRECTION`, `INBOUND_TEXT`, `INBOUND_TEXTS`) are the same constants, interpolated, not retyped. |
+| The row shape | `AwaitingResponseConversationItem` extends `inboxItemSchema` rather than restating it. |
+| The message preview | The shared `previewOf` / `displayBody`, so an undecodable body reads the same here as in the thread view. |
+| The selection path | The same `onSelect` → `select(id)` the inbox and No Rule lists use, so there is one conversation-detail path, not two. The drawer is handed `onSelect` and calls it; it cannot reach `setDetail` or `setView`, so it has no way to grow a second meaning for "selected". |
+| The priority colours | `PRIORITY_RIBBON_CLASS`, read from the same exported table the inbox ribbon reads, so red cannot mean one thing in the drawer and another in the list. A guard asserts the drawer contains no inline copy of those classes. |
+
+**One conversation can legitimately appear in two lists** — the inbox and this
+one, or No Rule and this one. That is not duplication: they are different
+questions about the same row, and each list is defined by its own predicate.
+Nothing dedupes across them and nothing should.
+
 ## Next pending items
 
 - A periodic snapshot-health query pack (counts by `resolution` and marketplace)

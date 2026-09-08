@@ -170,6 +170,42 @@ panel → (choose an order if several matched) → draft and/or print invoice.
 - The billing address is mapped as presence, not content, so no invoice can
   print a bill-to block today.
 
+## Added: no new mapping
+
+The order-change notification list introduces **no source mapping, no column and
+no table**. It reads application state three existing mappings already produced:
+
+| Read | Already written by |
+| --- | --- |
+| `cst_app.conversations` | `lib/sync/conversation-writer.ts` |
+| `cst_app.conversation_messages` | the same writer |
+| `cst_app.draft_replies` (existence only) | `lib/sync/draft-writer.ts` |
+
+It never reaches the marketplace source database, and it reads **every**
+conversation-backed marketplace in one statement rather than one at a time —
+the feed is global by design.
+
+**`inbox_visibility` is now read, and the distinction matters.** The
+notification query excludes `filtered` conversations: the bounces, courier
+notices, other-channel notifications and unsolicited mail the ingestion layer
+already placed there, each with its reason recorded beside it. 4,452 of
+Shopify's 7,794 unanswered conversations are these.
+
+This is **not** the `reply_inbox`-only filter the inbox query removed on
+purpose. That one decided what EXISTS and made 3,046 stored conversations
+unreachable from every view in the application. This decides what NOTIFIES.
+Every one of these conversations is still listed, still labelled and still
+openable in the inbox; what it no longer does is claim a customer is waiting for
+an answer.
+
+**The category is still not stored, and deliberately.** It is read on every
+request by `classifyConversationCategory` from the customer's own text, exactly
+as the inbox chip is — so the notification filter is applied in application code
+against the value `toInboxItem` already produced, not as a SQL predicate. A
+stored category column would be a second source of truth that drifts the moment
+the phrase table changes, and would need the backfill the current design exists
+to avoid.
+
 ## Next pending items
 
 - Carry the billing party (name/address) through the invoice resolver — a

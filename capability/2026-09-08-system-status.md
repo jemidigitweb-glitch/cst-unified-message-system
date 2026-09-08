@@ -129,6 +129,58 @@ Print invoice is available at any point once exactly one order has resolved.
 - No invoice PDF is stored. `order_management.shipment.invoice` is a DHL export
   document path and is never read.
 
+## Added: order-change notification list
+
+A **notification bell** sits at the top right of the workspace header, carrying
+a count of conversations classified `"Order change, before shipping queries"`
+that nobody has answered — a customer message exists, no draft was ever written,
+and no reply of ours came after that message. Clicking it opens a right-side
+drawer listing them; clicking one closes the drawer, switches to that
+conversation's own marketplace and opens it.
+
+**GLOBAL, NOT SCOPED TO THE SELECTED TAB.** An Amazon customer waiting on an
+order change is waiting whether or not the reviewer is looking at eBay, so the
+bell counts every marketplace and each row names its own. This is the only
+global list in the workspace; the inbox, the No Rule list and the unresolved
+feed remain per-marketplace, because those are the working lists read inside one
+tab.
+
+The count is on screen whichever view is open, because the list is fetched up
+front rather than when the bell is clicked, and it is refreshed when a draft is
+generated so a conversation just answered leaves the badge. There is no
+notification store, no read/unread state, no dismissal, no polling, no browser
+notification and no sound — the bell reads a list and opens a drawer.
+
+**A measured limitation, not a theoretical one.** The case area is read from the
+customer's own words on every request rather than stored, so it cannot be a
+database filter: the query bounds the UNANSWERED conversations and the reading
+narrows them afterwards. The unanswered queues are wildly uneven, so the bound
+is applied PER MARKETPLACE rather than globally — measured live on 2026-09-08:
+
+| Marketplace | Unanswered (reply inbox) | Also unanswered but filtered out of the inbox | Window | Complete? |
+| --- | --- | --- | --- | --- |
+| Shopify | 3,342 | 4,452 | 100 | no |
+| eBay | 309 | 0 | 100 | no |
+| Amazon | 44 | 0 | 100 | **yes** |
+| B&Q / Temu | — | — | not read | category suppressed at source |
+
+A single shared window of 100 was ~90% Shopify and returned **nothing** for
+Amazon or eBay; the one Amazon conversation waiting for an order-change reply
+was invisible. Partitioning the bound restored it. The drawer says how far it
+looked; the bell cannot, because a badge has nowhere to put a caveat.
+
+Live result on 2026-09-08: **3 notifications** (2 Shopify, 1 Amazon) from 244
+candidates read across three marketplaces, in ~2.7s.
+
+It is a READ layer. Selecting a row opens the same conversation, context panel
+and draft panel as the inbox does; nothing about the list writes, decides or
+advances anything. B&Q and Temu produce no rows, because their category is
+suppressed at source (see `CATEGORY_SUPPRESSED_MARKETPLACES`) — that is
+inherited, not a new rule.
+
+Still cannot send anything to a customer. Nothing here adds a state after
+`reviewed`.
+
 ## Next pending items
 
 - Marketplace reply sending — not built, out of Phase 1 scope.

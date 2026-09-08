@@ -132,6 +132,79 @@ context, draft, review, and — where an order resolved — print an invoice.
 - Validation of Amazon, Shopify, B&Q and Temu is limited to message display;
   there is no order context to validate for those marketplaces.
 
+## Added: order-change notification list
+
+```
+npm test   →   Test Files 121 passed | 12 skipped (133)
+               Tests     3293 passed |  30 skipped (3323)
+```
+
+Measured before and after, so the delta is attributable: 3,242 pre-existing
+tests pass with the change applied and the two new files excluded; the two new
+files add 51. No existing test or guard was edited.
+
+Note the totals above are lower than the figures at the head of this file, and
+not because of this work — the invoice suites left the tree in `ef18a74`. The
+head of this document has not been reconciled with that; see the limitation
+below.
+
+`npx tsc --noEmit` reports one error, pre-existing and unrelated: a stale
+`.next/types/validator.ts` still references the deleted invoice route.
+`npx eslint` reports the same 2 errors and 2 warnings as before the change, all
+in files this work did not touch; the new files are clean.
+
+**What the automated tests can and cannot prove**, stated because it bounds the
+claim:
+
+| Condition | How it is tested |
+| --- | --- |
+| category matches | **Behavioural** — the real classifier, via an injected fake client |
+| suppressed marketplace returns nothing | **Behavioural** |
+| every mapping, bound, ordering, parameter | **Behavioural** |
+| no draft exists | **Structural** — the predicate text is pinned |
+| no reply after the customer's message | **Structural** — the predicate text is pinned |
+
+A fake client cannot execute SQL, so the two exclusions are asserted as query
+text, the same standard the No Rule queries are already held to. The statement
+itself was separately **validated by `EXPLAIN` against the live application
+schema** — it plans, and every access path is an index scan — but no live run
+has confirmed the rows it returns.
+
+### Live check of the endpoint (2026-09-08)
+
+`GET /api/conversations/awaiting-response` was called against the running dev
+server for all five marketplaces. It answers, and the shape is correct:
+
+| Marketplace | Matches | Candidates scanned | Older ones exist |
+| --- | --- | --- | --- |
+| eBay | 0 | 100 | yes |
+| Amazon | 1 | 44 | no — a complete answer |
+| Shopify | 2 | 100 | yes |
+| B&Q | 0 | 100 | category suppressed |
+| Temu | 0 | 100 | category suppressed |
+
+Amazon is the one complete answer in the set, and it is the useful one: the
+whole unanswered queue was read and exactly one order-change conversation is
+waiting. eBay's zero is the scan window, not an empty queue — see `capability/`.
+
+The rendered page was also checked over HTTP: the bell is present
+(`aria-label="Notifications"`), the string "Order Change" appears nowhere, and
+the No Rule and AI Usage tabs are unchanged.
+
+### Not yet checked by a person
+
+- **No screenshot was captured.** The browser automation could not render
+  `localhost` — three attempts across two hostnames returned a Chrome error page
+  while `curl` returned HTTP 200 from the same server — so the drawer has not
+  been seen. This is the one requested deliverable that is outstanding.
+- The bell has not been clicked, and the drawer has not been opened or closed by
+  a person.
+- Clicking a notification has not been observed to open the conversation.
+- No live conversation has been confirmed to leave the list once a draft is
+  generated for it.
+- The row-value reply comparison has not been observed on a real conversation
+  where a reply and a customer message share a second.
+
 ## Next pending items
 
 - Run checklist D and record the results here.

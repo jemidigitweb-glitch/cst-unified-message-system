@@ -108,6 +108,45 @@ conversation.
   only… no database connected", which is no longer true. It has not been updated
   in this pass.
 
+## Added: order-change notification list
+
+**Where it lives.** `listAwaitingResponseByCategory` in
+`lib/repositories/conversation-repository.ts`, behind
+`GET /api/conversations/awaiting-response?marketplace=<name>`, rendered by
+`components/notification-bell.tsx` (header, top right) and
+`components/notification-drawer.tsx` (a `fixed` right-side overlay). There is no
+Order Change tab and no `view` for it; both were removed.
+
+**What to know before changing it:**
+
+- The case area is `ORDER_CHANGE_CATEGORY` in `lib/domain/inbox.ts`, typed as
+  `MessageCategory`. Its value is the classifier's own wording — *"Order change,
+  before shipping queries"*. Nothing anywhere says "Order Change Before
+  Queries"; if a brief uses that phrasing, it means this.
+- The category cannot become a SQL predicate. It is not stored and must not be;
+  the reasons are in `data-maps/` and in the header of
+  `lib/knowledge/message-category.ts`.
+- B&Q and Temu will always show an empty list. That is
+  `CATEGORY_SUPPRESSED_MARKETPLACES`, inherited from the inbox, not a bug.
+- Two standing guards constrain the layout: the workspace must keep exactly two
+  `<aside>` elements, and the last one must be the details panel. Adding a
+  right-hand column means revisiting both, deliberately.
+- **Two spellings, on purpose.** `ORDER_CHANGE_CATEGORY` is the classifier's
+  value and the only one that may reach a comparison;
+  `ORDER_CHANGE_NOTIFICATION_TITLE` ("Order Change Before Shipping Queries") is
+  the drawer's heading and is display copy only. Do not "fix" one to match the
+  other without deciding which register the change belongs to.
+- The list is bounded by candidates, not matches. If a reviewer reports a
+  conversation missing, check `scanned`/`hasMore` first — it may simply be older
+  than the scan window. **Measured live on 2026-09-08 this bites on eBay:** 0
+  matches from 100 candidates with more below. See `capability/` for the figures
+  per marketplace, and treat "the bell is empty" as "check the window" until the
+  bound is revisited.
+
+**Nothing new to operate.** No migration to apply, no environment variable, no
+scheduled job, no credential. The feature is live as soon as the code is
+deployed.
+
 ## Next pending items
 
 - Marketplace reply sending — not built and out of Phase 1 scope.

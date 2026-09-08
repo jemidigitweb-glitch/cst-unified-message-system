@@ -94,6 +94,60 @@ available once exactly one order has resolved.
 - No VAT figure is produced and no VAT invoice can be issued.
 - No document is stored anywhere; the PDF exists for the length of the response.
 
+## Added: order-change notification list — decisions taken
+
+**In scope, and delivered.** A per-marketplace read layer listing
+`"Order change, before shipping queries"` conversations with no draft and no
+reply after the customer's newest message.
+
+**The decisions, and why each went the way it did:**
+
+1. **No new table, no migration.** Every condition is answerable from
+   `conversations`, `conversation_messages` and the existence of a
+   `draft_replies` row. Migration `0009` set the standard for when a table IS
+   required — a finding that has to outlive the page — and nothing here is such
+   a finding. A stored flag would drift the moment the phrase table changed.
+2. **The category is filtered in application code, not in SQL.** It is not a
+   column and must not become one; see `data-maps/`.
+3. **The draft test is the absence of the ROW, not `workflow_state`.** A saved
+   human edit appends a revision and advances no state, so the state is a proxy
+   that would show an edited conversation as untouched.
+4. **"No CST reply" was read as "no reply after the customer's newest message",**
+   not as "no outbound message ever". A thread we answered in June and the
+   customer wrote to again in August is unanswered work. This was the one
+   genuinely ambiguous requirement; the stricter reading would have hidden
+   exactly the conversations most likely to need attention.
+5. **A bell and a right-side drawer.** This replaced a first attempt that put
+   the list in the left column under an "Order Change" tab. The tab was the
+   wrong shape: No Rule and AI Usage change WHAT IS ON SCREEN, and a
+   notification does not — it opens over whatever the reviewer was doing and
+   closes when they pick something. The drawer is a `fixed` overlay rather than
+   a grid column for the same reason, and because two standing guards fix the
+   workspace at exactly two `<aside>` elements with the details panel last.
+   The tab, its `view` value and `components/order-change-list.tsx` were all
+   removed; a guard asserts they stay removed.
+6. **No global notification framework.** No provider, no store, no context, no
+   toast, no browser Notification, no sound, no polling, no read/unread state
+   and no dismissal. One boolean, one already-fetched list. A row leaves the
+   list when a draft is written or a reply lands, and by no other means —
+   there is deliberately nowhere to record "I have seen this".
+7. **Bounded, and it says so.** The query bounds the unanswered conversations
+   and the classifier narrows them afterwards, so the response carries `scanned`
+   and `hasMore` and the drawer prints a line when it did not reach the end. A
+   silent cap would read as "there are none".
+
+   **Measured live, this is now a known gap rather than a caveat.** eBay returns
+   0 matches from 100 candidates with more below, so its bell reads empty while
+   unanswered order-change conversations may exist. The drawer can say so; a
+   badge cannot. **Open for the requester**: raise the bound, narrow the
+   candidate set further in SQL, or accept a recent-window notification. Nothing
+   was changed unilaterally, because each option costs something different
+   (classifier time, query complexity, or coverage).
+
+**Explicitly not done:** no migration, no write, no stored category, no change
+to sync, grouping, the classifier, AI drafting, the draft workflow, the reply
+workflow or order context.
+
 ## Next pending items (explicitly NOT closed)
 
 - Marketplace reply sending.

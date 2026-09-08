@@ -122,6 +122,26 @@ Print invoice → conversation id (+ the reviewer's choice, where one was made)
 - `reviewed` being terminal means the system cannot record whether a reply was
   ever actually sent.
 
+## Added: a view onto the workflow, not a step in it
+
+The order-change notification list observes two ABSENCES in the workflow above
+and adds nothing to it:
+
+```
+no draft row  +  no reply after the customer's newest message  →  listed
+```
+
+- It introduces no workflow state, no transition and no terminal state. The four
+  states and their transition table are byte-identical.
+- It reads the ABSENCE OF THE DRAFT ROW, never `workflow_state = 'received'`.
+  The state is a proxy that a saved human edit does not move (a PATCH appends a
+  revision and advances nothing), so a conversation carrying an edited draft
+  would otherwise reappear as untouched work.
+- A conversation leaves the list the moment a draft is written or a reply lands
+  after the customer's message — as a consequence of the existing workflow
+  running, never as an action taken on the list.
+- Opening, reading or ignoring the list changes nothing.
+
 ## Next pending items
 
 - Marketplace reply sending, and any state after `reviewed` — not built, out of

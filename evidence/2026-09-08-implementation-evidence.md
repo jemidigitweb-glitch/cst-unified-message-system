@@ -103,6 +103,56 @@ Not applicable — this folder records checks, not usage.
   (`npm run test:coverage` exists but no run is recorded here).
 - The live invoice check has never been run unattended, by design.
 
+## Added: order-change notification list
+
+**What was built**
+
+| File | Change |
+| --- | --- |
+| `lib/domain/inbox.ts` | modified — the read contract, the two constants, the feed schema |
+| `lib/repositories/conversation-repository.ts` | modified — `LIST_AWAITING_RESPONSE` and `listAwaitingResponseByCategory` |
+| `app/api/conversations/awaiting-response/route.ts` | new — GET only |
+| `components/notification-bell.tsx` | new — the header control |
+| `components/notification-drawer.tsx` | new — the right-side drawer |
+| `components/icons.tsx` | modified — `BellIcon`, beside the two existing glyphs |
+| `components/workspace.tsx` | modified — one bell, one drawer, one fetch, one boolean |
+| `tests/repositories/awaiting-response.test.ts` | new — 26 tests |
+| `tests/guards/notification-bell.test.ts` | new — 32 tests |
+
+The list first shipped as a fourth workspace tab (`components/order-change-list.tsx`,
+`view === "order_change"`). Both were **removed** when it became a bell and a
+drawer: a tab changes what is on screen and this does not — it opens over
+whatever the reviewer was already doing and closes when they pick something. A
+guard now asserts the tab is gone and that the component file no longer exists.
+
+**Evidence the existing system was not modified**
+
+- `git status` shows three modified files, all additive; no existing function,
+  query, component or test was edited.
+- `lib/sync/*`, `lib/marketplaces/*`, `lib/knowledge/*`, `lib/ai/*` and
+  `lib/context/*` are untouched — message sync, grouping, the classifier, AI
+  drafting and order context are byte-identical.
+- No migration was added; `migrations/` still ends at `0010`.
+- The existing `LIST_CONVERSATIONS`, `listConversations`, `categoryFor`,
+  `priorityFor` and `toInboxItem` are unchanged; the new function calls
+  `toInboxItem` rather than reimplementing it, so a notification row's category
+  and priority are the same readings the inbox shows.
+- 3,242 pre-existing tests pass, including every standing guard. Two of them
+  bound this work directly and were deliberately not edited:
+  `marketplace-ui.test.ts` asserts the workspace has exactly two `<aside>`
+  elements, and `review-sidebar.test.ts` asserts the last one is the details
+  panel — which is why the list lives in the existing left column rather than a
+  new right-hand one.
+
+**Evidence the SQL is correct**
+
+`EXPLAIN` against the live application schema, captured during the work: the
+statement plans, and every access path is an index scan
+(`ix_conversations_marketplace_sub_source`, a hash anti-join on the 198-row
+`draft_replies`, and `ix_conversation_messages_thread_order` for both message
+lookups). The three correlated subqueries sit above the `LIMIT`, so they are
+evaluated for the returned rows, not for the whole candidate set.
+
 ## Next pending items
 
 - Capture a screenshot of the context panel showing the "Print invoice" control

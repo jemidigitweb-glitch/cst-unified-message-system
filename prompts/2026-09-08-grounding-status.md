@@ -112,6 +112,23 @@ loop after that, because there is no after.
 - Prompt content is eBay-shaped in practice, because only eBay resolves verified
   order context.
 
+## Added: order-change notification list — no AI involvement
+
+Recorded here because a "notification" feature is exactly the kind of thing that
+quietly acquires a model call, and this one has none.
+
+- No prompt, no instruction, no assembly step and no provider call. Nothing in
+  `lib/ai/` was read, imported or modified.
+- The case area comes from `classifyConversationCategory`, which is a phrase
+  table plus a clause-level reading — pure, deterministic, no network and no
+  model. It is the same classifier the inbox chip already uses, called through
+  the same `toInboxItem`; no second detector exists.
+- Nothing about the list changes what a draft is grounded on, when one is
+  generated, or what it may claim. Selecting a row opens the existing draft
+  panel, unchanged.
+- No token is spent by opening, refreshing or ignoring the list, and nothing is
+  written to `ai_usage_log`.
+
 ## Next pending items
 
 - Keep versioned change notes here when the instruction changes in a way worth
