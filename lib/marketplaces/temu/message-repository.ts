@@ -3,8 +3,10 @@ import {
   type FetchResult,
   type Queryable,
   buildFetchQuery,
+  buildPkFetchQuery as buildSourcePkFetchQuery,
   classifyRows as classifySourceRows,
   fetchMessages as fetchSourceMessages,
+  fetchMessagesByPk as fetchSourceMessagesByPk,
 } from "@/lib/marketplaces/source-fetch";
 
 import { TEMU_SOURCE, type TemuSourceRow, normalizeRow } from "./adapter";
@@ -47,4 +49,19 @@ export async function fetchMessages(
   options: FetchOptions,
 ): Promise<FetchResult> {
   return fetchSourceMessages(client, TEMU_SOURCE, SELECT_COLUMNS, normalizeRow, options);
+}
+
+/**
+ * Re-reads named rows by primary key, for body repair. No window and no
+ * watermark — see `buildPkFetchQuery` in the shared module.
+ */
+export function buildPkQuery(sourcePks: readonly string[]): { text: string; values: unknown[] } {
+  return buildSourcePkFetchQuery(TEMU_SOURCE, SELECT_COLUMNS, sourcePks);
+}
+
+export async function fetchMessagesByPk(
+  client: Queryable,
+  sourcePks: readonly string[],
+): Promise<FetchResult> {
+  return fetchSourceMessagesByPk(client, TEMU_SOURCE, SELECT_COLUMNS, normalizeRow, sourcePks);
 }

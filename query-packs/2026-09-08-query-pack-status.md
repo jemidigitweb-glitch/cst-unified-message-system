@@ -132,3 +132,67 @@ case area, so a count taken from it will be larger than the notification list.
   finding recorded beside each query.
 - Add a snapshot-health pack that can be run on a schedule.
 - Add a pack for verifying a context-snapshot reset after a matching-logic change.
+
+## Added: Pack G — blank message bodies
+
+The investigation behind body repair. Read-only, and it returns counts and
+statuses only — never message text.
+
+**G1 — how many messages show as blank, by marketplace and status.**
+
+```sql
+SELECT c.marketplace, m.body_decode_status, count(*)
+FROM cst_app.conversation_messages m
+JOIN cst_app.conversations c ON c.id = m.conversation_id
+GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+```
+
+2026-09-08, before repair: eBay 5,666 decoded / 791 empty; Amazon 1,674 / 168;
+Shopify 11,236 / 14; B&Q 3,773 / 0; Temu 220 / 0.
+
+**G2 — of the blanks, how many could actually be fixed?** Take the `source_pk`
+values from G1's empty rows and ask the source what it holds now:
+
+```sql
+SELECT count(*)                                                    AS blank_in_cst,
+       count(*) FILTER (WHERE b.message IS NOT NULL
+                          AND b.message <> 'null')                 AS body_present_now,
+       count(*) FILTER (WHERE b.message = 'null')                  AS body_json_null,
+       count(*) FILTER (WHERE b.message_id IS NULL)                AS no_body_row_at_all
+FROM customer_service.ebay_message_headers h
+LEFT JOIN customer_service.ebay_messages b ON b.message_id = h.ext_message_id
+WHERE h.id = ANY($1::bigint[]);
+```
+
+Answer for the 791: **74** recoverable, 166 JSON `null`, 551 with no body row —
+and all 551 have `ext_message_id IS NULL` and `message_type IS NULL`, which is
+eBay's system-notice shape.
+
+**G3 — is the body table lagging the header table?**
+
+```sql
+SELECT (SELECT count(*) FROM customer_service.ebay_message_headers) AS headers,
+       (SELECT count(*) FROM customer_service.ebay_messages)        AS bodies,
+       (SELECT max(id)  FROM customer_service.ebay_messages)        AS max_body_id;
+```
+
+~104k headers against 73,913 bodies. A body row written for a message received
+minutes earlier carried an id near the maximum — the confirmation that bodies
+arrive after headers rather than with them.
+
+**G4 — recent daily gap**, to see whether the lag is ongoing:
+
+```sql
+SELECT date_trunc('day', h.receive_date)::date AS day, count(*) AS headers,
+       count(*) FILTER (WHERE b.message IS NULL) AS no_body
+FROM customer_service.ebay_message_headers h
+LEFT JOIN customer_service.ebay_messages b ON b.message_id = h.ext_message_id
+WHERE h.receive_date >= now() - interval '10 days'
+GROUP BY 1 ORDER BY 1 DESC;
+```
+
+Between 20% and 40% of each day's headers have no body row at the moment of
+reading. Most of that is system-notice traffic; some is a body still in flight.
+
+The repair pass's own candidate query, `SELECT_REPAIR_CANDIDATES` in
+`lib/sync/body-repair.ts`, is application SQL and lives beside its function.

@@ -3,6 +3,7 @@ import {
   type FetchOptions,
   type Queryable,
   buildFetchQuery,
+  buildPkFetchQuery as buildSourcePkFetchQuery,
 } from "@/lib/marketplaces/source-fetch";
 
 import {
@@ -82,5 +83,24 @@ export async function fetchMessages(
   options: FetchOptions,
 ): Promise<AmazonFetchResult> {
   const { rows } = await client.query(buildQuery(options));
+  return classifyRows(rows as AmazonSourceRow[]);
+}
+
+/**
+ * Re-reads named rows by primary key, for body repair.
+ *
+ * No window and no watermark — see `buildPkFetchQuery` in the shared module.
+ * Amazon keeps the body inline in `message_content`, so a row read this way is
+ * simply the current state of a row the sync already saw.
+ */
+export function buildPkQuery(sourcePks: readonly string[]): { text: string; values: unknown[] } {
+  return buildSourcePkFetchQuery(AMAZON_SOURCE, SELECT_COLUMNS, sourcePks);
+}
+
+export async function fetchMessagesByPk(
+  client: Queryable,
+  sourcePks: readonly string[],
+): Promise<AmazonFetchResult> {
+  const { rows } = await client.query(buildPkQuery(sourcePks));
   return classifyRows(rows as AmazonSourceRow[]);
 }

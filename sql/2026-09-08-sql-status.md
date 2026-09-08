@@ -154,3 +154,76 @@ No migration was written, and no DDL exists for this feature.
 - Reconcile the migrations status table with what is on disk and what is applied.
 - No new application SQL is planned. Sending, VAT calculation and accounting
   integration do not exist and no query supports them.
+
+## Added: message body repair — two statements
+
+### The candidate query — `SELECT_REPAIR_CANDIDATES`
+
+```sql
+SELECT c.marketplace, m.conversation_id::text, m.source_database, m.source_schema,
+       m.source_table, m.source_pk, m.direction, m.source_ts::text, m.body_decode_status
+FROM cst_app.conversation_messages m
+JOIN cst_app.conversations c ON c.id = m.conversation_id
+WHERE m.body_decode_status <> 'decoded'
+  AND c.marketplace = ANY($1::text[])
+ORDER BY m.source_ts DESC, m.id DESC
+LIMIT $2
+```
+
+- `<> 'decoded'` is the whole predicate, and it is the right one: `decoded` is
+  exactly the state in which a reviewer sees the customer's words. `empty` and
+  `failed` both render the unavailable placeholder.
+- The join reads `c.marketplace` and nothing else — it decides which source
+  repository can answer for the row. No draft, snapshot, order or `sync_state`
+  table appears; a test asserts each of those names is absent.
+- `::text` on `source_ts` for the reason it appears everywhere in this project:
+  the driver would otherwise build a Date through the process timezone.
+- Newest first, so a bounded run spends its budget where a late body is most
+  likely to have landed.
+
+### The by-pk source read — `buildPkFetchQuery`
+
+```sql
+SELECT <the adapter's own columns>
+  FROM <schema>.<table> m
+  WHERE m.<pk> = ANY($1::bigint[])
+  ORDER BY m.<ts> ASC, m.<pk> ASC
+```
+
+eBay has its own, keeping the header/body LEFT JOIN:
+
+```sql
+SELECT <columns>
+  FROM customer_service.ebay_message_headers h
+  LEFT JOIN customer_service.ebay_messages b ON b.message_id = h.ext_message_id
+  WHERE h.id = ANY($1::bigint[])
+  ORDER BY h.receive_date ASC, h.id ASC
+```
+
+**THIS IS NOT A WINDOW AND MUST NOT BECOME ONE.** `buildFetchQuery` answers
+"what is new?" and owns the watermark. This answers "what does row N say now?" —
+no cursor, no resume point, no relationship to `sync_state`. Merging them would
+hand repair a way to rewind a sync. They sit side by side in the same module with
+that written above both.
+
+Keys are parameterised as one bigint array — one round trip per batch, capped at
+`MAX_PK_BATCH = 500`, and validated against `/^\d+$/` before the query is built
+so a non-numeric key fails with a clear message rather than a cast error.
+
+### The write
+
+There is no new write statement. Repair runs `UPSERT_MESSAGES` — the same
+constant the sync runs — so `conversation_messages` still has exactly one INSERT
+in the codebase. Its `DO UPDATE` list is what bounds a repair:
+
+```sql
+ON CONFLICT (source_database, source_schema, source_table, source_pk) DO UPDATE SET
+  conversation_id    = EXCLUDED.conversation_id,
+  body_text          = EXCLUDED.body_text,
+  body_decode_status = EXCLUDED.body_decode_status
+```
+
+`direction`, `source_ts` and `external_message_id` are INSERT-only, so a repair
+structurally cannot move a message in time or flip which side sent it. The
+`conversation_id` passed is the row's own stored value, so thread grouping cannot
+move either. Tests pin both facts against the statement text.

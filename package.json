@@ -14,6 +14,7 @@
     "knowledge:sync": "node scripts/sync-knowledge-vector-store.mjs",
     "backfill:attachments": "node scripts/backfill-attachments.mjs",
     "sync:messages": "node --import ./scripts/register-hooks.mjs scripts/sync-messages.mjs",
+    "repair:bodies": "node --import ./scripts/register-hooks.mjs scripts/repair-message-bodies.mjs",
     "sync:auto": "node scripts/run-message-sync.mjs",
     "sync:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-message-sync.ps1",
     "test:coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=text"

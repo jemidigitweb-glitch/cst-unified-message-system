@@ -193,3 +193,25 @@ cross-marketplace and independent of the tab.
 - Billing address expansion.
 - Full accounting integration.
 - Phase 2 work of any kind.
+
+## Added: message body repair — what is closed and what is not
+
+**Closed.** Messages stored blank because their body had not yet reached the
+source can now be repaired, for every marketplace, from one command. The path is
+idempotent, bounded, dry-run by default, and reuses the sync's own upsert.
+
+**Deliberately NOT in scope, and each was considered:**
+
+- **No schedule.** Repair is not wired into `sync:auto` or the cron route. It is
+  a second read of the same source rows, and making it automatic would double
+  the source load every hour to catch a handful of rows. An operator decides.
+- **No rewind.** `sync_state` is never read or written. The forward-only
+  watermark is what makes the sync resumable; repair works around it by naming
+  rows instead of moving the cursor.
+- **No re-threading.** The thread builder is not called. A repaired message keeps
+  the `conversation_id` it already had.
+- **No backfill of history.** Repair only considers rows already stored. It
+  cannot import a message the sync never saw.
+- **No UI change.** A repaired body renders through the existing `displayBody`
+  path. The blank-message placeholder still reads the same for a message that is
+  genuinely empty — telling those two apart on screen is not built.

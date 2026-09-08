@@ -185,3 +185,51 @@ evaluated for the returned rows, not for the whole candidate set.
 - Record a coverage summary run.
 - No evidence is needed for sending, VAT invoices or accounting integration —
   none of those exist.
+
+## Added: message body repair — evidence
+
+**The report that started it.** A reviewer asked why the customer messages for
+eBay conversation 40017 (`alfie280901`) showed as blank when the customer had
+plainly sent text.
+
+**Diagnosis, read-only.**
+
+| Question | Evidence |
+| --- | --- |
+| Is the message stored? | Yes — conversation 40017, one inbound message, `source_pk = 104212`, `reply_inbox`. |
+| Why is it blank? | `body_decode_status = 'empty'`, `body_text IS NULL`. `displayBody` shows the unavailable placeholder for anything but `decoded`. |
+| Is the text in the source? | Yes — `ebay_messages` row 88823, 208 characters of JSON-encoded text. |
+| Why was it missed? | The body row is 19 below the table's maximum id (88842) — written well after its header. The sync had already passed `id 104212` and reads strictly forward. |
+| How widespread? | 791 eBay messages stored blank. Checked every one against the source: **74** had text available, 166 held a JSON `null` body, 551 had no body row at all (all with `ext_message_id IS NULL` and `message_type IS NULL` — eBay's system-notice shape). |
+
+**Repair, dry run then applied (2026-09-08).**
+
+```
+examined : 795     repaired : 74     skipped : 721
+  still_empty_at_source      721
+```
+
+**Effect, measured before and after:**
+
+| Marketplace | decoded before | decoded after | empty before | empty after |
+| --- | --- | --- | --- | --- |
+| ebay | 5,666 | **5,740** | 791 | **721** |
+| amazon | 1,677 | 1,677 | 168 | 168 |
+| shopify | 11,242 | 11,242 | 14 | 14 |
+
+Conversation 40017 now reads `body_decode_status = 'decoded'`, 206 characters.
+
+**Second pass across all five marketplaces: 903 examined, 0 repaired.**
+Idempotency demonstrated on live data, not only in tests.
+
+**No duplication:** `conversation_messages` holds 23,557 rows and 23,557 distinct
+source-coordinate tuples after two passes.
+
+**No cursor movement:** the eBay watermark moved 104225 → 104229 between
+observations, and that was the scheduled sync at 08:29, not the repair. Repair
+issues no statement mentioning `sync_state`.
+
+**Tests:** `npx vitest run` → 3,370 passed, 30 skipped, 0 failed (was 3,325
+before; the repair suite adds 45). `npx eslint` reports the same 4 pre-existing
+problems, none in new files. `npx tsc --noEmit` reports the same one pre-existing
+stale `.next/types/validator.ts` error.

@@ -225,3 +225,70 @@ the No Rule and AI Usage tabs are unchanged.
 - Record a coverage run.
 - Nothing is pending for sending, VAT invoices, invoice email or accounting
   integration — those features do not exist, so there is nothing to validate.
+
+## Added: message body repair
+
+```
+npx vitest run   →   Test Files 122 passed | 12 skipped (134)
+                     Tests     3370 passed |  30 skipped (3400)
+```
+
+Measured before and after, so the delta is attributable: 3,325 before, 3,370
+after — the repair suite adds 45 and no existing test was edited. `npx tsc
+--noEmit` reports the same single pre-existing error (stale
+`.next/types/validator.ts`); `npx eslint` the same 4 pre-existing problems, none
+in new files.
+
+### What the 45 tests cover
+
+The four cases the task named, plus the ones that bound the blast radius:
+
+| Case | How |
+| --- | --- |
+| body arrives after header | **Behavioural** — a fixture with `body_raw: null` skips, the same fixture with a body repairs |
+| repair updates the existing message | **Behavioural** — the stored `conversation_id` is the value written back |
+| already-correct message unchanged | **Structural** on the predicate, **behavioural** on the empty candidate set (no source read at all) |
+| no duplicate conversation messages | **Behavioural** — two passes, one source-coordinate key |
+| idempotency | **Behavioural** — second pass writes identical values; skips repeat identically |
+| no source writes | **Structural** — every source statement asserted to start `SELECT` and contain no DML keyword |
+| `sync_state` untouched | **Structural** — no statement in a pass may contain `sync_state` or `watermark` |
+| only body columns updatable | **Structural** — the upsert's `DO UPDATE` list is asserted to exclude `direction` and `source_ts` |
+| identity checked before content | **Behavioural** — a row with a changed direction AND a new body is refused |
+| every skip reason reachable | **Behavioural** — one fixture per reason; every candidate accounted for exactly once |
+
+The fixtures use eBay's real two-table shape and go through the real
+`classifyRows` / `normalizeRow`, so decoding, direction and the JSON body
+encoding are exercised rather than mocked.
+
+### Live validation (2026-09-08) — this one WAS run
+
+Unlike checklist D, this was executed against the live databases.
+
+```
+dry run  : examined 795   repaired 74   skipped 721 (all still_empty_at_source)
+apply    : examined 795   repaired 74   skipped 721
+re-run   : examined 903   repaired  0   skipped 903     ← all five marketplaces
+```
+
+- eBay decoded 5,666 → **5,740**; empty 791 → **721**.
+- Conversation 40017 (`alfie280901`), the reported case: `empty` → `decoded`,
+  206 characters. The reviewer's original complaint is resolved.
+- `conversation_messages`: 23,557 rows, 23,557 distinct source-coordinate tuples
+  after two passes — no duplication.
+- The eBay watermark moved only by the 08:29 scheduled sync, not by the repair.
+
+### Manual checklist — body repair
+
+1. Open eBay conversation 40017 and confirm the customer's message renders as
+   text rather than the unavailable placeholder. **Not yet done by a person.**
+2. Confirm the thread's message order and read/unread state are unchanged.
+3. Run `npm run repair:bodies` with no `--apply` and confirm it writes nothing.
+4. Run it twice with `--apply` and confirm the second pass reports 0 repaired.
+5. Confirm no `MORE AVAILABLE` line appears once the queue is below the limit.
+
+### Not yet checked by a person
+
+- No screenshot. The browser automation still cannot render `localhost`.
+- Whether any draft was generated against a message while it was blank, and
+  therefore ought to be regenerated now that the text is present. Nothing
+  automatic touches `draft_replies`; this needs a human decision.

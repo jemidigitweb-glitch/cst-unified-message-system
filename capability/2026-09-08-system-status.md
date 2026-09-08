@@ -191,3 +191,21 @@ Still cannot send anything to a customer. Nothing here adds a state after
 - Billing address rendering on the invoice.
 - Full accounting integration.
 - Order context for marketplaces other than eBay.
+
+## Added: message body repair
+
+A message can now be shown that could not be shown before, without any new
+capability being granted. Repair reads rows CST already holds and fills in text
+CST already had permission to read.
+
+- **New:** `npm run repair:bodies` re-reads the source rows behind messages
+  stored without a usable body, and updates the body only.
+- **Unchanged:** the system still cannot send, still cannot write to a
+  marketplace, and still holds no capability it did not hold yesterday.
+- Measured on 2026-09-08: 795 eBay messages were displaying as blank; 74 had text
+  waiting in the source and now render. The remaining 721 are blank at source.
+- Amazon (168) and Shopify (14) blanks were examined and are genuinely empty at
+  source — those sources keep the body inline, so there is no late-arriving row
+  for repair to find.
+
+Not a workflow state, not a background job, not a schedule. An operator runs it.

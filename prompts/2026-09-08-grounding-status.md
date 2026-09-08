@@ -142,3 +142,20 @@ quietly acquires a model call, and this one has none.
   explaining outside a commit message.
 - No prompt work is planned for sending, VAT invoices or accounting — none of
   those exist, and none of them belongs in a draft.
+
+## Added: message body repair — no AI involvement
+
+- No prompt, no instruction, no assembly step, no provider call. Nothing in
+  `lib/ai/` was read, imported or modified.
+- Repair moves text from the source into `conversation_messages`. It never
+  generates text, and it never asks a model what a message said.
+- **It does change what a later draft is grounded on, and that is the point.** A
+  message stored as `empty` reaches the model as an empty conversation turn; once
+  repaired, the customer's actual words reach it. Grounding improves because the
+  input is now complete, not because anything about the prompt changed.
+- Any draft generated BEFORE a repair was grounded on the blank version. Those
+  drafts are not regenerated automatically — nothing here touches
+  `draft_replies`, and a human decides whether a draft written against an empty
+  message needs redoing.
+- No token is spent by running the repair, and nothing is written to
+  `ai_usage_log`.
