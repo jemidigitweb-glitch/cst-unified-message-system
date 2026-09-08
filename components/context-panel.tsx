@@ -20,6 +20,14 @@ import {
   type InboxItem,
   formatSourceTimestamp,
 } from "@/lib/domain/inbox";
+import {
+  PRINT_INVOICE_BLOCKED,
+  PRINT_INVOICE_ERROR,
+  PRINT_INVOICE_LABEL,
+  PRINT_INVOICE_PENDING,
+  canPrintInvoice,
+  invoiceRequestPath,
+} from "@/lib/domain/invoice-action";
 import type { ListingLinkResponse } from "@/lib/domain/listing-link";
 import {
   CUSTOMER_ORDER_HEADING,
@@ -335,6 +343,82 @@ function FallbackCustomerOrderBlock({ order }: { order: FallbackCustomerOrder })
 }
 
 /**
+ * Prints the invoice for the order this conversation has resolved to.
+ *
+ * ------------------------------------------------------------------------
+ * ON DEMAND, ON CLICK, AND ONLY THEN
+ * ------------------------------------------------------------------------
+ * There is no effect in this component and no request on mount. Opening the
+ * sidebar generates nothing; the endpoint runs when a reviewer asks it to. That
+ * matters beyond politeness — a document built from live customer data should
+ * exist because somebody wanted it, not because a panel rendered.
+ *
+ * ------------------------------------------------------------------------
+ * IT NAMES A CONVERSATION AND A CHOICE, NEVER AN ORDER
+ * ------------------------------------------------------------------------
+ * The request carries the conversation id and the reviewer's `selectedOrder`
+ * — the same parameter the order-context and draft requests already carry, and
+ * validated the same way on the server, by membership of this conversation's
+ * own candidate set. No order row id exists on this side of the wire.
+ *
+ * The visible order number is therefore never a lookup key here either: it is
+ * the reviewer's CHOICE among orders the backend already matched, and the
+ * backend re-derives the row id itself.
+ *
+ * ------------------------------------------------------------------------
+ * NOTHING IS STORED
+ * ------------------------------------------------------------------------
+ * The bytes become an object URL, open in a tab, and the URL is revoked. No
+ * download is forced, no file is written, and the response is `no-store`.
+ */
+function PrintInvoiceButton({
+  conversationId,
+  selectedOrderNumber,
+}: {
+  conversationId: string;
+  selectedOrderNumber: string | null;
+}) {
+  const [state, setState] = useState<"idle" | "pending" | "error" | "blocked">("idle");
+
+  const print = async () => {
+    setState("pending");
+    try {
+      const response = await fetch(invoiceRequestPath(conversationId, selectedOrderNumber));
+      // Every failure reads the same. A 409 means no single resolved order, and
+      // saying so here would describe backend state the panel already reflects.
+      if (!response.ok) throw new Error("request failed");
+
+      const url = URL.createObjectURL(await response.blob());
+      const opened = window.open(url, "_blank", "noopener,noreferrer");
+      setState(opened === null ? "blocked" : "idle");
+      // Revoked once the new tab has had the chance to read it; holding it
+      // forever would keep the document in memory for the session.
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      setState("error");
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={() => void print()}
+        disabled={state === "pending"}
+        className="rounded-full bg-emerald-600/15 px-3.5 py-1.5 text-xs font-semibold text-emerald-800 transition-all hover:-translate-y-px hover:bg-emerald-600/25 active:translate-y-0 disabled:translate-y-0 disabled:opacity-40 dark:text-emerald-200"
+      >
+        {state === "pending" ? PRINT_INVOICE_PENDING : PRINT_INVOICE_LABEL}
+      </button>
+      {(state === "error" || state === "blocked") && (
+        <span role="status" className="text-xs text-amber-800 dark:text-amber-300">
+          {state === "error" ? PRINT_INVOICE_ERROR : PRINT_INVOICE_BLOCKED}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
  * Fetches and renders every matching order for one conversation.
  *
  * A separate component, mounted with `key={conversationId}` by the caller, so
@@ -585,6 +669,26 @@ function OrderContextFacts({
 
   return (
     <div className="flex flex-col gap-5">
+      {/*
+        FIRST IN THE ORDER SECTION, and gated on the same signal the endpoint
+        gates on.
+
+        `canPrintInvoice` reads the resolved-order fact, which exists only where
+        the backend placed the conversation on exactly one order — a single
+        strict match, or an ambiguous or `no_order` conversation whose reviewer
+        has chosen. An ambiguous conversation with no choice made has no facts,
+        so no button: offering to print before the choice is made would be
+        offering to print a guess.
+
+        One condition, shared with `resolveInvoiceOrderRowId`, so the control
+        cannot appear against a state the endpoint would refuse.
+      */}
+      {canPrintInvoice(context.facts) && (
+        <PrintInvoiceButton
+          conversationId={conversationId}
+          selectedOrderNumber={selectedOrderNumber}
+        />
+      )}
       {/*
         COLLAPSIBLE ONLY WHERE THERE IS SOMETHING TO COLLAPSE.
 

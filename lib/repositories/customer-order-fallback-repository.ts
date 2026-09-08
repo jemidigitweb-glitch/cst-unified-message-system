@@ -348,6 +348,10 @@ export async function listEligibleCustomerOrders(
     const orderNumber = blankToNull(row.order_number);
     if (orderNumber === null || row.storefront_id == null) continue;
     orders.push({
+      // Already selected by the query as `o.id::text`; now carried through, so
+      // a validated selection can be keyed on the row id rather than the
+      // non-unique order number. See `EligibleCustomerOrder.orderRowId`.
+      orderRowId: row.order_row_id,
       orderNumber,
       orderDate: blankToNull(row.order_date),
       orderStatus: blankToNull(row.order_status),

@@ -135,6 +135,21 @@ export type CustomerOrderContext = {
  * reviewer's judgement, and until they make it nothing here reaches a draft.
  */
 export type EligibleCustomerOrder = {
+  /**
+   * `order_management.orders.id` — the stable source row key.
+   *
+   * The QUERY has always selected it; it simply was not carried into the
+   * domain. It is here because a manually selected order now has to be looked
+   * up again by something, and the order NUMBER cannot be that something: 655
+   * numbers are reused across 1,608 rows in the source, so a lookup keyed on
+   * one can return a different customer's order. The number stays the thing a
+   * reviewer picks and recognises; this is the thing the server keys on.
+   *
+   * NOT A SELECTION KEY. Nothing accepts this from a browser. A choice is still
+   * validated by membership of the eligible SET, and this value is read off the
+   * row that membership check already matched.
+   */
+  readonly orderRowId: string;
   readonly orderNumber: string;
   readonly orderDate: string | null;
   readonly orderStatus: string | null;
