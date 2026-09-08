@@ -170,3 +170,43 @@ deployed.
 - Naming the owners listed above.
 - Reconciling `migrations/README.md` and the root `README.md` with the running
   system.
+
+## Added: message body repair — how to run it
+
+```
+npm run repair:bodies                                  dry run, all marketplaces
+npm run repair:bodies -- --apply
+npm run repair:bodies -- --apply --marketplace=ebay --limit=1000
+npm run repair:bodies -- --apply --batch-size=200
+```
+
+Dry run is the default and reports exactly what would change. The script refuses
+to write unless `current_database()` is `varmen_db` and `current_user` is
+`varmen_user`, and refuses to read unless the source session is read-only.
+
+**When to run it.** When a reviewer reports a blank message bubble on a
+conversation the customer clearly wrote to. eBay is the marketplace where this
+happens, because it stores the header and the body in two tables and does not
+write them together.
+
+**What the output means.**
+
+| Line | Reading |
+| --- | --- |
+| `repaired` | messages that now show the customer's text |
+| `still_empty_at_source` | the source genuinely has no body — nothing to fetch |
+| `still_failed_at_source` | a body exists but is not decodable text |
+| `source_row_missing` / `source_row_unusable` | the source cannot answer for the row |
+| `source_direction_changed` / `source_timestamp_changed` | the source row was edited; repair refuses rather than restate the message |
+| `MORE AVAILABLE` | the `--limit` was reached; re-run |
+
+**Safe to re-run at any time**, including while a sync is running. It touches no
+cursor, so the two cannot interfere.
+
+**Not scheduled, and that is a decision.** Wiring it into `sync:auto` would
+double the hourly source read to catch a handful of rows. If it is ever
+scheduled, run it far less often than the sync — daily at most.
+
+**Known limitation.** A blank bubble caused by a genuinely empty source message
+and one caused by a body CST failed to pick up look identical in the UI. Repair
+tells them apart in its log; the workspace does not.

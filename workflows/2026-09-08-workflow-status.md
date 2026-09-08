@@ -163,3 +163,30 @@ no draft row  +  no reply after the customer's newest message  →  listed
 - User identity, which would let a selection be recorded as `user_confirmed` and
   a review be attributed.
 - Phase 2 workflow work.
+
+## Added: message body repair — a correction, not a step
+
+Body repair introduces no workflow state, no transition and no terminal state.
+The four states and their transition table are byte-identical.
+
+```
+message stored with no usable body  ──repair──▶  same message, body filled in
+```
+
+- It does not move a conversation between states. A thread sitting in `received`
+  stays in `received`; one in `reviewed` stays `reviewed`.
+- It does not create, modify or invalidate a draft. `draft_replies` is never
+  queried.
+- It does not re-thread. The thread builder is not called and the existing
+  `conversation_id` is written straight back, so a repaired message stays in the
+  conversation it was already in.
+- It does not reorder. `source_ts` is INSERT-only in the upsert, so the message
+  keeps its place and the thread's read/unread state is unaffected.
+- It is not scheduled and not triggered by anything a reviewer does. An operator
+  runs it.
+
+**The one real consequence for the workflow** is upstream of it: a conversation
+whose customer message was blank may have been drafted against nothing. Repair
+fixes the input; it does not revisit the output. Deciding whether such a draft
+needs regenerating is a human judgement, and the existing regenerate button is
+how it is made.

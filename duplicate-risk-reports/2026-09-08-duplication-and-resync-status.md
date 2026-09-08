@@ -155,3 +155,37 @@ belongs to exactly one marketplace, so no row can be counted in two windows.
 - A recorded procedure for resetting stale context snapshots after a matching
   change.
 - Nothing invoice-related is pending here: the path holds no state to duplicate.
+
+## Added: message body repair — duplication assessed
+
+**No new duplication risk, and no new idempotency surface.** Repair issues
+exactly one write statement, and it is the statement that already existed.
+
+| Could have been duplicated | What was done instead |
+| --- | --- |
+| The message INSERT | `repairMessageBodies` runs the SAME `UPSERT_MESSAGES` constant `persistConversations` runs. There is still exactly one INSERT into `conversation_messages` in the codebase, so the two paths cannot drift on what a stored message looks like. |
+| The source read | The by-pk read is a second FUNCTION, not a second query builder: `buildPkFetchQuery` sits beside `buildFetchQuery` in the shared module and reuses each adapter's own `SELECT_COLUMNS`. The projection, the casts and the normaliser are the sync's. |
+| The thread key | Never computed. The thread builder is not imported. The existing `conversation_id` is read from the row and written straight back. |
+| The watermark | Not read, not written, not consulted. A test asserts no statement in the pass contains `sync_state` or `watermark`. |
+
+**A repeat run cannot duplicate a row.** The unique key is
+`(source_database, source_schema, source_table, source_pk)` — the same key the
+sync relies on — so a second repair of the same message is an UPDATE. Verified
+live: after two passes, `count(*)` and
+`count(DISTINCT (source_database, source_schema, source_table, source_pk))` over
+`conversation_messages` are both 23,557.
+
+**A repeat run also does no work.** A repaired message is `decoded` and so is no
+longer a candidate. Measured: first pass repaired 74, second pass repaired 0.
+
+**The risk that IS present, and how it is handled.** The source row is identified
+by primary key, so a row edited upstream could carry a different direction or
+timestamp than the message stored against it. Writing that body would restate the
+message rather than repair it. `decideRepair` checks identity BEFORE content and
+refuses, reporting `source_direction_changed` or `source_timestamp_changed`. A
+test pins the ordering: a row with both a changed direction and a newly available
+body is refused, not repaired.
+
+`repairMessageBodies` also counts rows it had to INSERT rather than update.
+Expected zero — every target was read back from the table moments earlier — and a
+non-zero count is printed as a warning rather than absorbed.

@@ -1,4 +1,5 @@
 import type { SourceMessage, SourceWatermark } from "@/lib/domain/source-message";
+import { assertSourcePks } from "@/lib/marketplaces/source-fetch";
 
 import { EBAY_SOURCE, type EbaySourceRow, normalizeRow, rowIsSystemNotice } from "./adapter";
 
@@ -160,6 +161,41 @@ export async function fetchMessages(
   options: FetchOptions,
 ): Promise<FetchResult> {
   const { rows } = await client.query(buildFetchQuery(options));
+  return classifyRows(rows as EbaySourceRow[]);
+}
+
+/**
+ * Reads specific eBay headers by primary key, re-joining the body table.
+ *
+ * WHY THIS EXISTS. eBay writes a message in two places: the header lands in
+ * `ebay_message_headers` immediately, the text arrives later in `ebay_messages`.
+ * A header ingested in the gap is stored with `body_decode_status = 'empty'`,
+ * and the windowed fetch above can never revisit it — it reads strictly forward
+ * of the watermark, by design. This reads a named set of headers instead, so the
+ * body can be picked up once it exists without any cursor moving.
+ *
+ * Deliberately no window, no limit and no watermark: the caller already knows
+ * exactly which rows it wants. See `buildPkFetchQuery` in the shared module for
+ * why the two must not be merged.
+ */
+export function buildPkFetchQuery(sourcePks: readonly string[]): {
+  text: string;
+  values: unknown[];
+} {
+  assertSourcePks(sourcePks);
+  return {
+    text:
+      `SELECT${SELECT_COLUMNS}` +
+      `\n  WHERE h.${EBAY_SOURCE.pkColumn} = ANY($1::bigint[])\n  ${ORDER_BY}`,
+    values: [[...sourcePks]],
+  };
+}
+
+export async function fetchMessagesByPk(
+  client: Queryable,
+  sourcePks: readonly string[],
+): Promise<FetchResult> {
+  const { rows } = await client.query(buildPkFetchQuery(sourcePks));
   return classifyRows(rows as EbaySourceRow[]);
 }
 

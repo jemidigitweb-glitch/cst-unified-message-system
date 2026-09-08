@@ -3,6 +3,7 @@ import {
   type FetchOptions,
   type Queryable,
   buildFetchQuery,
+  buildPkFetchQuery as buildSourcePkFetchQuery,
 } from "@/lib/marketplaces/source-fetch";
 
 import {
@@ -83,5 +84,25 @@ export async function fetchMessages(
   options: FetchOptions,
 ): Promise<ShopifyFetchResult> {
   const { rows } = await client.query(buildQuery(options));
+  return classifyRows(rows as ShopifySourceRow[]);
+}
+
+/**
+ * Re-reads named rows by primary key, for body repair.
+ *
+ * No window and no watermark — see `buildPkFetchQuery` in the shared module.
+ * A row whose direction is still undecidable comes back in `ambiguous`, exactly
+ * as it would from a windowed read, so repair sees the same classification the
+ * sync would and never invents a side for it.
+ */
+export function buildPkQuery(sourcePks: readonly string[]): { text: string; values: unknown[] } {
+  return buildSourcePkFetchQuery(SHOPIFY_SOURCE, SELECT_COLUMNS, sourcePks);
+}
+
+export async function fetchMessagesByPk(
+  client: Queryable,
+  sourcePks: readonly string[],
+): Promise<ShopifyFetchResult> {
+  const { rows } = await client.query(buildPkQuery(sourcePks));
   return classifyRows(rows as ShopifySourceRow[]);
 }

@@ -144,6 +144,77 @@ ON CONFLICT (source_database, source_schema, source_table, source_pk) DO UPDATE 
 RETURNING (xmax = 0) AS inserted`;
 
 /**
+ * Repairs the body of messages that are ALREADY STORED.
+ *
+ * Runs the SAME `UPSERT_MESSAGES` statement the sync runs, deliberately. There
+ * is exactly one INSERT into `conversation_messages` in this codebase, so the
+ * repair path cannot drift from the sync path — a change to what a stored
+ * message looks like applies to both or to neither.
+ *
+ * WHAT THIS CAN AND CANNOT CHANGE is decided by that statement's DO UPDATE list,
+ * not by discipline here. Only `conversation_id`, `body_text` and
+ * `body_decode_status` are updatable; `direction`, `source_ts` and
+ * `external_message_id` are INSERT-only. So a repair structurally cannot move a
+ * message in time or flip which side sent it — which is why message ordering
+ * and read/unread state are safe by construction rather than by review.
+ *
+ * `conversationId` is the caller's ALREADY-STORED value, read back from the row
+ * being repaired. Passing it unchanged means thread grouping cannot move: the
+ * one updatable identity column is written with the value it already holds.
+ *
+ * Deliberately absent, and none of them is an oversight:
+ *   - no conversations upsert — membership and placement are not being changed
+ *   - no recount — the message set is identical, so the counters cannot differ
+ *   - no `sync_state` write — repair reads rows the cursor has already passed,
+ *     and must never move it
+ *
+ * The caller owns the transaction.
+ */
+export type BodyRepairWrite = {
+  readonly conversationId: string;
+  readonly message: SourceMessage;
+};
+
+export type BodyRepairWriteStats = {
+  readonly updated: number;
+  /**
+   * Rows that did not already exist. Expected to be ZERO: every repair targets a
+   * row read back from `conversation_messages` moments earlier. A non-zero count
+   * means a row was deleted mid-run and is reported rather than hidden.
+   */
+  readonly inserted: number;
+};
+
+export async function repairMessageBodies(
+  client: Writable,
+  writes: readonly BodyRepairWrite[],
+): Promise<BodyRepairWriteStats> {
+  if (writes.length === 0) return { updated: 0, inserted: 0 };
+
+  const { rows } = await client.query({
+    text: UPSERT_MESSAGES,
+    values: [
+      writes.map((w) => w.conversationId),
+      writes.map((w) => w.message.sourceDatabase),
+      writes.map((w) => w.message.sourceSchema),
+      writes.map((w) => w.message.sourceTable),
+      writes.map((w) => w.message.sourcePk),
+      writes.map((w) => w.message.externalMessageId),
+      writes.map((w) => w.message.direction),
+      writes.map((w) => w.message.sourceTimestamp),
+      writes.map((w) => w.message.bodyText),
+      writes.map((w) => w.message.bodyDecodeStatus),
+    ],
+  });
+
+  let inserted = 0;
+  for (const raw of rows) {
+    if ((raw as { inserted: boolean }).inserted) inserted += 1;
+  }
+  return { updated: rows.length - inserted, inserted };
+}
+
+/**
  * Sync cursor upsert.
  *
  * The watermark only ever moves forward: a re-run over an older or identical

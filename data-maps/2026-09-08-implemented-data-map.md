@@ -214,3 +214,40 @@ to avoid.
 - A VAT mapping, once the business states the authoritative VAT rule.
 - Order-context mappings for Amazon / Shopify, if and when their direction and
   identity sources are settled.
+
+## Added: message body repair — the two-table eBay message
+
+The map was incomplete in one place, and that gap is the bug repair fixes.
+
+```
+customer_service.ebay_message_headers        customer_service.ebay_messages
+  id            (pk, source_pk)                id
+  ext_message_id  ──────────────────────────▶  message_id   (UNIQUE)
+  message_id      (external_message_id)        message      (JSON-encoded text)
+  folder_id       (0 inbound, 1 outbound)
+  receive_date    (source_ts)
+```
+
+**The two tables are not written together.** Measured 2026-09-08: ~104k header
+rows against 73,913 body rows, and the body row for a message received at
+05:52:46 carried id 88823 against a maximum of 88842 — written well after its
+header. A header ingested in that gap normalises to
+`bodyDecodeStatus = "empty"`, `bodyText = null`.
+
+Repair re-reads `ebay_message_headers` by `id` with the same LEFT JOIN, so the
+body is picked up whenever it lands.
+
+| Marketplace | Body location | Can a body arrive late? |
+| --- | --- | --- |
+| eBay | separate `ebay_messages` row | **yes** — this is the failure |
+| Amazon | `amazon_messages.message_content`, inline | no |
+| Shopify | `.message_content`, inline | no |
+| B&Q | `.message_content`, inline | no |
+| Temu | `.message_content`, inline | no |
+
+Repair covers all five anyway: an inline body cannot arrive late, but a row can
+still be corrected upstream, and a uniform path costs nothing to keep.
+
+`cst_app.conversation_messages` gains no column. The repair writes `body_text`
+and `body_decode_status` and nothing else — `direction`, `source_ts` and
+`external_message_id` are INSERT-only in the upsert.

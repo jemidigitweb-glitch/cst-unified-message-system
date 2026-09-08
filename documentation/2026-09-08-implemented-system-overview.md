@@ -255,3 +255,39 @@ The design analysis behind it, including why no table was added, is
 - Seller invoice details and billing address rendering.
 - Full accounting integration.
 - Phase 2 work.
+
+## Added: message body repair
+
+**The symptom.** A customer's message appears in the thread as an empty bubble,
+even though they plainly sent text.
+
+**The cause.** eBay writes a message header and its body into two different
+tables, and not at the same time. The sync reads strictly forward of a
+`(timestamp, pk)` watermark — which is what makes it resumable — so a header
+ingested before its body existed is stored honestly as `empty` and is never
+looked at again.
+
+**The fix.** `npm run repair:bodies` asks `conversation_messages` which rows have
+no usable body, re-reads exactly those source rows by primary key, and writes the
+body back through the sync's own upsert statement. No cursor is consulted, so it
+can run at any time, including during a sync.
+
+```
+cst_app.conversation_messages          source, read-only
+  where body_decode_status <> 'decoded'
+        │
+        └── source coordinates ──▶ re-read those rows by pk
+                                        │
+                        marketplace's own normaliser
+                                        │
+                   decoded and non-blank?  ── no ──▶ skip, with a named reason
+                                        │ yes
+                                        ▼
+                    the sync's UPSERT_MESSAGES, body columns only
+```
+
+Dry run is the default. Idempotent: a repaired message is `decoded` and drops out
+of the candidate set, so a second pass finds nothing.
+
+First run, 2026-09-08: 795 eBay messages examined, **74 repaired**, 721 skipped
+as still empty at source. Second pass repaired 0.
