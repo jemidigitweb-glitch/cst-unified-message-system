@@ -75,3 +75,11 @@ Thumbs.db
 
 # Scheduler output. Local operational logs, not source.
 /logs/
+
+# Local analysis artefacts. These are pulled from the read-only source database
+# for human inspection and routinely contain REAL order numbers, SKUs and
+# prices, so they must never be committed. `tests/guards/no-customer-data.test.ts`
+# scans `git ls-files`, and a real order number reaching that list is exactly
+# what it is there to stop — but the guard only sees a file once it is tracked,
+# so an ignore rule is what actually keeps one out.
+/tmp/
