@@ -136,12 +136,22 @@ Order Change tab and no `view` for it; both were removed.
   `ORDER_CHANGE_NOTIFICATION_TITLE` ("Order Change Before Shipping Queries") is
   the drawer's heading and is display copy only. Do not "fix" one to match the
   other without deciding which register the change belongs to.
+- **The feed is global and the bound is per marketplace.** Both matter. It reads
+  every conversation-backed marketplace in one query, and gives each its own
+  window — because Shopify has 3,342 unanswered conversations to Amazon's 44,
+  and a shared window is ~90% Shopify. Removing the `PARTITION BY` would silently
+  hide every Amazon and eBay notification; that is exactly what it did before.
+- It excludes `inbox_visibility = 'filtered'` — mail the ingestion layer already
+  recorded as not reply work. Those conversations are still in the inbox.
 - The list is bounded by candidates, not matches. If a reviewer reports a
   conversation missing, check `scanned`/`hasMore` first — it may simply be older
-  than the scan window. **Measured live on 2026-09-08 this bites on eBay:** 0
-  matches from 100 candidates with more below. See `capability/` for the figures
-  per marketplace, and treat "the bell is empty" as "check the window" until the
-  bound is revisited.
+  than that marketplace's window. See `capability/` for the live figures.
+- **Clicking a notification switches the marketplace tab.** It has to: the detail
+  route 404s a conversation from another marketplace. `select(id, from)` takes
+  the marketplace explicitly; the default is the selected tab, so every other
+  caller is unchanged. If you add a caller that passes an explicit marketplace,
+  it must switch the tab to the same value — `marketplace-ui.test.ts` enforces
+  this by scanning for the call shape.
 
 **Nothing new to operate.** No migration to apply, no environment variable, no
 scheduled job, no credential. The feature is live as soon as the code is

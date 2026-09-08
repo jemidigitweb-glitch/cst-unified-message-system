@@ -96,7 +96,8 @@ available once exactly one order has resolved.
 
 ## Added: order-change notification list — decisions taken
 
-**In scope, and delivered.** A per-marketplace read layer listing
+**Superseded in part — see "Made global" below.** Originally a per-marketplace
+read layer listing
 `"Order change, before shipping queries"` conversations with no draft and no
 reply after the customer's newest message.
 
@@ -147,6 +148,40 @@ reply after the customer's newest message.
 **Explicitly not done:** no migration, no write, no stored category, no change
 to sync, grouping, the classifier, AI drafting, the draft workflow, the reply
 workflow or order context.
+
+## Made global — decisions taken
+
+The feed followed the selected marketplace tab, which meant an Amazon customer
+waiting on an order change was invisible to a reviewer working eBay. It is now
+cross-marketplace and independent of the tab.
+
+1. **One query, not one per marketplace.** `= ANY($1::text[])` over an allowlist
+   array built server-side, so the route takes no parameter at all and there is
+   nothing to validate.
+2. **The bound had to become per marketplace, and this was not optional.** A
+   naive global `LIMIT 100` over the newest unanswered conversations was ~90%
+   Shopify (3,342 unanswered, against eBay 309 and Amazon 44) and returned
+   **zero** Amazon and **zero** eBay notifications — it failed the requirement
+   it was written for. `row_number() OVER (PARTITION BY marketplace)` gives each
+   its own window; the Amazon notification came back immediately.
+3. **`filtered` conversations were excluded.** Not asked for, and worth stating
+   plainly as a judgement: a bounce or a courier notice is not a customer
+   waiting for a reply, and 4,452 of Shopify's unanswered conversations are
+   these. They still appear in the inbox, labelled; they just no longer notify.
+   **Reversible in one predicate** if the business disagrees.
+4. **Clicking a notification switches the tab.** The detail route 404s a
+   conversation that does not belong to the marketplace named in the request —
+   a deliberate guard — so `select()` now takes the marketplace explicitly,
+   defaulting to the selected one. Every existing caller is unchanged.
+5. **A standing guard was strengthened, not relaxed.**
+   `marketplace-ui.test.ts` pinned the detail request to the selected tab by
+   literal. That guarantee still holds but is now upheld by a default plus a
+   rule, so the assertion was rewritten to check all three parts — including
+   that any caller overriding the marketplace switches the tab to the same
+   value. It is a stricter test than the one it replaced.
+6. **The feed is no longer per-marketplace state.** It is not cleared on a tab
+   switch and not refetched by the `[marketplace]` effect; it refreshes when a
+   draft is generated, so a conversation just answered leaves the badge.
 
 ## Next pending items (explicitly NOT closed)
 

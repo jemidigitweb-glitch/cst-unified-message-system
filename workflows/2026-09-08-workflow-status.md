@@ -141,6 +141,18 @@ no draft row  +  no reply after the customer's newest message  →  listed
   after the customer's message — as a consequence of the existing workflow
   running, never as an action taken on the list.
 - Opening, reading or ignoring the list changes nothing.
+- It now spans every marketplace, which changes **who sees** a notification and
+  nothing about what the workflow does with it. A conversation still moves
+  `received → drafting → pending_review → reviewed` by exactly the same two
+  routes, driven by exactly the same buttons.
+- One addition to what does NOT notify: a conversation whose
+  `inbox_visibility` is `filtered` — a bounce, a courier notice, another
+  channel's notification, unsolicited mail. The ingestion layer already decided
+  those are not reply work and recorded why. They remain in the inbox and remain
+  fully workable; they simply do not claim a customer is waiting.
+- Clicking a notification moves the reviewer's marketplace tab, because the
+  conversation lives in another one. That is navigation, not a workflow
+  transition: no state is read, written or advanced by it.
 
 ## Next pending items
 

@@ -135,6 +135,19 @@ one, or No Rule and this one. That is not duplication: they are different
 questions about the same row, and each list is defined by its own predicate.
 Nothing dedupes across them and nothing should.
 
+**Going global added no second query and no merge step.** The obvious way to
+build a cross-marketplace feed is one request per marketplace merged in
+JavaScript, and that would have introduced exactly the risks this folder exists
+to catch: N round trips, a hand-written sort that could disagree with the SQL's,
+and a merge that could double a row. Instead the marketplace became an array
+parameter on the one statement (`= ANY($1::text[])`), and fair representation
+became a window function inside it. One query, one ordering, one code path —
+and the single-marketplace read is the same function with a one-element array.
+
+**The per-marketplace bound cannot duplicate a row either.** `row_number()`
+assigns each row exactly one rank within one partition, and a conversation
+belongs to exactly one marketplace, so no row can be counted in two windows.
+
 ## Next pending items
 
 - A periodic snapshot-health query pack (counts by `resolution` and marketplace)

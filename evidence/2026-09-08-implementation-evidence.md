@@ -125,6 +125,30 @@ drawer: a tab changes what is on screen and this does not — it opens over
 whatever the reviewer was already doing and closes when they pick something. A
 guard now asserts the tab is gone and that the component file no longer exists.
 
+**Then made global.** The feed followed the selected marketplace, so an Amazon
+customer waiting on an order change was invisible while a reviewer worked eBay.
+The evidence that the change was needed, and that it worked:
+
+| | Before | After |
+| --- | --- | --- |
+| Route | `?marketplace=<name>` | no parameters |
+| Query scope | `c.marketplace = $1` | `= ANY($1::text[])`, allowlist array |
+| Bound | 100, global | 100 **per marketplace** (`row_number() OVER (PARTITION BY ...)`) |
+| Filtered mail | included | excluded (`inbox_visibility <> 'filtered'`) |
+| Live result | eBay 0 · Amazon 1 · Shopify 2, each read alone | **3 in one list: 2 Shopify, 1 Amazon** |
+| Naive global attempt | — | 2 matches, **both Shopify** — Amazon and eBay lost |
+
+The middle row is the finding: a shared window was ~90% Shopify (3,342
+unanswered against eBay's 309 and Amazon's 44), so the naive global query
+returned nothing for Amazon at all. Partitioning restored it — `id=32973`
+appears in the global list.
+
+`EXPLAIN ANALYZE` against the live schema: Postgres pushes the rank bound into
+the window as a `Run Condition`, so the CTE narrows 14,915 conversations →
+7,077 (marketplace, not filtered) → 6,898 (no draft) → 3,695 (no reply after the
+customer) → **246** rows projected. Only those 246 pay for the three correlated
+subqueries. Whole request ~2.7s, dominated by classifying 244 conversations.
+
 **Evidence the existing system was not modified**
 
 - `git status` shows three modified files, all additive; no existing function,

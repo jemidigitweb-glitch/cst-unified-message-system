@@ -172,20 +172,31 @@ has confirmed the rows it returns.
 
 ### Live check of the endpoint (2026-09-08)
 
-`GET /api/conversations/awaiting-response` was called against the running dev
-server for all five marketplaces. It answers, and the shape is correct:
+`GET /api/conversations/awaiting-response`, called against the running dev
+server. Three stages, and the middle one is why the query looks the way it does.
+
+**Stage 1 — per marketplace (the original design).** Each read alone:
 
 | Marketplace | Matches | Candidates scanned | Older ones exist |
 | --- | --- | --- | --- |
 | eBay | 0 | 100 | yes |
 | Amazon | 1 | 44 | no — a complete answer |
 | Shopify | 2 | 100 | yes |
-| B&Q | 0 | 100 | category suppressed |
-| Temu | 0 | 100 | category suppressed |
+| B&Q / Temu | 0 | — | category suppressed |
 
-Amazon is the one complete answer in the set, and it is the useful one: the
-whole unanswered queue was read and exactly one order-change conversation is
-waiting. eBay's zero is the scan window, not an empty queue — see `capability/`.
+**Stage 2 — naive global (`LIMIT 100` shared).** 2 matches, **both Shopify**.
+The Amazon conversation that stage 1 found had vanished: the unanswered queues
+are 3,342 Shopify / 309 eBay / 44 Amazon, so a shared recency window is ~90%
+Shopify. This failed the requirement it was written for, and it failed silently
+— an empty bell looks exactly like a quiet queue.
+
+**Stage 3 — per-marketplace bound (`PARTITION BY marketplace`).** 3 matches:
+2 Shopify **and 1 Amazon** (`id=32973`), from 244 candidates across three
+marketplaces, `hasMore: true`, ~2.7s. The cross-marketplace requirement is met.
+
+`EXPLAIN ANALYZE` confirms the shape: 14,915 conversations → 3,695 candidates →
+246 rows projected, with the rank bound pushed into the window as a
+`Run Condition` so it stops early per partition.
 
 The rendered page was also checked over HTTP: the bell is present
 (`aria-label="Notifications"`), the string "Order Change" appears nowhere, and
@@ -199,7 +210,10 @@ the No Rule and AI Usage tabs are unchanged.
   been seen. This is the one requested deliverable that is outstanding.
 - The bell has not been clicked, and the drawer has not been opened or closed by
   a person.
-- Clicking a notification has not been observed to open the conversation.
+- Clicking a notification has not been observed to open the conversation. **The
+  cross-marketplace case is the one most worth a human check**: opening the
+  Amazon notification from the eBay tab has to switch the tab AND open the
+  thread, and that is asserted structurally rather than exercised.
 - No live conversation has been confirmed to leave the list once a draft is
   generated for it.
 - The row-value reply comparison has not been observed on a real conversation

@@ -128,6 +128,13 @@ quietly acquires a model call, and this one has none.
   panel, unchanged.
 - No token is spent by opening, refreshing or ignoring the list, and nothing is
   written to `ai_usage_log`.
+- Going global changed none of that. It reads more conversations per request
+  (244 across three marketplaces rather than 100 in one), and every one of them
+  is read by the same pure phrase-and-clause classifier. No model is called at
+  any point, for any marketplace.
+- The feed refreshes when a draft is generated, so the count drops as work is
+  done. That is a re-read of the existing classifier over existing rows — it
+  costs no tokens and triggers no generation.
 
 ## Next pending items
 

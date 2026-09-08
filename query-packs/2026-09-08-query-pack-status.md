@@ -103,17 +103,24 @@ is application SQL, so it lives beside its function rather than in this folder �
 but its shape is worth recording here, because it answers a question a reviewer
 may want to ask directly.
 
-**The question:** which conversations in one marketplace have a customer message
-that nobody has answered, either with a draft or with a reply?
+**The question:** which conversations, across any set of marketplaces, have a
+customer message that nobody has answered, either with a draft or with a reply?
 
-**Answered by three conditions in SQL** — an inner `JOIN LATERAL` for the newest
-inbound message, `NOT EXISTS` on `cst_app.draft_replies`, and `NOT EXISTS` on
-any outbound message ordered after that inbound one by row-value comparison —
-**plus one in application code**, the category, which cannot be a predicate
-because it is not stored.
+**Answered by four conditions in SQL** — an inner `JOIN LATERAL` for the newest
+inbound message, `inbox_visibility <> 'filtered'`, `NOT EXISTS` on
+`cst_app.draft_replies`, and `NOT EXISTS` on any outbound message ordered after
+that inbound one by row-value comparison — **plus one in application code**, the
+category, which cannot be a predicate because it is not stored.
 
-Parameters: `$1` marketplace, `$2` row bound. Read-only, `cst_app` only,
-verified by `EXPLAIN` against the live schema.
+Parameters: `$1` a marketplace array, `$2` the row bound **per marketplace**
+(applied through `row_number() OVER (PARTITION BY c.marketplace ...)`, not as a
+plain `LIMIT` — see `sql/` for why a shared bound returned nothing for Amazon).
+Read-only, `cst_app` only, verified by `EXPLAIN ANALYZE` against the live schema.
+
+A useful sizing query fell out of this work and is worth keeping: the same
+predicates with `GROUP BY c.marketplace, c.inbox_visibility` and `count(*)`
+answers "how big is the unanswered queue, and how much of it is filtered mail?".
+On 2026-09-08: Shopify 3,342 + 4,452 filtered, eBay 309, Amazon 44.
 
 **A caveat for anyone running it by hand:** the SQL alone answers "unanswered",
 not "unanswered AND an order change". Without the classifier it returns every
