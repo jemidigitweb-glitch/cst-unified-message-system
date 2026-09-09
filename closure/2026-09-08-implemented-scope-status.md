@@ -362,3 +362,84 @@ system retires its notification only when the outbound message syncs back from
 the marketplace. Until then the conversation keeps notifying, labelled
 "Reviewed · not sent". This is the honest reading — nothing here observes
 sending — and the alternative was rejected under decision 1.
+
+## Added: tracking may not be raised without tracking — decisions taken
+
+Closed. Commit `6f6ca66`.
+
+**The decisions, and why each went the way it did:**
+
+1. **Say it, rather than omit it.** The prompt's rule was "no data, no block",
+   inherited from the bundle block. That reasoning holds for a bundle — a model
+   does not spontaneously describe package contents — and fails for tracking,
+   because a delivery question invites the sentence we cannot support. Silence
+   is not an instruction.
+2. **Two branches, not one.** `null` from `resolveTrackingContext` means six
+   different things, and two of them permit different replies. A verified
+   tracking number with no readable carrier update may be given to the customer;
+   nothing established may not be mentioned at all. Collapsing them would have
+   either withheld a real reference or licensed an invented one.
+3. **Even "tracking is unavailable" is refused** in the second branch. It states
+   no number and no status, and still tells the customer a tracking record
+   exists. This was the non-obvious half of the rule and is the one most likely
+   to be softened later by someone who reads it as excessive.
+4. **Gated to delivery queries, reusing the category that already decides
+   whether to ask a carrier.** Not a new relevance rule — the same one, read
+   from the other end. The block therefore appears exactly where the system
+   would have had tracking to show.
+5. **The constant is duplicated, not imported, and pinned by a test.**
+   `TRACKING_CATEGORY` lives in a `server-only` module that pulls the provider
+   and the cache behind it; acquiring that dependency in a module every prompt
+   test imports, for one string, was the worse trade.
+6. **`readConversation` is called once and shared.** It is pure, so two calls
+   could not disagree — but a single call site is what keeps that true when one
+   of them is later given different input by mistake.
+7. **A `GROUNDED_ASSERTIONS` entry, not a prohibited-claim pattern.** The claim
+   table grounds on a substring of the claim name appearing anywhere in the
+   facts; this needed the exact condition, a verified `tracking_number`.
+   Critical severity, so it buys a regeneration rather than a reviewer note.
+8. **The cost cap was raised, deliberately, and the guard was fixed first.**
+   Raising a cost ceiling is a cost decision and was put to the requester rather
+   than taken quietly. See the SQL and validation sections below for what the
+   guard was measuring, and what it was not.
+
+**Explicitly not done:** no change to the shipment database, the tracking
+integrations, the carrier logic, the UI, the draft workflow or the sending
+workflow (there is none). No safety rule was shortened to fit the cap.
+
+## Added: the prompt cost guard measured the cheapest path — closed
+
+Closed, with the tracking work above. The guard capped the composed prompt at
+2,000 tokens and measured **one fixture: a cancellation**, which carries no
+tracking block. It was therefore blind to the most expensive path the
+application builds, and would have stayed green while the real delivery prompt
+ran 129 tokens over its cap.
+
+**The decisions:**
+
+1. **Fix the measurement before moving the number.** The cap was not the defect;
+   measuring one cheap path and calling it "our composed input" was.
+2. **Five paths, cap set against the dearest.** Pre-sale 1,974, cancellation
+   1,985, missing part ~1,985, delivery with a number 2,096, delivery with no
+   shipment data **2,129**, against a cap of **2,300**.
+3. **The cheap paths keep the OLD 2,000 cap**, and are asserted to carry no
+   tracking guidance at all. Raising the ceiling bought headroom for the
+   delivery path only; a regression in the category gate that started charging
+   pre-sale drafts for tracking guidance would be invisible to the 2,300 cap and
+   is caught by this.
+4. **The fixture must be proved to carry the block it measures.** Asserted
+   explicitly, because measuring nothing while passing is exactly how the old
+   version failed.
+5. **The guard was verified to bite** rather than assumed to: lowering the cap
+   to 2,100 fails on precisely the delivery path and nothing else.
+
+## Added: notification draft coverage — two implicit cases pinned
+
+Closed. Commit `50fd958`, tests only.
+
+`238f252` above claims five behaviours. Two were only half-covered: only the
+`reviewed` workflow state was tested, not `drafting` or `pending_review`; and
+"an older reply does not exclude the conversation" existed only as a `>`
+operator appearing somewhere in the statement. Both are now asserted directly —
+the second on the property that actually matters, that the outbound test is
+bound to the newest inbound row rather than being a bare existence check.

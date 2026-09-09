@@ -405,3 +405,43 @@ test pins that neither `'received'` nor `'reviewed'` appears in the statement.
 No schema change and no migration. Files: `lib/repositories/conversation-repository.ts`,
 `lib/domain/inbox.ts`, `components/notification-drawer.tsx`,
 `app/api/conversations/awaiting-response/route.ts`.
+
+### 12. Tracking is not raised when there is no tracking
+
+Section 5's prompt assembly omitted its tracking block whenever no carrier
+result came back. On a delivery query that left the model with no guidance about
+tracking at all, and it filled the gap — "please check your tracking details",
+"you can track your parcel using the link" — for orders where no tracking number
+exists.
+
+`noVerifiedTrackingBlock` replaces the silence, in two branches, because
+`resolveTrackingContext` returns null for six different reasons that do not all
+permit the same reply:
+
+```
+tracking result          → VERIFIED TRACKING INFORMATION (unchanged)
+tracking_number, no read → NO CARRIER UPDATE FOR THIS SHIPMENT
+                           may give the number, may say there is no update,
+                           may not state a position, movement or arrival
+nothing established      → NO SHIPMENT TRACKING FOR THIS ORDER
+                           no number, link, courier or status; do not ask the
+                           customer to check; do not say tracking is
+                           unavailable — that implies a record exists
+```
+
+Gated on `"Delivery queries"`, the same category that decides whether to ask a
+carrier, so the guidance appears where tracking could have been shown and
+nowhere else. `readConversation` is called once per draft and shared with the
+category block (section 7).
+
+**Enforced as well as instructed.** A `GROUNDED_ASSERTIONS` entry in
+`lib/ai/draft-validation.ts` faults a reply that raises tracking when no
+`tracking_number` fact is verified — critical, so it buys a regeneration. It is
+grounded on the number rather than on a carrier result, so the middle branch
+still works, and it is tested against sentences it must not fire on ("on track",
+"backtrack").
+
+**Prompt cost.** The guard in `tests/ai/draft-validation-cost.test.ts` measured
+one fixture — a cancellation, which carries no tracking block — so it was blind
+to the dearest path in the application. It now measures five, caps at 2,300
+against the delivery path's 2,129, and holds the cheap paths to the old 2,000.

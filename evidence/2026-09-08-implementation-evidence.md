@@ -440,3 +440,79 @@ the behaviour being corrected.
 - Nobody has watched a conversation stay on the list through Generate → Save →
   Reviewed and then leave it when the reply syncs back. That is the end-to-end
   behaviour this change exists for and it is asserted, not observed.
+
+## Added: the tracking-absence rule — evidence
+
+**What was built** (commits `6f6ca66`, `50fd958`):
+
+| File | Change |
+| --- | --- |
+| `lib/ai/draft-assembly.ts` | `noVerifiedTrackingBlock` (two branches); `conversationCategory` extracted so the thread is read once; `categoryBlock` takes the category |
+| `lib/ai/draft-validation.ts` | New `GROUNDED_ASSERTIONS` entry, "tracking reference" |
+| `lib/ai/instructions.ts` | Doc comment only — the stale cap figure corrected |
+| `tests/ai/tracking-absence.test.ts` | new — 26 tests |
+| `tests/ai/draft-validation-cost.test.ts` | five-path fixture table, cap 2,300, two new guard tests |
+| `tests/ai/pre-sale-context-guidance.test.ts` | one assertion re-anchored |
+| `tests/repositories/awaiting-response.test.ts` | 4 tests — the notification gaps |
+
+No schema change, no migration. `migrations/` still ends at `0010`.
+
+### Test run — 2026-09-09
+
+```
+npm test   (vitest run)
+
+Test Files  125 passed | 12 skipped (137)
+Tests       3451 passed | 30 skipped (3481)
+Duration    33.57s
+```
+
+Up from 3,413: 26 tracking tests, 8 from the expanded cost guard, 4 notification.
+
+### The measurements behind the cap
+
+Taken from the real prompt builder, not estimated:
+
+| Path | Composed tokens | Carries |
+| --- | --- | --- |
+| Pre-sale enquiry | 1,973.50 | no tracking guidance |
+| Cancellation before dispatch | 1,984.75 | no tracking guidance |
+| Delivery, tracking number no update | 2,095.75 | "no carrier update" |
+| **Delivery, no shipment data** | **2,129.25** | "no shipment tracking" |
+
+Cap **2,300**, set against the dearest. The old cap of 2,000 measured only the
+cancellation — 1,984.75, comfortably inside — while the real delivery prompt ran
+129 tokens over it.
+
+### Evidence the guard now works, rather than merely passes
+
+The failure mode being corrected is a cost guard that measures the wrong thing
+and stays green, so "it passes" is not evidence. Two things were checked:
+
+1. **It bites.** `COMPOSED_TOKEN_CAP` lowered to 2,100 → exactly one failure,
+   `keeps the composed input for delivery query, no shipment data inside the
+   cap`, 20 others passing. Restored and re-confirmed.
+2. **It measures the block it claims to.** A test asserts the delivery fixtures
+   actually contain `NO SHIPMENT TRACKING FOR THIS ORDER` and `NO CARRIER UPDATE
+   FOR THIS SHIPMENT`. Without it a renamed heading or a changed gate would
+   leave the guard measuring a prompt with no tracking guidance in it — the
+   exact way the old version failed.
+
+### What the tests prove, and the boundary
+
+| Claim | How |
+| --- | --- |
+| Six real failure sentences are faulted | **Behavioural** — the real validator, critical severity |
+| Three near-miss sentences are not | **Behavioural** — "on track", "backtrack", "picked and packed" |
+| The three shipment situations produce three different blocks | **Behavioural** — the real prompt builder |
+| The gate keeps it off pre-sale and damage | **Behavioural** |
+| The duplicated category constant matches `TRACKING_CATEGORY` | **Behavioural** — imported in the test and used to build the block |
+| The model obeys the prose | **Not tested** |
+
+### Not yet checked by a person
+
+- **No live draft has been generated in any of the three tracking situations.**
+  The rule is proven present and the gate proven to fault; neither proves a model
+  follows it.
+- No regeneration has been observed end to end: gate rejects a tracking mention,
+  second attempt returns without it.

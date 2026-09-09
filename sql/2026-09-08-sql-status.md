@@ -352,3 +352,29 @@ its absence is pinned structurally — and naively asserting the statement no
 longer contains `draft_replies` would be wrong, because the projection still
 names it. The test asserts the precise shape instead: `cst_app.draft_replies`
 must appear, and must NOT appear inside a `NOT EXISTS`.
+
+## Added: no SQL changed by the tracking work
+
+Recorded because a change described as "shipment tracking" invites the
+assumption that a query moved, and none did.
+
+- **No statement was added, edited or removed.** `resolveTrackingContext` asks
+  the same question of the same conversations and returns the same answers; what
+  changed is how the prompt reads a `null` from it.
+- **No carrier is called that was not already called.** The gate on which
+  conversations warrant a lookup is untouched, so the tracking cache and the
+  provider see identical traffic.
+- **No schema change and no migration.** `migrations/` still ends at `0010`.
+- The two absence branches are decided from a fact already in the request — a
+  non-empty `tracking_number` — not from a new read.
+
+The notification test work in the same batch also touched no SQL: it added four
+tests, two of them pinning the existing `LIST_AWAITING_RESPONSE` predicate more
+precisely. One is worth naming here, because it constrains how that statement
+may be rewritten:
+
+> the outbound test must remain **bound to the newest inbound row**
+> (`(o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk)`),
+> never a bare "has this conversation ever had an outbound", and strictly `>`
+> rather than `>=` — a reply landing in the same second is ordered by the source
+> PK, and `>=` would drop a conversation on a tie.

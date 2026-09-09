@@ -305,3 +305,59 @@ pre-fix ones. That is the outstanding item for this pack.
 above, this answers "unanswered", not "unanswered AND an order change". Without
 the classifier it returns every case area, so the counts will exceed what the
 notification drawer shows.
+
+## Added: Pack J — how often is a delivery query asked with no tracking to give?
+
+The sizing pack behind the tracking-absence rule. It answers how much of the
+delivery queue the new "no shipment tracking" branch actually governs, which is
+the number that says whether the rule is a corner case or the common one.
+
+Read-only, `cst_app` plus the resolved order facts, counts only — never message
+text.
+
+**J1 — delivery conversations by what shipment data exists.** The three
+situations the prompt now distinguishes:
+
+```sql
+-- Sketch: the category cannot be a SQL predicate (see Pack D and data-maps/),
+-- so this bounds the candidates and the classifier narrows them in application
+-- code, exactly as the notification feed does.
+SELECT c.marketplace,
+       (cs.tracking_number IS NOT NULL AND btrim(cs.tracking_number) <> '') AS has_number,
+       (cs.delivery_courier IS NOT NULL AND btrim(cs.delivery_courier) <> '') AS has_courier,
+       count(*)
+FROM cst_app.conversations c
+JOIN cst_app.context_snapshots cs ON cs.conversation_id = c.id
+WHERE c.marketplace = 'ebay' AND cs.resolution = 'single_order'
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
+
+- `has_number = false` → the strict branch: tracking may not be mentioned.
+- `has_number = true, has_courier = false` → the "no carrier update" branch.
+- Both true → still only reaches a carrier if `carrierFrom()` normalises the
+  courier and a provider exists for it, so this over-counts the verified case.
+
+**J2 — which couriers fall out at the carrier gate.** The remaining slice of the
+"number but no update" branch is orders whose courier we hold but cannot query:
+
+```sql
+SELECT cs.delivery_courier, count(*)
+FROM cst_app.context_snapshots cs
+WHERE cs.resolution = 'single_order'
+  AND cs.tracking_number IS NOT NULL AND btrim(cs.tracking_number) <> ''
+  AND cs.delivery_courier IS NOT NULL
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Compare the result against `carrierFrom()` and the registered providers: every
+courier that does not normalise, or has no provider, lands in the middle branch
+however good its tracking number is.
+
+**Not yet run.** Both are written from the shipped code rather than measured, so
+no figure in these folders states how common each branch is. That is this pack's
+outstanding item, and it is the one measurement that would say whether the
+strict branch governs a handful of conversations or most of the delivery queue.
+
+**A caveat for anyone running it:** `context_snapshots` holds what was resolved
+when the conversation was last looked at, not what a fresh lookup would find —
+see the known limitation about stale snapshots after a matching-logic change.

@@ -461,3 +461,86 @@ a touched file.
   the change and it is currently asserted by unit tests only.
 - The volume of "Reviewed · not sent" rows in real use is unknown, and it is the
   one thing likely to prompt a follow-up request.
+
+## Added: the tracking-absence rule and the cost guard
+
+```
+npx vitest run tests/ai/tracking-absence.test.ts
+   →   Test Files  1 passed (1)
+       Tests      26 passed (26)
+
+npx vitest run tests/ai/draft-validation-cost.test.ts
+   →   Tests      21 passed (21)
+
+npm test   →   Test Files  125 passed | 12 skipped (137)
+               Tests      3451 passed | 30 skipped (3481)
+```
+
+`npx tsc --noEmit`: one pre-existing, unrelated error (stale
+`.next/types/validator.ts`). `npx eslint`: the same 4 problems as before, none
+in a touched file.
+
+### What is proven and what is asserted
+
+| Condition | How it is tested |
+| --- | --- |
+| no shipment data → every form of mentioning tracking is forbidden | **Behavioural** — the real prompt builder |
+| a carrier result → the verified block is unchanged | **Behavioural**, and no absence guidance contradicts it |
+| a number with no update → number permitted, position forbidden | **Behavioural** |
+| the gate keeps it out of pre-sale and damage | **Behavioural** |
+| the accuracy gate faults six real failure sentences | **Behavioural** — the real validator |
+| it does not fault "on track", "backtrack", "picked and packed" | **Behavioural** |
+| a blank tracking number counts as none | **Behavioural** |
+| **the model obeys the instruction** | **Not tested** — see below |
+
+The last row is the standing bound on any instruction change. What the tests
+prove is one-sided: the deterministic gate now catches the sentence, and the
+prompt now contains the rule. Whether a model follows prose is a question for
+live observation.
+
+### The guard was verified to bite
+
+A cost cap that passes is worthless if it is measuring the wrong thing — which
+is precisely how this one failed. So it was checked by breaking it on purpose:
+lowering `COMPOSED_TOKEN_CAP` to 2,100 fails on exactly one test,
+`keeps the composed input for delivery query, no shipment data inside the cap`,
+with the other 20 passing. Restored to 2,300 and re-confirmed green.
+
+### Manual checklist — H. Tracking is not raised without tracking (not yet run)
+
+33. **The originating case.** Open a delivery query on an order with no tracking
+    number. Generate. The draft must not mention a tracking number, a link, a
+    courier or a status, and must not ask the customer to check tracking.
+34. **Not even the polite version.** It must also not say tracking is
+    unavailable or that there is no tracking yet.
+35. **A number with no carrier update.** On an order with a tracking number
+    whose courier is unsupported, the draft may give the number and say there is
+    no further update. It must not say where the parcel is.
+36. **Tracking present.** On an order with a live carrier result, the reply is
+    unchanged — the customer-facing delivery status, in its own wording.
+37. **Off the delivery path.** A pre-sale question and a damage report must
+    carry no tracking guidance at all, and must read exactly as they did before.
+
+### Not yet checked by a person
+
+- **No live draft has been generated under any of the three tracking
+  situations.** Everything above is unit-level.
+- The regeneration path has not been observed: nobody has watched the gate
+  reject a tracking mention and the second attempt come back without it.
+
+## Added: notification draft coverage
+
+```
+npx vitest run tests/repositories/awaiting-response.test.ts tests/guards/notification-bell.test.ts
+   →   Tests  93 passed (93)
+```
+
+Four tests added to close two gaps in the `238f252` coverage: the `drafting` and
+`pending_review` workflow states (only `reviewed` was tested), and the
+older-reply case, which had been implicit in a `>` operator rather than
+asserted.
+
+**Scenarios 4 and 5 remain structural**, and that bound is worth restating: they
+are SQL predicates, the test client is a fake that cannot execute SQL, so their
+text is pinned instead. A live check belongs in the opt-in source-validation
+suite and has not been run.

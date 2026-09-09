@@ -345,3 +345,46 @@ than a quiet patch.
 
 **Nothing new to operate.** No migration, no environment variable, no scheduled
 job, no credential.
+
+## Added: tracking, and what must not be softened
+
+**Where it lives.** `noVerifiedTrackingBlock` in `lib/ai/draft-assembly.ts`, the
+"tracking reference" entry in `GROUNDED_ASSERTIONS` in
+`lib/ai/draft-validation.ts`, and the five-path cap in
+`tests/ai/draft-validation-cost.test.ts`.
+
+**The rule in one line: tracking may not be raised without a verified tracking
+number.** Not a number, not a link, not a courier, not a status, and not a
+request that the customer go and check.
+
+**What to know before changing it:**
+
+- **"Tracking is unavailable" is forbidden too, and that is not an oversight.**
+  It states no number and no status, and still tells the customer a tracking
+  record exists for them to chase. This is the clause most likely to be read as
+  excessive and softened; it is the point of the rule.
+- **Two branches, and they are not interchangeable.** A verified tracking number
+  with no readable carrier update may be GIVEN to the customer. Nothing
+  established may not be mentioned. Collapsing them either withholds a real
+  reference or licenses an invented one.
+- **The category gate is borrowed, not invented.** `TRACKING_RELEVANT_CATEGORY`
+  duplicates `TRACKING_CATEGORY` from `resolve-tracking-context.ts` — that
+  module is `server-only` and pulls the provider and cache behind it, which is a
+  heavy dependency for one string in a module every prompt test imports. A test
+  pins them equal. If you change one, change both.
+- **`readConversation` is called once per draft** and shared by the category
+  block and this one. Keep it that way.
+- **The validator grounds on the NUMBER, not on a `TrackingResult`.** That is
+  what lets the "no carrier update" branch give the customer their reference.
+- **The cost cap is 2,300 and is set against the delivery path**, which is the
+  dearest prompt the application builds. The cheap paths are separately held to
+  2,000 and asserted to carry no tracking guidance — so if the category gate
+  regresses and pre-sale starts paying for tracking guidance, that is what
+  catches it, not the 2,300 cap.
+- **Do not raise the cap to make room without measuring all five paths.** The
+  previous cap measured a cancellation only and was blind to the path that
+  mattered. If you add to the shared instruction, remember it is paid on EVERY
+  draft including the delivery one already closest to the cap.
+
+**Nothing new to operate.** No migration, no environment variable, no scheduled
+job, no credential.

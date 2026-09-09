@@ -317,3 +317,37 @@ sooner — and the alternative, letting `reviewed` retire the row, is a weaker
 form of the same bug this fixed.
 
 Still cannot send anything. Nothing here adds a state after `reviewed`.
+
+## Added: the AI says there is no tracking, instead of saying nothing
+
+A draft asked "where is my parcel?" with no carrier data used to answer with
+"please check your tracking details" or "you can track your parcel using the
+link" — sending a customer to look for a record that may not exist.
+
+**What the system can now do.** It distinguishes three shipment situations and
+says something different, and correct, in each:
+
+| What is established | What a reply may say |
+| --- | --- |
+| A carrier result was retrieved | The customer-facing delivery status, as before — unchanged |
+| A tracking number, but no readable carrier update | The number, and that there is no further update on it yet |
+| Nothing | **Nothing about tracking at all** |
+
+**What it still cannot do**, and the third row is the point: with nothing
+established, a reply may not give a number, a link, a courier or a status, may
+not ask the customer to check or send tracking, and may not say tracking is
+unavailable — because that still tells them a tracking record exists somewhere.
+Where the parcel is remains the carrier's to report, and no carrier has
+reported.
+
+**It only speaks up where tracking could have been in play.** The guidance is
+gated to delivery queries, the same question that already decides whether to ask
+a carrier at all, so a pre-sale enquiry about a lampshade's weight is unchanged.
+
+**Enforced, not merely instructed.** The accuracy gate now faults a reply that
+raises tracking when no tracking number is verified, and it is a critical
+finding — it buys a regeneration rather than a note. Grounded on the tracking
+NUMBER, so the middle row above still works: a number with no carrier update is
+a real reference the customer can be given.
+
+Still cannot send anything. Nothing here adds a state after `reviewed`.

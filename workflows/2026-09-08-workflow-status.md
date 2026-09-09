@@ -268,3 +268,32 @@ itself, from nothing to "Draft ready".
 with no reply yet on the thread stays listed and says "Reviewed · not sent".
 That is not a new state; it is the existing terminal state, described accurately
 for the first time on this list.
+
+## Added: no workflow change — a gap in what the model was told
+
+The tracking-absence fix adds no state, no transition and no step. The four
+states and their transition table are byte-identical, and the context-resolution
+flow above is unchanged: `resolveTrackingContext` asks the same question of the
+same conversations and returns the same answers.
+
+What changed is what happens to ONE of those answers. That resolver returns null
+for six distinct reasons — not a delivery query, no tracking number, no carrier,
+carrier unrecognised, carrier unsupported, lookup failed — and the prompt
+collapsed all six into "omit the tracking block". The flow was right; the
+reading of its output was lossy.
+
+```
+resolveTrackingContext ──▶ a carrier result   ──▶ verified tracking block
+                       └─▶ null               ──▶ (nothing at all)          BEFORE
+                                              ──▶ "a number, no update"     AFTER
+                                              ──▶ "nothing established"
+```
+
+The split is between two of those six reasons, and it matters because they
+permit different replies: `no_tracking_number` means the customer cannot be
+given anything, while `carrier_not_supported` and `lookup_failed` mean we hold a
+verified number the carrier simply would not talk to us about.
+
+**Nothing about the reviewer's path changed.** The same conversations resolve
+the same context, the draft panel behaves the same way, and a reviewer still
+reads, edits, regenerates, saves and marks reviewed exactly as before.

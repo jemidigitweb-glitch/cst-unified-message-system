@@ -296,3 +296,42 @@ exists so a reviewer can tell which is which. The alternative — letting
 of them is a conversation with a customer message and no reply after it. The
 per-marketplace window still bounds them, and `scanned`/`hasMore` still report
 truthfully how far the feed looked.
+
+## Added: the tracking-absence rule — duplication assessed
+
+**No new duplication risk.** The change writes nothing, stores nothing and
+caches nothing; it adds one prompt block and one validator entry.
+
+| Could have been duplicated | What was done instead |
+| --- | --- |
+| The conversation reading | `readConversation` is called **once** per draft and shared by the category block and the tracking block. It is pure, so two calls could not disagree today — a single call site is what keeps that true when one of them is later handed different input. |
+| The relevance rule | The block reuses the category that already decides whether to ask a carrier. Not a second opinion about when tracking matters — the same question, read from the other end. |
+| The category constant | Duplicated as a literal rather than imported, because the source module is `server-only` and pulls the provider and cache behind it. **This is the one genuine duplicate**, and it is bounded by a test that builds the block from the imported `TRACKING_CATEGORY`, so the two cannot silently drift. |
+| The claim check | A `GROUNDED_ASSERTIONS` entry beside the existing ones, not a second scanning pass. `ungroundedClaims` still owns the stated-number case; this owns the "a tracking record exists" case. They do not overlap. |
+| The delivery-status rules | Untouched. `movementClaim` and `deliveryStateClaim` still own position and movement; the new entry says nothing about where a parcel is. |
+
+**Two blocks can never both appear.** `verifiedTrackingBlock(...) ??
+noVerifiedTrackingBlock(...)` — the fallback is only reached when the first
+returns null, so a draft cannot carry a verified tracking block and a
+"no tracking" block at once. Asserted in both directions.
+
+**The two absence branches are mutually exclusive** by construction: one tests
+for a non-empty `tracking_number` fact and the other is its else.
+
+**Idempotent, and nothing to re-sync.** Both blocks are pure functions of the
+request. Two generations of the same conversation compose the same prompt; there
+is no stored flag, no cache and no backfill. The tracking cache itself is
+untouched — no carrier is called that was not already called, and a `null` from
+the resolver costs exactly what it did before.
+
+## Added: the cost guard measured one path — a duplication-adjacent failure
+
+Worth recording here because the failure mode is this folder's subject in a
+different form: not a duplicated row, but a **single sample presented as a
+population**. The guard measured one fixture and its test name claimed "our own
+composed input", which read as all of it. The dearest path in the application
+was never measured and could drift arbitrarily far while the guard stayed green.
+
+The fix is the same shape as the fixes above: measure every path rather than
+assume one stands for the rest, and assert the fixture really carries the thing
+being measured.

@@ -294,3 +294,74 @@ One thing worth noting for anyone reasoning about the drafting layer from this
 document: the fix makes explicit, in code and in tests, that **a generated draft
 is not a reply**. That was always true of this system — it is why `reviewed` is
 terminal — but the notification feed had encoded the opposite assumption.
+
+## Added: what the prompt says when there is no tracking
+
+The sixth guard, and the only one added because of what the prompt did NOT say.
+
+`verifiedTrackingBlock` returns null whenever no carrier result came back, and
+the prompt omitted the block entirely — so on a delivery query with no shipment
+data the model was told nothing whatsoever about tracking. It filled the gap:
+
+```
+"Here is your tracking number..."
+"Please check your tracking details..."
+"You can track your parcel using..."
+```
+
+**The omission was reasoned, and the reasoning was borrowed from the wrong
+place.** It came from the bundle block: do not put a paragraph about a thing on
+drafts that do not have that thing. True for a bundle, because a model does not
+spontaneously describe package contents. False for tracking, because "where is
+my parcel?" invites exactly the sentence we cannot support.
+
+**TWO BRANCHES, because "no tracking" is two situations.** `null` from
+`resolveTrackingContext` means six different things, and they do not all permit
+the same reply:
+
+| Established | The block says |
+| --- | --- |
+| A tracking number, no readable carrier update | `NO CARRIER UPDATE FOR THIS SHIPMENT` — you may give that number and say there is no further update; you may not state a position, a movement or an arrival |
+| Nothing | `NO SHIPMENT TRACKING FOR THIS ORDER` — no number, link, courier or status; do not ask the customer to check or send tracking |
+
+**"Tracking is unavailable" is refused too**, and this is the clause most likely
+to be read as excessive later. It states no number and no status — and it still
+tells the customer that a tracking record exists somewhere for them to chase.
+The block says so in terms: the absence is in what we can see, not a fact about
+the parcel.
+
+**ONLY ON A DELIVERY QUERY.** Gated on the same category
+(`"Delivery queries"`) that already decides whether to ask a carrier, so the
+guidance appears exactly where the system would have had tracking to show and
+adds nothing to a pre-sale question. `readConversation` is called once per draft
+and shared with the category block.
+
+### The deterministic half
+
+A `GROUNDED_ASSERTIONS` entry rather than a prohibited-claim pattern, because
+that mechanism allows an exact support condition — a verified `tracking_number`
+fact — where the claim table only asks whether the word appears among the facts.
+
+- Fires **critical**, so it buys a regeneration rather than a reviewer note.
+- Grounded on the NUMBER, not on a `TrackingResult`, so the "no carrier update"
+  branch above still works.
+- Tested against three sentences it must not fire on: "we are on track",
+  "I need to backtrack", "being picked and packed".
+
+### What this cost, and what the guard was missing
+
+`draft-validation-cost.test.ts` capped the composed prompt at 2,000 tokens and
+measured a **cancellation** — a conversation that carries no tracking block. It
+was blind to the dearest path in the application:
+
+| Path | Composed |
+| --- | --- |
+| Pre-sale enquiry | 1,973.50 |
+| Cancellation before dispatch | 1,984.75 |
+| Delivery, tracking number no update | 2,095.75 |
+| **Delivery, no shipment data** | **2,129.25** |
+
+The cap is now **2,300**, measured across five paths, with the cheap ones still
+held to 2,000 and asserted to carry no tracking guidance at all. Raising it was
+put to the requester as a cost decision rather than taken quietly, and nothing
+was shortened to fit.

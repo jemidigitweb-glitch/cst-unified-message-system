@@ -371,3 +371,36 @@ inbound message, which is what the surviving predicate uses — the same
 so a reply landing in the same second is ordered rather than missed.
 
 It still never reaches the marketplace source database.
+
+## Added: no new mapping — one existing read given a second meaning
+
+The tracking-absence work introduces no source mapping, no column and no table.
+It reads what section 2 already resolves.
+
+**The mapping that changed is the meaning of ABSENCE.** `resolveTrackingContext`
+returns `{ tracking: null, reason }` for six distinct reasons, and the prompt
+consumed only the null:
+
+| `TrackingSkipReason` | `tracking_number` fact present? | Now read as |
+| --- | --- | --- |
+| `no_tracking_number` | no | nothing established |
+| `not_a_delivery_query` | maybe | (no tracking guidance — off the gate) |
+| `no_carrier` | **yes** | a number, no carrier update |
+| `carrier_not_recognised` | **yes** | a number, no carrier update |
+| `carrier_not_supported` | **yes** | a number, no carrier update |
+| `lookup_failed` | **yes** | a number, no carrier update |
+
+Four of the six leave a **verified `tracking_number` in the VERIFIED CONTEXT
+block** while supplying no tracking block — a number in front of the model with
+no rule attached to it. That is the mapping gap the fix closes, and it is read
+from the fact that was already there rather than from any new source.
+
+**The reason code itself is still not mapped into the prompt**, deliberately.
+The block distinguishes the two cases by asking whether a non-empty
+`tracking_number` fact exists, not by reading `TrackingSkipReason` — the fact is
+what the reply may use, and the reason is why the lookup stopped. A prompt built
+on the reason would be describing our plumbing rather than what we can tell a
+customer.
+
+Nothing here reaches the marketplace source database, and no carrier is called
+that was not already called.
