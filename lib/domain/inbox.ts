@@ -179,6 +179,19 @@ export const awaitingResponseConversationSchema = inboxItemSchema.extend({
   latestCustomerMessageAt: z.string(),
   /** Short preview of that message, already truncated. Never the full body. */
   latestCustomerMessagePreview: z.string(),
+  /**
+   * Whether a draft has been written for this conversation.
+   *
+   * IT DOES NOT MEAN ANSWERED, and that distinction is the reason this field
+   * exists. The feed once excluded any conversation with a draft, so generating
+   * one made a waiting customer vanish from the notification list — while this
+   * system cannot send anything at all, and `reviewed` is its terminal state. A
+   * draft is work in progress; only an outbound message is a reply.
+   *
+   * So it is a LABEL, never a filter: the drawer separates "waiting, nothing
+   * written yet" from "waiting, draft ready" and keeps both on the list.
+   */
+  hasDraft: z.boolean(),
 });
 
 export type AwaitingResponseConversationItem = z.infer<

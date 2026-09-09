@@ -124,8 +124,10 @@ Print invoice → conversation id (+ the reviewer's choice, where one was made)
 
 ## Added: a view onto the workflow, not a step in it
 
-The order-change notification list observes two ABSENCES in the workflow above
-and adds nothing to it:
+**Superseded in part — see "the notification stops reading a draft as an answer"
+below, which removes the draft condition.** As first built, the order-change
+notification list observed two ABSENCES in the workflow above and added nothing
+to it:
 
 ```
 no draft row  +  no reply after the customer's newest message  →  listed
@@ -231,3 +233,38 @@ whose customer message was blank may have been drafted against nothing. Repair
 fixes the input; it does not revisit the output. Deciding whether such a draft
 needs regenerating is a human judgement, and the existing regenerate button is
 how it is made.
+
+## Added: the notification stops reading a draft as an answer
+
+**No workflow state, transition or terminal state changed.** The four states and
+their transition table are byte-identical. What changed is what an OBSERVER of
+the workflow concluded from them.
+
+The notification feed watched for two absences. One of them was wrong:
+
+```
+before:  no draft row  AND  no reply after the customer's newest message
+after:                      no reply after the customer's newest message
+```
+
+The draft condition asserted that generating a draft answers a customer. It
+does not, and in this system it cannot: `reviewed` has no outgoing transition
+and there is no transport after it, so every draft is work in progress by
+construction. The workflow always said so; the feed was reading it wrongly.
+
+**Why the draft row was the wrong test even on its own terms.** It was chosen
+over `workflow_state` deliberately and for a good reason — a saved human edit
+appends a revision and advances no state, so the state under-reports work. But
+both are measures of OUR progress, and the question the notification asks is
+about the CUSTOMER's: have they had a reply? Only an outbound message answers
+that. The fix replaces a proxy for our activity with the thing actually being
+asked about.
+
+The feed still refreshes when a draft is generated. Not to remove the row —
+that was the bug — but because writing a draft changes what the row says about
+itself, from nothing to "Draft ready".
+
+**`reviewed` is now visible as a waiting state.** A conversation reviewed here
+with no reply yet on the thread stays listed and says "Reviewed · not sent".
+That is not a new state; it is the existing terminal state, described accurately
+for the first time on this list.

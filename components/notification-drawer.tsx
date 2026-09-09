@@ -12,6 +12,37 @@ import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import { PRIORITY_RIBBON_CLASS, priorityDescription } from "./priority-ribbon";
 
 /**
+ * How far the work has got — which is NOT how far the customer has got.
+ *
+ * Every row in this drawer is a customer still waiting: the feed retires a
+ * conversation only when an outbound reply lands after their message. This
+ * label says what exists on our side meanwhile, and it exists because the feed
+ * used to answer that question by REMOVING the row — generating a draft made a
+ * waiting customer disappear. Nothing here can take a row off the list.
+ *
+ * `reviewed` is named plainly rather than being treated as finished: it is this
+ * system's terminal state and there is no transport after it, so a reviewed
+ * conversation with no reply on the thread is still someone waiting.
+ */
+function draftStatus(item: {
+  hasDraft: boolean;
+  workflowState: string;
+}): { label: string; title: string } | null {
+  if (!item.hasDraft) return null;
+  if (item.workflowState === "pending_review") {
+    return { label: "Needs review", title: "A draft is written and waiting for a reviewer." };
+  }
+  if (item.workflowState === "reviewed") {
+    return {
+      label: "Reviewed · not sent",
+      title:
+        "The draft was reviewed here. No reply from us has appeared on the thread yet, so the customer is still waiting.",
+    };
+  }
+  return { label: "Draft ready", title: "A draft exists for this conversation." };
+}
+
+/**
  * The notification drawer: order-change conversations nobody has answered,
  * across EVERY marketplace.
  *
@@ -86,7 +117,7 @@ export function NotificationDrawer({
                 the tab behind the drawer, which is the one thing a reviewer
                 would otherwise assume. */}
             <p className="text-[11px] opacity-70">
-              All marketplaces · no draft and no reply yet
+              All marketplaces · no reply sent yet
             </p>
           </div>
           <button
@@ -104,7 +135,7 @@ export function NotificationDrawer({
           <p className="p-5 text-sm opacity-60">Loading…</p>
         ) : items.length === 0 ? (
           <p className="p-5 text-sm opacity-60">
-            Nothing waiting for a first reply on any marketplace.
+            Nothing waiting for a reply on any marketplace.
           </p>
         ) : (
           <ul>
@@ -113,6 +144,7 @@ export function NotificationDrawer({
               // sources with different guarantees about identity and direction.
               const capability = capabilityOf(item.marketplace);
               const stamp = formatSourceTimestamp(item.latestCustomerMessageAt);
+              const draft = draftStatus(item);
               return (
                 <li key={item.id}>
                   <button
@@ -156,6 +188,25 @@ export function NotificationDrawer({
                       <span className="rounded bg-black/[0.07] px-1.5 py-0.5 font-medium opacity-80 dark:bg-white/[0.12]">
                         {capability.label}
                       </span>
+                      {/*
+                        * HOW FAR THE WORK HAS GOT, BESIDE THE MARKETPLACE.
+                        *
+                        * The row is here because the customer has had no reply.
+                        * This says whether anything is written yet, so a
+                        * reviewer can tell "nobody has touched this" from
+                        * "there is a draft waiting for you" WITHOUT either one
+                        * being hidden from the list. Absent where no draft
+                        * exists: a chip reading "no draft" would be noise on
+                        * what is already the default.
+                        */}
+                      {draft !== null && (
+                        <span
+                          title={draft.title}
+                          className="rounded bg-black/[0.07] px-1.5 py-0.5 font-medium opacity-80 dark:bg-white/[0.12]"
+                        >
+                          {draft.label}
+                        </span>
+                      )}
                       {/*
                         * THE SAME COLOUR SCALE THE INBOX RIBBON USES, read from
                         * the same exported table so the two can never disagree

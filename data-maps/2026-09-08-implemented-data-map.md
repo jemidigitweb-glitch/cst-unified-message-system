@@ -341,3 +341,33 @@ still be corrected upstream, and a uniform path costs nothing to keep.
 `cst_app.conversation_messages` gains no column. The repair writes `body_text`
 and `body_decode_status` and nothing else — `direction`, `source_ts` and
 `external_message_id` are INSERT-only in the upsert.
+
+## Added: no new mapping — one existing read moved from filter to projection
+
+The notification fix introduces **no source mapping, no column and no table**. It
+reads exactly the three application tables the feed already read:
+
+| Read | Already written by | Role before | Role after |
+| --- | --- | --- | --- |
+| `cst_app.conversations` | `lib/sync/conversation-writer.ts` | candidate set | unchanged |
+| `cst_app.conversation_messages` | the same writer | newest inbound; reply test | unchanged |
+| `cst_app.draft_replies` (existence only) | `lib/sync/draft-writer.ts` | **exclusion predicate** | **projected label `has_draft`** |
+
+The last row is the whole change. The same existence test, against the same
+table, moved out of the `WHERE` clause and into the `SELECT` list.
+
+**Why that is a mapping question and not just a query one.** A predicate and a
+projection make different claims about what the data MEANS. As a predicate, the
+presence of a draft row was being read as "this customer has been dealt with" —
+a claim about the customer. The row does not support it: `draft_replies` records
+what WE wrote, and nothing in `cst_app` records that anything was sent, because
+nothing can send. As a projection it makes the claim it can support: a draft
+exists.
+
+The only mapping that can answer "has this customer been replied to" is
+`conversation_messages.direction = 'outbound'` ordered after their newest
+inbound message, which is what the surviving predicate uses — the same
+`(source_ts, source_pk)` row-value ordering `sync_state` uses for its watermark,
+so a reply landing in the same second is ordered rather than missed.
+
+It still never reaches the marketplace source database.

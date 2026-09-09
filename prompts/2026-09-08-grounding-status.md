@@ -134,9 +134,11 @@ quietly acquires a model call, and this one has none.
   (244 across three marketplaces rather than 100 in one), and every one of them
   is read by the same pure phrase-and-clause classifier. No model is called at
   any point, for any marketplace.
-- The feed refreshes when a draft is generated, so the count drops as work is
-  done. That is a re-read of the existing classifier over existing rows — it
-  costs no tokens and triggers no generation.
+- The feed refreshes when a draft is generated. ~~so the count drops as work is
+  done.~~ (**Corrected** — a draft no longer removes a row; the refresh now
+  updates its label. See "the notification draft fix" below.) That is a re-read
+  of the existing classifier over existing rows — it costs no tokens and
+  triggers no generation.
 
 ## Added: what this team has already said in this thread
 
@@ -265,3 +267,30 @@ not.
   message needs redoing.
 - No token is spent by running the repair, and nothing is written to
   `ai_usage_log`.
+
+## Added: the notification draft fix — no AI involvement
+
+Recorded here for the same reason the notification list itself was: a change with
+"draft" in its description is exactly the kind of thing that quietly acquires a
+model call, and this one has none.
+
+- **No prompt, no instruction, no assembly step and no provider call.** Nothing
+  in `lib/ai/` was read, imported or modified. `cstInstructions`,
+  `buildDraftInput`, `validateDraftAccuracy` and every provider are
+  byte-identical.
+- The change is one SQL predicate deleted, one column projected, and a label in
+  a drawer. It observes whether a `draft_replies` row exists; it never reads a
+  draft's TEXT, its revisions, its sources or its findings.
+- **Nothing about grounding changed.** What a draft may claim, what reaches the
+  model, and what the accuracy gate does with the result are all untouched.
+- No token is spent by the notification feed, before or after this fix, and
+  nothing is written to `ai_usage_log`.
+- The feed still refreshes when a draft is generated. That is a re-read of
+  existing rows by an existing query — it costs no tokens and triggers no
+  generation. Its purpose changed (the row's label updates rather than the row
+  disappearing), its cost did not.
+
+One thing worth noting for anyone reasoning about the drafting layer from this
+document: the fix makes explicit, in code and in tests, that **a generated draft
+is not a reply**. That was always true of this system — it is why `reviewed` is
+terminal — but the notification feed had encoded the opposite assumption.

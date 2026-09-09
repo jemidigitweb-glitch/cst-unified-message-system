@@ -122,11 +122,51 @@ describe("the bell", () => {
   });
 
   it("refreshes when a draft is written, and by no other schedule", () => {
-    // A conversation leaves the list the moment a draft exists for it, so a
-    // badge still showing it afterwards is a badge that is wrong. That is the
-    // only refresh — no interval, no polling, no subscription.
+    /*
+     * A draft no longer REMOVES a conversation from the feed — it never should
+     * have, since nothing here can send — but writing one still changes what
+     * the row says about itself, from "nothing written yet" to "draft ready".
+     * So the refresh remains, for the label rather than for the count. It is
+     * the only one: no interval, no polling, no subscription.
+     */
     expect(workspace).toContain("}, [draftGeneration]);");
     expect(workspace).not.toContain("setInterval");
+  });
+});
+
+/**
+ * A DRAFT IS SHOWN, NOT ACTED ON.
+ *
+ * The feed used to drop any conversation that had a draft, which hid waiting
+ * customers behind work that had merely been started. The drawer now says how
+ * far the work has got and leaves every waiting customer on the list.
+ */
+describe("the drawer separates work-in-progress from answered", () => {
+  it("labels a drafted conversation instead of omitting it", () => {
+    expect(drawer).toContain("item.hasDraft");
+    expect(drawer).toMatch(/Draft ready/);
+    expect(drawer).toMatch(/Needs review/);
+  });
+
+  it("names the reviewed-but-unsent state plainly", () => {
+    // `reviewed` is terminal here and there is no transport after it, so a
+    // reviewed conversation with no reply on the thread is still someone
+    // waiting. The drawer must not present it as finished.
+    expect(drawer).toContain('"reviewed"');
+    expect(drawer).toMatch(/not sent/i);
+  });
+
+  it("no longer claims the list means 'no draft'", () => {
+    // The old header copy read "no draft and no reply yet", which described
+    // the bug rather than the feature.
+    expect(drawer).not.toMatch(/no draft and no reply/i);
+    expect(drawer).toMatch(/no reply sent yet/i);
+  });
+
+  it("shows no chip where nothing has been written", () => {
+    // Absence is the ordinary case; a "no draft" chip would be noise on most
+    // rows. The helper returns null before it reads the workflow state.
+    expect(drawer).toContain("if (!item.hasDraft) return null;");
   });
 });
 

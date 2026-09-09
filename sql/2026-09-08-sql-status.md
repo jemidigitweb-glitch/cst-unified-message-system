@@ -142,7 +142,9 @@ Four constructs worth naming, because all four are deliberate:
 
 **Verified by EXPLAIN against the live application schema**, not only by review.
 The plan is index-driven throughout — `ix_conversations_marketplace_sub_source`
-for the marketplace, a hash anti-join against the small `draft_replies` table,
+for the marketplace, ~~a hash anti-join against the small `draft_replies`
+table,~~ (**that anti-join has since been removed** — see "one predicate deleted"
+below; `draft_replies` is now read as a projected label)
 and `ix_conversation_messages_thread_order` backward for both message lookups.
 No migration was written, and no DDL exists for this feature.
 
@@ -290,3 +292,63 @@ ON CONFLICT (source_database, source_schema, source_table, source_pk) DO UPDATE 
 structurally cannot move a message in time or flip which side sent it. The
 `conversation_id` passed is the row's own stored value, so thread grouping cannot
 move either. Tests pin both facts against the statement text.
+
+## Added: one predicate deleted from LIST_AWAITING_RESPONSE
+
+The smallest possible change to a statement in this codebase, and worth recording
+because of what it says about writing predicates.
+
+**Removed from the CTE's `WHERE`:**
+
+```sql
+AND NOT EXISTS (
+  SELECT 1 FROM cst_app.draft_replies d WHERE d.conversation_id = c.id
+)
+```
+
+**Added to the outer `SELECT`:**
+
+```sql
+EXISTS (
+  SELECT 1 FROM cst_app.draft_replies d WHERE d.conversation_id = c.id
+) AS has_draft
+```
+
+Same subquery, same table, same key. What changed is the CLAIM it makes. In the
+`WHERE` it asserted "a draft row means this customer has been dealt with" — a
+claim about the customer that the row cannot support, since `draft_replies`
+records only what we wrote and nothing in `cst_app` records that anything was
+sent. In the `SELECT` it asserts what it can: a draft exists.
+
+**Placement is deliberate, and follows this file's existing rule.** The
+projection sits in the OUTER query, not the CTE, so the new `EXISTS` is evaluated
+only for rows that survived `row_number() OVER (PARTITION BY c.marketplace ...)`
+— exactly as the three correlated subqueries above it already are. Putting it in
+the CTE would have run it against every candidate row before the window discarded
+most of them.
+
+**The surviving predicate is now the only filter on "answered":**
+
+```sql
+AND NOT EXISTS (
+  SELECT 1 FROM cst_app.conversation_messages o
+  WHERE o.conversation_id = c.id
+    AND o.direction = 'outbound'
+    AND (o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk)
+)
+```
+
+Still the row-value comparison `sync_state` uses for its watermark, so a reply
+landing in the same second as the customer's message is ordered by the source PK
+rather than missed.
+
+**Unchanged:** parameterisation (`$1` marketplace array, `$2` row bound),
+`cst_app`-only scope, SELECT-only, the tables read (three, and a test asserts
+nothing else is touched), the index-driven plan, and the absence of any DDL. No
+migration was written; `migrations/` still ends at `0010`.
+
+**A note on testing a deleted predicate.** A fake client cannot execute SQL, so
+its absence is pinned structurally — and naively asserting the statement no
+longer contains `draft_replies` would be wrong, because the projection still
+names it. The test asserts the precise shape instead: `cst_app.draft_replies`
+must appear, and must NOT appear inside a `NOT EXISTS`.

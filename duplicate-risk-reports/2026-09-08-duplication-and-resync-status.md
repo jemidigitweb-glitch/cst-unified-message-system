@@ -260,3 +260,39 @@ body is refused, not repaired.
 `repairMessageBodies` also counts rows it had to INSERT rather than update.
 Expected zero — every target was read back from the table moments earlier — and a
 non-zero count is printed as a warning rather than absorbed.
+
+## Added: the notification draft fix — duplication assessed
+
+**No new duplication risk, and one class of risk removed.** The change writes
+nothing, stores nothing and caches nothing; it deletes a predicate and projects
+a boolean.
+
+| Could have been duplicated | What was done instead |
+| --- | --- |
+| The "has this been answered" test | There is now exactly ONE, and it is the outbound-message clause. The draft test was not replaced by a different filter — it was deleted, so two competing answers to the same question no longer exist. |
+| The draft-existence read | Still one `EXISTS` against `cst_app.draft_replies`, moved from the `WHERE` to the `SELECT`. Not a second query, not a second round trip, and not a join that could fan out. |
+| The workflow state | Still not read as a filter. Projecting `has_draft` beside the already-projected `workflow_state` means the drawer derives its label from two values it was already given, rather than a second source computing a third opinion. |
+| The drawer's status vocabulary | One `draftStatus()` helper, one call site. The chip reuses the existing chip class rather than a second style. |
+
+**A row still cannot appear twice.** `row_number()` assigns one rank per row
+within one partition and a conversation belongs to exactly one marketplace, so
+the per-marketplace bound is unaffected by the extra rows the fix admits.
+
+**The fix is idempotent by construction.** `has_draft` is derived per request
+from rows that already exist; there is no stored flag to drift, no backfill and
+nothing to reconcile. Two reads of an unchanged database return the same list
+and the same labels.
+
+**One duplication-adjacent risk worth naming, because it is real and accepted.**
+A conversation answered outside this system keeps notifying until the outbound
+message syncs back. During that window the SAME customer can be waiting in the
+reviewer's mind and waiting on the badge for different reasons — the badge is
+right about the data and stale about the world. It is not a duplicate row; it is
+a duplicate *impression* of outstanding work, and the "Reviewed · not sent" chip
+exists so a reviewer can tell which is which. The alternative — letting
+`reviewed` retire the row — reintroduces the bug this fixed.
+
+**More rows now qualify**, which is the intended effect and not a leak: every one
+of them is a conversation with a customer message and no reply after it. The
+per-marketplace window still bounds them, and `scanned`/`hasMore` still report
+truthfully how far the feed looked.

@@ -98,8 +98,10 @@ available once exactly one order has resolved.
 
 ## Added: order-change notification list — decisions taken
 
-**Superseded in part — see "Made global" below.** Originally a per-marketplace
-read layer listing
+**Superseded in part — twice.** See "Made global" below, and "the notification
+draft condition" below that, which **reverses decision 3 and the first half of
+decision 6**: a draft no longer removes a row from the list. Originally a
+per-marketplace read layer listing
 `"Order change, before shipping queries"` conversations with no draft and no
 reply after the customer's newest message.
 
@@ -311,3 +313,52 @@ idempotent, bounded, dry-run by default, and reuses the sync's own upsert.
 - **No UI change.** A repaired body renders through the existing `displayBody`
   path. The blank-message placeholder still reads the same for a message that is
   genuinely empty — telling those two apart on screen is not built.
+
+## Added: the notification draft condition — closed, and a decision reversed
+
+Closed. The notification feed no longer treats a generated draft as an answer.
+Commit follows this document.
+
+**This reverses decision 3 of "order-change notification list — decisions taken"
+above**, which chose the absence of the draft ROW over `workflow_state` as the
+test for "nobody has dealt with this". That reasoning was right about
+`workflow_state` and wrong about the question. Both measure OUR progress; the
+notification asks about the CUSTOMER's. Only an outbound reply answers it.
+
+**The decisions, and why each went the way it did:**
+
+1. **The predicate was deleted, not narrowed.** There is no version of "a draft
+   means answered" that is true here: `reviewed` has no outgoing transition and
+   a standing guard fails the build if any send capability appears, so a draft
+   is work in progress by construction. A weaker form — say, excluding only
+   `reviewed` conversations — would reintroduce the same bug for the same reason.
+2. **`has_draft` moved to the projection rather than being dropped.** The
+   information is useful; using it as a filter was the mistake. The drawer now
+   labels a row "Draft ready" / "Needs review" / "Reviewed · not sent" and
+   removes none of them.
+3. **The label is read in the OUTER query.** Ranking happens in the CTE and the
+   expensive per-row reads sit outside it, so the new `EXISTS` costs only rows
+   that survived the per-marketplace window — the same discipline the three
+   existing correlated subqueries already follow.
+4. **`workflow_state` still does not become the filter.** A saved human edit
+   appends a revision and advances no state, so it under-reports work; and
+   `reviewed` means reviewed HERE, not sent. A test pins that neither
+   `'received'` nor `'reviewed'` appears in the statement.
+5. **The refresh-on-draft-generation was kept.** It no longer removes the row —
+   that was the bug — but writing a draft still changes what the row says about
+   itself, so the feed must re-read. It remains the only refresh: no interval,
+   no polling, no subscription.
+6. **The boolean is coerced, not trusted.** `row.has_draft === true`, so a
+   driver returning `"t"`, `1` or `null` cannot silently label every row as
+   drafted.
+
+**Explicitly not done:** no migration, no schema change, no new table, no change
+to AI drafting, draft generation, the draft workflow, the sending workflow (there
+is none) or order context. No existing filter was touched — the category
+matching, per-marketplace bound, `filtered` exclusion and ordering are unchanged.
+
+**Accepted consequence, recorded rather than hidden.** A reply sent outside this
+system retires its notification only when the outbound message syncs back from
+the marketplace. Until then the conversation keeps notifying, labelled
+"Reviewed · not sent". This is the honest reading — nothing here observes
+sending — and the alternative was rejected under decision 1.

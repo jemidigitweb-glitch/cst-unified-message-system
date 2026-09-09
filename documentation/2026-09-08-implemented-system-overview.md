@@ -356,3 +356,52 @@ because the patterns genuinely differ.
 `weight_g` is `NULL` or `[VERIFY]` on all 1,824 SOT SKUs, as are every packaged,
 volumetric, outer and chargeable weight column. A draft asked for a weight can
 only say it will check — which is what it does.
+
+### 11. The notification feed stops reading a draft as an answer
+
+The order-change notification feed (section 8) excluded any conversation that had
+a draft. Generating one therefore removed the customer from the badge — and the
+feed refreshes on draft generation, so pressing Generate re-fetched a list the
+conversation had just been dropped from. The customer vanished at the moment
+somebody started working on them.
+
+**Why the premise was false.** Nothing in this application can send. `reviewed`
+has no outgoing transition and `tests/guards/no-send-capability.test.ts` fails
+the build if any transmitting code appears. A draft is therefore work in progress
+by construction and can never be evidence that a customer was answered.
+
+**The statement now carries one exclusion, not two:**
+
+```sql
+-- removed
+AND NOT EXISTS (SELECT 1 FROM cst_app.draft_replies d WHERE d.conversation_id = c.id)
+
+-- kept: the only thing that retires a notification
+AND NOT EXISTS (
+  SELECT 1 FROM cst_app.conversation_messages o
+  WHERE o.conversation_id = c.id AND o.direction = 'outbound'
+    AND (o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk))
+```
+
+The same table is still read, as a projected label:
+
+```sql
+EXISTS (SELECT 1 FROM cst_app.draft_replies d WHERE d.conversation_id = c.id) AS has_draft
+```
+
+It sits in the outer query, so it costs only the rows that survived the
+per-marketplace window — the discipline the three existing correlated reads
+already follow.
+
+**What the drawer shows instead of hiding the row:** no chip where nothing is
+written, **Draft ready**, **Needs review** (`pending_review`), or
+**Reviewed · not sent** (`reviewed` — this system's terminal state, which means
+reviewed here and says nothing about whether a reply went out).
+
+`workflow_state` is still not the filter, and now for two reasons: a saved human
+edit appends a revision and advances no state, and `reviewed` is not "sent". A
+test pins that neither `'received'` nor `'reviewed'` appears in the statement.
+
+No schema change and no migration. Files: `lib/repositories/conversation-repository.ts`,
+`lib/domain/inbox.ts`, `components/notification-drawer.tsx`,
+`app/api/conversations/awaiting-response/route.ts`.

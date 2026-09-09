@@ -52,6 +52,12 @@ function awaitingRow(overrides: Record<string, unknown> = {}) {
     latest_inbound_body: "Please cancel my order.",
     latest_inbound_decode_status: "decoded",
     /**
+     * Whether a draft has been written. Defaults to false — the ordinary case —
+     * and is a LABEL on the row, never a reason to omit it. Override it to
+     * true to represent a conversation that has been drafted but not answered.
+     */
+    has_draft: false,
+    /**
      * Position within its OWN marketplace's window. The query gives every
      * marketplace a window of the same size and overfetches one row of each, so
      * the repository drops anything past the bound — a fixture with no rank
@@ -175,34 +181,79 @@ describe("category matching", () => {
 });
 
 /* ------------------------------------------------------------------------- *
- * THE DRAFT AND REPLY CONDITIONS — structural, pinned to the statement
+ * A DRAFT IS NOT A REPLY
+ *
+ * THE BUG THIS SECTION EXISTS FOR. The statement used to carry a second
+ * exclusion — `NOT EXISTS (SELECT 1 FROM cst_app.draft_replies ...)` — so
+ * generating a draft removed the conversation from the notification feed. The
+ * customer had not been answered; nothing had been sent, and nothing in this
+ * application CAN send. The badge simply stopped mentioning them.
+ *
+ * A draft now decides how a row is LABELLED and never whether it appears.
  * ------------------------------------------------------------------------- */
 
-describe("no draft exists", () => {
-  it("excludes a conversation with a draft, by the absence of the draft row", async () => {
-    const { calls } = await listOrderChange([]);
-    expect(calls[0]!.text).toContain("NOT EXISTS");
-    expect(calls[0]!.text).toContain("FROM cst_app.draft_replies d");
-    expect(calls[0]!.text).toContain("WHERE d.conversation_id = c.id");
+describe("a draft does not retire a notification", () => {
+  it("keeps a drafted conversation on the list", async () => {
+    const { page } = await listOrderChange([awaitingRow({ has_draft: true })]);
+    expect(page.items.map((item) => item.id)).toEqual(["1"]);
+    expect(page.items[0]!.hasDraft).toBe(true);
   });
 
   /**
-   * `workflow_state` is a PROXY and must not be the test. A saved human edit
-   * appends a revision and advances no state, so a conversation carrying an
-   * edited draft still reads as `received` — and would reappear here as
-   * untouched work.
+   * The regression, stated as the property that failed: two conversations
+   * identical but for the draft must both be listed. Before the fix the second
+   * one vanished.
    */
-  it("does not substitute the workflow state for the draft row", async () => {
+  it("lists a drafted and an undrafted conversation alike", async () => {
+    const { page } = await listOrderChange([
+      awaitingRow({ id: "1", has_draft: false }),
+      awaitingRow({ id: "2", has_draft: true }),
+    ]);
+    expect(page.items.map((item) => item.id)).toEqual(["1", "2"]);
+    expect(page.items.map((item) => item.hasDraft)).toEqual([false, true]);
+  });
+
+  /**
+   * The draft table must not be filtered on again. Pinned structurally because
+   * a fake client cannot execute SQL: `draft_replies` may be SELECTed for the
+   * label, but it may never appear inside a NOT EXISTS.
+   */
+  it("never excludes on the draft row", async () => {
+    const { calls } = await listOrderChange([]);
+    const sql = calls[0]!.text;
+    expect(sql).toContain("cst_app.draft_replies");
+    expect(sql).not.toMatch(/NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+cst_app\.draft_replies/i);
+  });
+
+  /**
+   * `workflow_state` is a PROXY and must not become the filter either — least
+   * of all now. A saved human edit appends a revision and advances no state, and
+   * `reviewed` is this system's terminal state with no transport after it, so
+   * neither value says a customer was answered.
+   */
+  it("does not substitute the workflow state for a reply", async () => {
     const { calls } = await listOrderChange([]);
     expect(calls[0]!.text).not.toMatch(/workflow_state\s*=/);
     expect(calls[0]!.text).not.toContain("'received'");
+    expect(calls[0]!.text).not.toContain("'reviewed'");
   });
 
-  /** A conversation the query returned is by definition draft-free. */
-  it("returns the draft-free conversation the query yielded", async () => {
-    const { page } = await listOrderChange([awaitingRow({ workflow_state: "received" })]);
+  /** A reviewed conversation with no reply on the thread is still someone waiting. */
+  it("keeps a reviewed conversation that was never replied to", async () => {
+    const { page } = await listOrderChange([
+      awaitingRow({ workflow_state: "reviewed", has_draft: true }),
+    ]);
     expect(page.items).toHaveLength(1);
-    expect(page.items[0]!.workflowState).toBe("received");
+    expect(page.items[0]!.workflowState).toBe("reviewed");
+    expect(page.items[0]!.hasDraft).toBe(true);
+  });
+
+  /** Only a true boolean counts, so a driver returning "t" or 1 cannot mislabel every row. */
+  it("reads the draft flag strictly", async () => {
+    for (const raw of [false, null, undefined, 0, "f"]) {
+      const { page } = await listOrderChange([awaitingRow({ has_draft: raw })]);
+      expect(page.items[0]!.hasDraft, String(raw)).toBe(false);
+    }
   });
 });
 
@@ -270,6 +321,7 @@ describe("the notification row", () => {
       priority: "HIGH",
       latestCustomerMessageAt: "2026-08-02 10:00:00",
       latestCustomerMessagePreview: "Please cancel my order.",
+      hasDraft: false,
     });
   });
 

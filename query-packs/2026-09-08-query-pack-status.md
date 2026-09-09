@@ -253,3 +253,55 @@ understates what the system can describe by two orders of magnitude.
 
 - Packs A–F remain described-but-unsaved. Pack H sets the shape for them:
   read-only, commented with the finding beside the query, no customer data.
+
+## Added: Pack I — is the unanswered queue what we think it is?
+
+The sizing pack behind the notification draft fix. Read-only, `cst_app` only,
+counts only — never message text.
+
+**The question:** how many conversations have a customer message with no reply
+after it, and how many of those already have a draft? The second number is the
+one the old feed was hiding.
+
+**I1 — the queue, split by whether a draft exists.** The same predicates the feed
+uses, minus the category (which cannot be a SQL filter — see Pack D and
+`data-maps/`):
+
+```sql
+SELECT c.marketplace,
+       EXISTS (SELECT 1 FROM cst_app.draft_replies d
+                WHERE d.conversation_id = c.id) AS has_draft,
+       count(*)
+FROM cst_app.conversations c
+JOIN LATERAL (
+  SELECT cm.source_ts, cm.source_pk::bigint AS source_pk
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'inbound'
+  ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+  LIMIT 1
+) latest ON TRUE
+WHERE c.inbox_visibility <> 'filtered'
+  AND NOT EXISTS (
+    SELECT 1 FROM cst_app.conversation_messages o
+    WHERE o.conversation_id = c.id AND o.direction = 'outbound'
+      AND (o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk))
+GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+**`has_draft = true` is exactly the set the old feed dropped** — customers with
+no reply, hidden because somebody had started work. Running this quantifies what
+the bug cost.
+
+**I2 — how many are reviewed but unanswered?** Add `c.workflow_state` to the
+`GROUP BY`. The reviewed rows are the ones that will now show
+"Reviewed · not sent", and their count is the best available estimate of how
+much extra noise the fix introduces before the sync catches up.
+
+**Not yet run.** Both are written from the shipped statement rather than measured,
+so the figures in `capability/` and `evidence/` for this feed remain the
+pre-fix ones. That is the outstanding item for this pack.
+
+**A caveat for anyone running it by hand:** as with the awaiting-response query
+above, this answers "unanswered", not "unanswered AND an order change". Without
+the classifier it returns every case area, so the counts will exceed what the
+notification drawer shows.

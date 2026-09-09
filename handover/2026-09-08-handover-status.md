@@ -298,3 +298,50 @@ scheduled, run it far less often than the sync — daily at most.
 **Known limitation.** A blank bubble caused by a genuinely empty source message
 and one caused by a body CST failed to pick up look identical in the UI. Repair
 tells them apart in its log; the workspace does not.
+
+## Added: the notification draft fix — what to know before changing it
+
+**Where it lives.** `LIST_AWAITING_RESPONSE` in
+`lib/repositories/conversation-repository.ts`, `hasDraft` on
+`awaitingResponseConversationSchema` in `lib/domain/inbox.ts`, and
+`draftStatus()` in `components/notification-drawer.tsx`.
+
+**The rule, in one line: a draft is not a reply, and in this system it never can
+be.** `reviewed` has no outgoing transition and
+`tests/guards/no-send-capability.test.ts` fails the build if any transmitting
+code appears. The feed used to exclude conversations that had a draft, so
+generating one removed a waiting customer from the badge.
+
+**What to know before changing it:**
+
+- **Only an outbound message may retire a notification.** If you find yourself
+  adding a second exclusion — a workflow state, a draft, a "reviewed" flag, a
+  timestamp — you are re-introducing this bug in a new form. Every one of those
+  measures OUR progress; the notification asks about the CUSTOMER's.
+- **`draft_replies` is still in the statement, and that is correct.** It is
+  SELECTed for the `has_draft` label. The test asserts the precise shape:
+  `cst_app.draft_replies` must be present and must NOT appear inside a
+  `NOT EXISTS`. Do not "simplify" that assertion to a plain absence check — it
+  would be green and wrong.
+- **The `EXISTS` belongs in the OUTER query.** Moving it into the CTE would run
+  it against every candidate row before the per-marketplace window discards most
+  of them, which is the cost rule the three correlated subqueries already follow.
+- **`workflow_state` must not become the filter.** A saved human edit appends a
+  revision and advances no state, and `reviewed` means reviewed HERE, not sent.
+  A test pins that neither received nor reviewed appears as a literal in the SQL.
+- **`row.has_draft === true`, deliberately.** A driver returning a string or a
+  number would otherwise label every row as drafted.
+- **The feed still refreshes on `draftGeneration`, and should.** Not to remove
+  the row — that was the bug — but because writing a draft changes its label. It
+  remains the only refresh: no interval, no polling, no subscription.
+
+**Expect the list to be longer than it was**, and expect "Reviewed · not sent"
+rows on it. A reply sent outside this system retires its notification only when
+the outbound message syncs back from the marketplace, because nothing here
+observes sending. If someone reports this as noise, the options are a shorter
+sync interval or letting `reviewed` retire the row — and the second is a weaker
+form of the bug that was just fixed, so it needs a deliberate decision rather
+than a quiet patch.
+
+**Nothing new to operate.** No migration, no environment variable, no scheduled
+job, no credential.

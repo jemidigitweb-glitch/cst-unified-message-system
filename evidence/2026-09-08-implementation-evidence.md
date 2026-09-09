@@ -353,3 +353,90 @@ issues no statement mentioning `sync_state`.
 before; the repair suite adds 45). `npx eslint` reports the same 4 pre-existing
 problems, none in new files. `npx tsc --noEmit` reports the same one pre-existing
 stale `.next/types/validator.ts` error.
+
+## Added: the notification draft fix — evidence
+
+**What was built:**
+
+| File | Change |
+| --- | --- |
+| `lib/repositories/conversation-repository.ts` | modified — draft `NOT EXISTS` deleted; `has_draft` projected; row type, mapper and both doc blocks updated |
+| `lib/domain/inbox.ts` | modified — `hasDraft: z.boolean()` on the row schema |
+| `components/notification-drawer.tsx` | modified — `draftStatus()` helper, status chip, header and empty-state copy |
+| `app/api/conversations/awaiting-response/route.ts` | modified — doc comments only |
+| `tests/repositories/awaiting-response.test.ts` | modified — bug-encoding block replaced, 6 tests added |
+| `tests/guards/notification-bell.test.ts` | modified — 4 drawer tests added |
+
+**No schema change, no migration.** `migrations/` still ends at `0010`.
+
+### Test run — 2026-09-09
+
+```
+npx vitest run tests/repositories/awaiting-response.test.ts \
+               tests/guards/notification-bell.test.ts
+Test Files  2 passed (2)
+Tests       89 passed (89)
+
+npm test   (vitest run)
+Test Files  124 passed | 12 skipped (136)
+Tests       3413 passed | 30 skipped (3443)
+Duration    32.88s
+```
+
+Up from 3,406: ten tests added, three removed (the block that asserted the bug).
+
+`npx tsc --noEmit`: one error, pre-existing and unrelated — the stale
+`.next/types/validator.ts` invoice-route reference. `npx eslint`: the same 4
+problems as before, all in files this work did not touch
+(`components/workspace.tsx`, `lib/knowledge/rule-coverage.ts`,
+`tests/guards/order-selection-tracking.test.ts`).
+
+### The evidence that the bug existed, and that it is gone
+
+The defect was in the statement, so the proof is the statement. Before:
+
+```sql
+AND NOT EXISTS (SELECT 1 FROM cst_app.draft_replies d WHERE d.conversation_id = c.id)
+AND NOT EXISTS (SELECT 1 FROM cst_app.conversation_messages o ...)
+```
+
+After: only the second clause survives, and `draft_replies` appears in the
+`SELECT` list instead.
+
+**Why the first test written for this had to be discarded.** The obvious
+assertion — "the statement no longer names `draft_replies`" — would have been
+green and wrong, because the projection still names it. The behaviour is pinned
+two ways instead:
+
+| Claim | How it is tested |
+| --- | --- |
+| A drafted conversation stays listed | **Behavioural** — a row with `has_draft: true` is returned |
+| Drafted and undrafted are listed alike | **Behavioural** — two rows differing only in the draft, both returned |
+| A reviewed conversation with no reply stays listed | **Behavioural** |
+| The flag is read strictly | **Behavioural** — `false`, `null`, `undefined`, `0`, `"f"` all map to `false` |
+| The draft table is never filtered on | **Structural** — `cst_app.draft_replies` must be present AND must not match `/NOT EXISTS\s*\(\s*SELECT 1 FROM cst_app\.draft_replies/i` |
+| The workflow state is not substituted | **Structural** — neither `'received'` nor `'reviewed'` may appear |
+| The drawer labels rather than omits | **Structural** — the drawer source names `item.hasDraft`, "Draft ready", "Needs review", "not sent" |
+
+A fake client cannot execute SQL, which is why the two exclusions were structural
+before and why one of them still is. That is the same standard the No Rule
+queries are held to.
+
+### Evidence the rest of the feed is unchanged
+
+Every other assertion in `awaiting-response.test.ts` passes untouched: category
+matching against the real classifier, the per-marketplace `row_number()` bound,
+the `filtered` exclusion, the inner `JOIN LATERAL`, the row-value reply
+comparison, ordering, `scanned`/`hasMore`, and the read-only guarantee. No
+existing test was weakened to make the fix pass; the only one removed asserted
+the behaviour being corrected.
+
+### Not yet checked by a person
+
+- **No live run.** The measured live figures in this folder (eBay 0 · Amazon 1 ·
+  Shopify 2 from 244 candidates) were taken with the draft exclusion in place.
+  The feed will now return MORE rows, and by how many has not been measured
+  against the live database.
+- Nobody has watched a conversation stay on the list through Generate → Save →
+  Reviewed and then leave it when the reply syncs back. That is the end-to-end
+  behaviour this change exists for and it is asserted, not observed.

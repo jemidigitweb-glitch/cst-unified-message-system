@@ -397,3 +397,67 @@ re-run   : examined 903   repaired  0   skipped 903     ← all five marketplace
 - Whether any draft was generated against a message while it was blank, and
   therefore ought to be regenerated now that the text is present. Nothing
   automatic touches `draft_replies`; this needs a human decision.
+
+## Added: the notification draft fix
+
+```
+npx vitest run tests/repositories/awaiting-response.test.ts tests/guards/notification-bell.test.ts
+   →   Test Files  2 passed (2)
+       Tests      89 passed (89)
+
+npm test   →   Test Files  124 passed | 12 skipped (136)
+               Tests      3413 passed | 30 skipped (3443)
+```
+
+Ten tests added, three removed — the block that asserted the behaviour being
+corrected. No other existing test or guard was edited, and every standing guard
+is green, including `no-send-capability`, which is the guard this fix's whole
+argument rests on.
+
+`npx tsc --noEmit`: one pre-existing, unrelated error (stale
+`.next/types/validator.ts`). `npx eslint`: the same 4 problems as before, none in
+a touched file.
+
+### What is proven and what is asserted
+
+| Condition | How it is tested |
+| --- | --- |
+| a drafted conversation stays listed | **Behavioural** |
+| drafted and undrafted are listed alike | **Behavioural** — the regression itself |
+| a reviewed conversation with no reply stays listed | **Behavioural** |
+| the draft flag is read strictly | **Behavioural** — false, null, undefined, 0 and "f" all map to false |
+| category, bound, filtered, ordering still work | **Behavioural** — unchanged, still passing |
+| the draft table is never filtered on | **Structural** — present, but not inside a NOT EXISTS |
+| the workflow state is not substituted | **Structural** |
+| the drawer labels rather than omits | **Structural** — drawer source pinned |
+| **the reviewer sees the right thing** | **Not tested** — see below |
+
+### Manual checklist — G. Notification shows unsent drafts (not yet run)
+
+27. **The originating case.** Open an order-change conversation with no draft.
+    Confirm it appears in the notification drawer. Press Generate. **Confirm it
+    is still there** after the feed refreshes — this is the bug, and this is the
+    check that proves it fixed.
+28. **The label changes.** That same row should now read "Draft ready" or
+    "Needs review", beside its marketplace chip.
+29. **Save and mark reviewed.** The row stays, and reads "Reviewed · not sent".
+    It must not disappear: nothing has been sent to the customer.
+30. **The reply retires it.** Reply on the marketplace, run the sync, refresh.
+    The conversation should leave the list once the outbound message lands after
+    the customer's newest one.
+31. **An older reply does not retire it.** A thread answered in June where the
+    customer wrote again in August must still appear.
+32. **Nothing else moved.** The count is still global (an Amazon row visible from
+    the eBay tab), filtered conversations still do not notify, and the
+    "Older ones are not included" line still appears when hasMore.
+
+### Not yet checked by a person
+
+- **No live run since the change.** The figures recorded in this folder
+  (eBay 0 · Amazon 1 · Shopify 2 from 244 candidates) were measured WITH the
+  draft exclusion in place. The feed will now return more rows and the new
+  totals are unmeasured.
+- Nobody has watched a conversation survive Generate. That is the whole point of
+  the change and it is currently asserted by unit tests only.
+- The volume of "Reviewed · not sent" rows in real use is unknown, and it is the
+  one thing likely to prompt a follow-up request.

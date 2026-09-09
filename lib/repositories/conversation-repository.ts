@@ -148,17 +148,33 @@ OFFSET $4`;
  * no inbound message at all — the 981 outbound-only threads — without a second
  * predicate that could disagree with `inbound_count`.
  *
- * THE TWO NOT EXISTS CLAUSES ARE THE WHOLE FILTER, and both are absences:
+ * ONE NOT EXISTS CLAUSE IS THE WHOLE FILTER, and it is an absence:
  *
- *   1. No draft row. Read as the ABSENCE OF THE ROW, never as
- *      `workflow_state = 'received'`. The state is a proxy that a saved human
- *      edit does not move (a PATCH appends a revision and advances nothing), so
- *      a conversation with an edited draft would still read as untouched.
- *   2. No reply after the customer's newest message. Row-value comparison
- *      against that same (source_ts, source_pk) pair, so a reply sent in the
- *      same second as the customer's message is ordered by the source PK rather
- *      than being counted twice or missed. An OLDER reply does not exclude the
- *      conversation: the customer has written since, and that is unanswered.
+ *   No reply after the customer's newest message. Row-value comparison against
+ *   that same (source_ts, source_pk) pair, so a reply sent in the same second as
+ *   the customer's message is ordered by the source PK rather than being counted
+ *   twice or missed. An OLDER reply does not exclude the conversation: the
+ *   customer has written since, and that is unanswered.
+ *
+ * A DRAFT NO LONGER EXCLUDES ANYTHING, and removing that predicate is the point
+ * of this query's second revision. It used to carry a `NOT EXISTS` on
+ * `cst_app.draft_replies`, which read the existence of a draft as an answer —
+ * so generating one made the customer disappear from the notification feed
+ * while they were still waiting. THIS SYSTEM CANNOT SEND: `reviewed` is the
+ * terminal workflow state and there is no transport, so a draft is by
+ * construction work in progress and never evidence that anybody replied. The
+ * only thing that can retire a notification is an actual outbound message,
+ * which is what the surviving clause tests.
+ *
+ * `has_draft` IS STILL READ, AS A LABEL. It moved from the WHERE clause to the
+ * projection: the drawer distinguishes "waiting, nothing written" from
+ * "waiting, draft ready" without either of them leaving the list. Reading it in
+ * the outer query keeps it off the rows the window discards.
+ *
+ * `workflow_state` REMAINS A PROXY AND IS STILL NOT THE TEST. A saved human
+ * edit appends a revision and advances no state, so a conversation carrying an
+ * edited draft still reads `received`. It is projected for display and nothing
+ * here filters on it.
  *
  * ACROSS MARKETPLACES, by an explicit list. `= ANY($1::text[])` rather than
  * `= $1`, so one statement serves the global notification feed and a
@@ -224,11 +240,6 @@ WITH unanswered AS (
     AND c.inbox_visibility <> 'filtered'
     AND NOT EXISTS (
       SELECT 1
-      FROM cst_app.draft_replies d
-      WHERE d.conversation_id = c.id
-    )
-    AND NOT EXISTS (
-      SELECT 1
       FROM cst_app.conversation_messages o
       WHERE o.conversation_id = c.id
         AND o.direction = 'outbound'
@@ -253,6 +264,15 @@ SELECT c.id::text                  AS id,
        u.latest_ts::text           AS latest_inbound_ts,
        u.latest_body               AS latest_inbound_body,
        u.latest_decode_status      AS latest_inbound_decode_status,
+       -- PROJECTED, NOT FILTERED. See the header: a draft is work in progress,
+       -- not an answer, so it decides how the row is LABELLED and never whether
+       -- it appears. Evaluated in the outer query so it costs only the rows that
+       -- survived the window, like the three correlated reads above it.
+       EXISTS (
+         SELECT 1
+         FROM cst_app.draft_replies d
+         WHERE d.conversation_id = c.id
+       )                           AS has_draft,
        u.rank_in_marketplace
 FROM unanswered u
 JOIN cst_app.conversations c ON c.id = u.id
@@ -439,6 +459,14 @@ type AwaitingResponseRow = ConversationRow & {
   latest_inbound_ts: string;
   latest_inbound_body: string | null;
   latest_inbound_decode_status: string;
+  /**
+   * Whether a draft has been written for this conversation.
+   *
+   * A LABEL, NEVER A FILTER. It says what state the work is in, not whether the
+   * customer has been answered — only an outbound message says that. See
+   * `LIST_AWAITING_RESPONSE`.
+   */
+  has_draft: boolean;
   /** Position within its OWN marketplace's window. See `LIST_AWAITING_RESPONSE`. */
   rank_in_marketplace: number | string;
 };
@@ -623,6 +651,9 @@ function toAwaitingResponseItem(row: AwaitingResponseRow): AwaitingResponseConve
       bodyDecodeStatus:
         row.latest_inbound_decode_status as ConversationMessageView["bodyDecodeStatus"],
     }),
+    // Coerced rather than trusted: a driver that hands back "t"/"f" or 1/0
+    // would otherwise make every row read as drafted.
+    hasDraft: row.has_draft === true,
   };
 }
 
@@ -873,12 +904,16 @@ export type AwaitingResponsePage = {
 /**
  * Conversations in one case area that nobody has answered yet.
  *
- * FOUR CONDITIONS, AND THREE OF THEM ARE IN SQL:
+ * THREE CONDITIONS, AND TWO OF THEM ARE IN SQL:
  *
  *   a customer message exists      the inner LATERAL in `LIST_AWAITING_RESPONSE`
- *   no draft exists                NOT EXISTS on the draft row
  *   no reply after that message    NOT EXISTS, row-value compared
  *   the category matches           HERE, in application code
+ *
+ * THERE IS DELIBERATELY NO DRAFT CONDITION. A draft is not a reply and this
+ * system cannot send one, so a conversation stays here until an outbound
+ * message actually lands. Whether a draft exists travels on the row as
+ * `hasDraft`, for the interface to label with — see `LIST_AWAITING_RESPONSE`.
  *
  * THE CATEGORY CANNOT BE A PREDICATE, and this is the design constraint the
  * whole function is shaped around. There is no category column: it is read on

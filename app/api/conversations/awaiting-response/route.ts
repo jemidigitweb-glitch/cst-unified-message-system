@@ -8,8 +8,14 @@ import { isDraftStoreMissing } from "@/lib/repositories/draft-repository";
 
 /**
  * GET /api/conversations/awaiting-response — EVERY marketplace's order-change
- * conversations that nobody has answered: a customer message exists, no draft
- * was ever written for it, and no reply of ours came after that message.
+ * conversations that nobody has answered: a customer message exists, and no
+ * reply of ours came after that message.
+ *
+ * A DRAFT DOES NOT RETIRE A NOTIFICATION. This route once excluded any
+ * conversation that had one, which meant generating a draft removed a waiting
+ * customer from the feed. Nothing in this application can send, so a draft is
+ * work in progress rather than an answer; each item carries `hasDraft` for the
+ * interface to label with instead.
  *
  * GLOBAL, AND IT TAKES NO PARAMETERS. This used to be scoped to one marketplace
  * by a `?marketplace=` argument, and that was wrong for a notification: an
@@ -54,8 +60,9 @@ export async function GET(): Promise<NextResponse> {
     });
   } catch (cause) {
     /**
-     * The draft store is what "no draft exists" is asked of. Where the
-     * migration has not been applied there is no honest answer, so this
+     * The draft store is what `hasDraft` is read from. It no longer decides
+     * whether a row appears, but the statement still selects from it, so where
+     * the migration has not been applied the query fails outright. This
      * reports an empty list and says the store is not ready — the same
      * distinction the draft route already draws, rather than a 500 that reads
      * as a broken feature.

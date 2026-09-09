@@ -133,8 +133,9 @@ Print invoice is available at any point once exactly one order has resolved.
 
 A **notification bell** sits at the top right of the workspace header, carrying
 a count of conversations classified `"Order change, before shipping queries"`
-that nobody has answered — a customer message exists, no draft was ever written,
-and no reply of ours came after that message. Clicking it opens a right-side
+that nobody has answered — a customer message exists, ~~no draft was ever
+written,~~ and no reply of ours came after that message. (**The draft condition
+was removed** — see "a draft no longer hides a waiting customer" below.) Clicking it opens a right-side
 drawer listing them; clicking one closes the drawer, switches to that
 conversation's own marketplace and opens it.
 
@@ -281,3 +282,38 @@ CST already had permission to read.
   for repair to find.
 
 Not a workflow state, not a background job, not a schedule. An operator runs it.
+
+## Added: a draft no longer hides a waiting customer
+
+The notification bell counts conversations nobody has answered. It used to stop
+counting one the moment a draft was generated for it — so pressing Generate made
+the customer disappear from the badge, while nothing had been sent to them.
+
+**What the system can now say honestly.** A conversation stays on the
+notification list until an actual outbound reply appears on the thread. Since
+this application has no transport at all — `reviewed` is the terminal state and
+a standing guard fails the build if any send capability is introduced — a draft
+could never have meant the customer was answered. The bell now measures what it
+claims to measure: people waiting.
+
+**What the drawer can now tell apart**, which is the capability the old
+behaviour destroyed by hiding the row:
+
+| Row state | Shown as |
+| --- | --- |
+| Waiting, nothing written | no chip |
+| Waiting, draft written | **Draft ready** |
+| Waiting, draft awaiting a reviewer | **Needs review** |
+| Waiting, reviewed here but no reply on the thread | **Reviewed · not sent** |
+
+A reviewer can now see the difference between "nobody has touched this" and
+"there is a draft ready for you" without either one leaving the list.
+
+**A known consequence, and it is the honest one.** A reply sent outside this
+system retires a notification only once the outbound message syncs back from the
+marketplace. Until then the conversation keeps notifying, labelled
+"Reviewed · not sent". The system does not observe sending, so it cannot know
+sooner — and the alternative, letting `reviewed` retire the row, is a weaker
+form of the same bug this fixed.
+
+Still cannot send anything. Nothing here adds a state after `reviewed`.
