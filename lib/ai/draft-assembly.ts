@@ -15,7 +15,7 @@ import {
   customerDeliveryDate,
   customerDeliveryStatus,
 } from "@/lib/domain/tracking-customer-language";
-import { readConversation } from "@/lib/knowledge/message-category";
+import { type MessageCategory, readConversation } from "@/lib/knowledge/message-category";
 import { normaliseRef } from "@/lib/knowledge/rule-evidence";
 import { CARRIER_LABELS } from "@/lib/tracking/carrier";
 import { TRACKING_STATUS_LABELS, type TrackingResult } from "@/lib/tracking/provider";
@@ -80,14 +80,25 @@ const RETURN_FACT_NAMES = new Set(["return_status", "return_reason", "return_evi
  * into friendlier words would create a second vocabulary that could drift from
  * the one on the reviewer's screen.
  */
-function categoryBlock(request: DraftRequest): string | null {
-  const category = readConversation(
+/**
+ * The classifier's reading of the thread, computed ONCE per draft.
+ *
+ * Two blocks now depend on it — the category block below and
+ * `noVerifiedTrackingBlock` — and they must not read the conversation
+ * separately. `readConversation` is pure, so two calls could not actually
+ * disagree, but a single call site is what keeps it that way when one of them
+ * is later given a different input by mistake.
+ */
+function conversationCategory(request: DraftRequest): MessageCategory | null {
+  return readConversation(
     request.messages.map((message) => ({
       direction: message.direction === "inbound" ? ("inbound" as const) : ("outbound" as const),
       text: displayBody(message).available ? displayBody(message).text : null,
     })),
   ).category;
+}
 
+function categoryBlock(category: MessageCategory | null): string | null {
   if (category === null) return null;
 
   return [
@@ -403,8 +414,11 @@ export function contextBlocks(request: DraftRequest): string {
     ...messageListingFacts.map((fact) => `- ${fact.name}: ${fact.value}`),
   ].filter(Boolean);
 
+  // Read ONCE. Both the category block and the no-tracking block below use it.
+  const category = conversationCategory(request);
+
   const blocks = [
-    categoryBlock(request),
+    categoryBlock(category),
     `VERIFIED CONTEXT — ORDER:\n${order}`,
     // PRIMARY, and placed before the message's listing so it is read first.
     // The catalogue attributes join it: with a selected order the SOT lookup is
@@ -462,9 +476,20 @@ export function contextBlocks(request: DraftRequest): string {
   const customerBlock = customerProductDataBlock(extractCustomerProductData(request.messages));
   if (customerBlock !== null) blocks.push(customerBlock);
 
-  // The facts travel with the tracking: whether the goods were DISPATCHED is an
-  // order fact, never a scan — see `customerDeliveryStatus`.
-  const trackingBlock = verifiedTrackingBlock(request.tracking, request.facts);
+  /*
+   * The facts travel with the tracking: whether the goods were DISPATCHED is an
+   * order fact, never a scan — see `customerDeliveryStatus`.
+   *
+   * WHERE THERE IS NO TRACKING, SILENCE IS NOT ENOUGH. The absent block used to
+   * be the whole of the design, on the same reasoning as the bundle block: do
+   * not put a paragraph about a thing on drafts that do not have that thing.
+   * That is right for a bundle, because a model does not spontaneously describe
+   * package contents — and wrong for tracking, because "where is my parcel"
+   * invites exactly the sentence we cannot support. See `noVerifiedTrackingBlock`.
+   */
+  const trackingBlock =
+    verifiedTrackingBlock(request.tracking, request.facts) ??
+    noVerifiedTrackingBlock(category, request.facts);
   if (trackingBlock !== null) blocks.push(trackingBlock);
 
   return blocks.join("\n\n");
@@ -632,6 +657,79 @@ function incompleteGuidance(bundle: BundleContext, hasPreviousReplies: boolean):
  * fact and never a scan — a label made and never scanned is not a parcel that
  * was not sent, and it is not a parcel on its way either.
  */
+/**
+ * The category that warrants saying anything about tracking at all.
+ *
+ * DELIBERATELY THE SAME VALUE `TRACKING_CATEGORY` HOLDS in
+ * `lib/context/resolve-tracking-context.ts`, and pinned equal by a test rather
+ * than imported: that module is `server-only` and pulls the provider and the
+ * cache behind it, which is a large dependency to acquire for one string in a
+ * module every prompt test imports.
+ *
+ * The two must not drift, because they answer the same question from opposite
+ * ends — that one decides whether to LOOK tracking up, this one decides whether
+ * to say we have none.
+ */
+const TRACKING_RELEVANT_CATEGORY: MessageCategory = "Delivery queries";
+
+/**
+ * What to say when the carrier gave us nothing — and the answer is usually
+ * "say nothing about tracking", stated explicitly rather than left to silence.
+ *
+ * THE FAILURE THIS FIXES. `verifiedTrackingBlock` returns null in six different
+ * situations (see `TrackingSkipReason`), and the prompt treated all six as
+ * "omit the block". A model answering "where is my parcel?" with no tracking
+ * guidance filled the gap the way a helpful assistant does — "please check your
+ * tracking details", "you can track your parcel using the link" — none of which
+ * this system can support, and all of which send a customer to look for
+ * something that may not exist.
+ *
+ * ONLY ON A DELIVERY QUERY, for the reason the bundle block gives for its own
+ * absence: a paragraph about tracking on a pre-sale question about a lampshade's
+ * weight is noise the model reads past. This is the same gate that decided
+ * whether to ask the carrier in the first place, so the block appears exactly
+ * where the system would have had tracking to show.
+ *
+ * TWO BRANCHES, BECAUSE "NO TRACKING" IS TWO DIFFERENT SITUATIONS and they
+ * permit different replies:
+ *
+ *   a number, no update   the order resolved a tracking number but the carrier
+ *                         reported nothing readable — unsupported carrier, an
+ *                         unrecognised courier, a failed lookup. The number IS
+ *                         verified and sits in the context block above, so the
+ *                         reply may give it and say there is no update yet.
+ *   nothing at all        no tracking number was established. Tracking may not
+ *                         be mentioned in any form.
+ *
+ * NEITHER BRANCH PERMITS A POSITION. Where the parcel is remains the carrier's
+ * to report, and no carrier has reported here.
+ */
+export function noVerifiedTrackingBlock(
+  category: MessageCategory | null,
+  facts: readonly VerifiedFact[] = [],
+): string | null {
+  if (category !== TRACKING_RELEVANT_CATEGORY) return null;
+
+  const trackingNumber = facts.find(
+    (fact) => fact.name === "tracking_number" && fact.value.trim() !== "",
+  );
+
+  if (trackingNumber !== undefined) {
+    return [
+      "NO CARRIER UPDATE FOR THIS SHIPMENT.",
+      "A tracking number is in the verified context above, but no carrier status could be read for it. You may give that number and say we have no further update on it yet.",
+      "You may NOT say where the parcel is, that it is on its way, in transit, out for delivery, delivered, or when it will arrive, and you may not describe a scan, a status or a movement. Nothing above establishes any of those.",
+    ].join("\n");
+  }
+
+  return [
+    "NO SHIPMENT TRACKING FOR THIS ORDER.",
+    "No tracking number, courier or delivery status has been established for this conversation. That is an absence in what we can see, not a fact about the parcel.",
+    "Do NOT mention tracking in any form: no tracking number, no tracking link or page, no courier name, and no delivery status. Do NOT ask the customer to check, look up, refresh or send you tracking, and do not tell them tracking is unavailable — that still tells them a tracking record exists.",
+    "Answer what the CST rules allow for this case without it, and ask for what those rules require. Say nothing about where the parcel is.",
+  ].join("\n");
+}
+
 export function verifiedTrackingBlock(
   tracking: TrackingResult | null | undefined,
   facts: readonly VerifiedFact[] = [],

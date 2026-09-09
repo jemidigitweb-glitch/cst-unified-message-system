@@ -185,8 +185,21 @@ describe("post-sale conversations are untouched", () => {
     const withOrder = contextBlocks(request(asked, ORDER_FACTS));
     const category = withOrder.split("\n\nVERIFIED CONTEXT — ORDER:")[0]!;
 
-    // Everything after the new guidance block is exactly what it was before.
-    expect(withOrder.slice(category.length + 2)).toBe(
+    /*
+     * The order and product blocks, not the whole tail.
+     *
+     * This asserted to end-of-string until a third block could follow them:
+     * "Where is my order?" is a delivery query carrying a tracking number with
+     * no readable carrier update, so `noVerifiedTrackingBlock` now adds its
+     * "no carrier update" guidance after these two. The claim being made here
+     * is that the ORDER and PRODUCT blocks are untouched, and that is still
+     * exactly what is checked — a following block is asserted separately below.
+     */
+    const orderAndProduct = withOrder
+      .slice(category.length + 2)
+      .split("\n\nNO CARRIER UPDATE FOR THIS SHIPMENT.")[0]!;
+
+    expect(orderAndProduct).toBe(
       [
         "VERIFIED CONTEXT — ORDER:",
         "- order_number: 11-11111-11111",

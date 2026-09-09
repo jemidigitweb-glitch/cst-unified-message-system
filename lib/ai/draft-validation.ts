@@ -1260,6 +1260,31 @@ const GROUNDED_ASSERTIONS: readonly GroundedAssertion[] = [
       "The reply states that the order has been dispatched. The verified context does not establish that. Remove the claim, or say only what the verified context supports.",
   },
   {
+    /*
+     * TRACKING MENTIONED WHERE NO TRACKING EXISTS.
+     *
+     * `ungroundedClaims` already catches a stated tracking NUMBER, and the
+     * delivery-state checks above catch a stated POSITION. Neither catches the
+     * sentence that actually shipped: "please check your tracking details",
+     * "you can track your parcel using the link". Those assert no number and no
+     * status — they assert that a tracking record EXISTS, and send the customer
+     * to look for it.
+     *
+     * Grounded by the tracking NUMBER, not by a `TrackingResult`. A number with
+     * no readable carrier update is still a real reference the customer can be
+     * given, and the prompt's "no carrier update" branch explicitly allows
+     * saying there is no further news on it. What is never allowed is raising
+     * tracking with nothing behind it.
+     */
+    claim: "tracking reference",
+    pattern:
+      /\b(?:track(?:ing)?\s+(?:number|no\.?|code|reference|link|details|page|info(?:rmation)?|status)|(?:track|tracking)\s+(?:your|the)\s+(?:parcel|order|item|delivery|package)|you\s+can\s+track\b|check\s+(?:your|the)\s+tracking)\b/i,
+    supported: (facts) => factValue(facts, "tracking_number") !== null,
+    fact: () => null,
+    correction:
+      "The reply raises tracking — a number, a link, or asking the customer to check it. No tracking number was established for this conversation, so there may be nothing for them to look at. Remove every mention of tracking and answer from what the verified context supports.",
+  },
+  {
     claim: "cancellation statement",
     pattern:
       /\b(?:(?:your|the)\s+order\s+(?:has\s+been|was|is\s+now)\s+cancel|we\s+(?:have|'ve)\s+cancel)/i,

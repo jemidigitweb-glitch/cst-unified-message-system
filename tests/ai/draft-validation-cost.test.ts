@@ -36,9 +36,32 @@ const message = (text: string): ConversationMessageView => ({
 const CANCELLATION = "I purchased these by mistake. Could I cancel the order and get a refund please.";
 const MISSING_PART = "The parcel arrived but the fixing screws are missing.";
 
+/**
+ * The expensive conversation, for the size guard below.
+ *
+ * A delivery query is the only case that carries tracking guidance, so it is
+ * the only one whose prompt size the cap really needs to bound.
+ */
+const WHERE_IS_IT = "Where is my parcel? It was supposed to be here by now.";
+
+/** A pre-sale question: no order, no tracking, the cheapest path. */
+const PRE_SALE = "Could you tell me the weight of this lampshade please?";
+
 const UNDISPATCHED: VerifiedFact[] = [
   { name: "order_number", value: "AA-11111-11111" },
   { name: "order_status", value: "New" },
+];
+
+/**
+ * An order with a verified tracking number that no carrier result accompanies —
+ * an unsupported courier, an unrecognised one, or a lookup that failed. It is
+ * the second-dearest path, and the one the "no carrier update" block serves.
+ */
+const DISPATCHED_NO_UPDATE: VerifiedFact[] = [
+  { name: "order_number", value: "AA-11111-11111" },
+  { name: "order_status", value: "Dispatched" },
+  { name: "tracking_number", value: "AB123456789GB" },
+  { name: "delivery_courier", value: "Royal Mail" },
 ];
 
 function request(text: string, facts: VerifiedFact[] = []): DraftRequest {
@@ -278,15 +301,87 @@ describe("what a regeneration carries", () => {
 describe("the dominant cost of a draft is retrieval, not our text", () => {
   /**
    * A recorded generation on this path used 71,911 input tokens. Everything
-   * this application writes and sends measures about 1,300. The rest is
+   * this application writes and sends measures about two thousand. The rest is
    * retrieved chunks and the File Search tool loop.
    *
-   * This test pins the part we control, so a change that quietly starts sending
-   * the corpus inline on the retrieval path fails here rather than on a bill.
+   * This pins the part we control, so a change that quietly starts sending the
+   * corpus inline on the retrieval path fails here rather than on a bill.
+   *
+   * IT USED TO MEASURE ONE FIXTURE, AND THAT WAS THE DEFECT. The cap was 2,000
+   * and the only conversation measured was a cancellation — which carries no
+   * tracking block at all. So the guard was blind to the most expensive path in
+   * the application: a delivery query, where the tracking guidance lives. A
+   * change could push the real prompt well past the cap while this stayed green,
+   * which is precisely what the tracking-absence work did.
+   *
+   * EVERY PATH IS MEASURED NOW, and the cap is set against the dearest of them
+   * rather than the cheapest. The margin is deliberately modest — this is a
+   * ratchet, not a ceiling to grow into.
    */
-  it("keeps our own composed input under two thousand tokens", () => {
-    const composed = cstInstructions("ebay") + buildDraftInput(request(CANCELLATION, UNDISPATCHED));
-    expect(composed.length / 4).toBeLessThan(2_000);
+  const COMPOSED_TOKEN_CAP = 2_300;
+
+  /**
+   * The paths, cheapest first. A delivery query is the expensive one because it
+   * is the only case that carries tracking guidance — either the verified block
+   * or, since the tracking-absence fix, the block that says there is none.
+   */
+  const COST_PATHS = [
+    { label: "pre-sale enquiry", request: () => request(PRE_SALE) },
+    { label: "cancellation before dispatch", request: () => request(CANCELLATION, UNDISPATCHED) },
+    { label: "missing part", request: () => request(MISSING_PART) },
+    {
+      label: "delivery query, no shipment data",
+      request: () => request(WHERE_IS_IT, UNDISPATCHED),
+    },
+    {
+      label: "delivery query, tracking number but no carrier update",
+      request: () => request(WHERE_IS_IT, DISPATCHED_NO_UPDATE),
+    },
+  ] as const;
+
+  it.each(COST_PATHS.map((path) => [path.label, path.request] as const))(
+    "keeps the composed input for %s inside the cap",
+    (_label, build) => {
+      const composed = cstInstructions("ebay") + buildDraftInput(build());
+      expect(composed.length / 4).toBeLessThan(COMPOSED_TOKEN_CAP);
+    },
+  );
+
+  /**
+   * THE FIXTURE HAS TO ACTUALLY CARRY THE EXPENSIVE BLOCK.
+   *
+   * Without this the delivery fixtures could stop exercising the tracking
+   * guidance — a renamed heading, a changed category gate — and the guard would
+   * go on passing while measuring nothing. That is the exact way the old
+   * single-fixture version failed, so it is asserted rather than assumed.
+   */
+  it("measures a delivery path that really does carry tracking guidance", () => {
+    expect(buildDraftInput(request(WHERE_IS_IT, UNDISPATCHED))).toContain(
+      "NO SHIPMENT TRACKING FOR THIS ORDER",
+    );
+    expect(buildDraftInput(request(WHERE_IS_IT, DISPATCHED_NO_UPDATE))).toContain(
+      "NO CARRIER UPDATE FOR THIS SHIPMENT",
+    );
+  });
+
+  /**
+   * The cheap paths must stay cheap. A delivery query pays for tracking
+   * guidance; a pre-sale question and a cancellation must not start paying for
+   * it too, because the block is gated on the category and a regression in that
+   * gate would be invisible to the cap above.
+   */
+  it.each([
+    ["pre-sale enquiry", PRE_SALE],
+    ["cancellation before dispatch", CANCELLATION],
+    ["missing part", MISSING_PART],
+  ])("keeps tracking guidance out of %s entirely", (_label, text) => {
+    const input = buildDraftInput(request(text, UNDISPATCHED));
+    expect(input).not.toContain("NO SHIPMENT TRACKING FOR THIS ORDER");
+    expect(input).not.toContain("NO CARRIER UPDATE FOR THIS SHIPMENT");
+    expect(input).not.toContain("VERIFIED TRACKING INFORMATION:");
+    // And they stay under the OLD cap, so raising it bought headroom for the
+    // delivery path only rather than for everything.
+    expect((cstInstructions("ebay") + input).length / 4).toBeLessThan(2_000);
   });
 
   it("makes the retrieval budget adjustable without a deploy", () => {

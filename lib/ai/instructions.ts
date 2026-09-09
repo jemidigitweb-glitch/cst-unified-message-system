@@ -122,13 +122,23 @@ A MISSING FACT NARROWS THE ANSWER, IT DOES NOT REPLACE IT. Not knowing one thing
  * followed the conversation.
  *
  * THIS BLOCK IS WRITTEN TIGHT, AND THAT IS DELIBERATE. It is the largest single
- * section of the system instruction (~513 tokens of ~1,985 composed), and
- * `draft-validation-cost.test.ts` caps everything this application composes at
- * 2,000 tokens — the guard that would catch the 127,000-token corpus going
- * inline. The first draft of these paragraphs was 753 tokens and broke it. There
- * are roughly 15 tokens of headroom left: anything added here needs either an
- * equivalent cut or a deliberate decision to raise that cap, which is a cost
- * decision and not a drafting one.
+ * section of the system instruction (~513 tokens), and
+ * `draft-validation-cost.test.ts` caps everything this application composes —
+ * the guard that would catch the 127,000-token corpus going inline. The first
+ * draft of these paragraphs was 753 tokens and broke it.
+ *
+ * THE BINDING PATH IS A DELIVERY QUERY, NOT THIS BLOCK. Every draft carries
+ * these paragraphs; only a delivery query also carries tracking guidance, so
+ * that is the dearest prompt the application builds (~2,129 tokens against a
+ * 2,300 cap) and the one the guard is set against. A cancellation composes
+ * ~1,985 and a pre-sale ~1,974.
+ *
+ * So there is real headroom now, and it is not an invitation: anything added
+ * here is paid on EVERY draft, including the delivery path that is already
+ * closest to the cap. An addition needs an equivalent cut or a deliberate
+ * decision to raise the cap again — a cost decision, not a drafting one. The
+ * guard measures all five paths, so a change that only inflates one of them
+ * still fails.
  *
  * STATED AS A RULE ABOUT SPEAKING, NOT ABOUT KNOWING, and the distinction is
  * load-bearing. Nothing is removed from the request: the tracking block, the
