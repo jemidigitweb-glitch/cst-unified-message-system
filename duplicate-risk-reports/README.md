@@ -13,3 +13,7 @@ Findings about duplication and re-sync safety — whether re-running a sync or a
 
 - General bug reports unrelated to duplication or idempotency — those belong wherever this project tracks issues
 - Real customer data used as a duplicate example — describe the shape of the collision, not actual rows
+
+## Current status
+
+See [2026-09-08-duplication-and-resync-status.md](2026-09-08-duplication-and-resync-status.md) — the implemented system status as at 2026-09-08.

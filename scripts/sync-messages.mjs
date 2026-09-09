@@ -35,6 +35,10 @@ const { SYNC_FEEDS, syncFeed } = await import(
   pathToFileURL(join(ROOT, "lib/sync/message-sync.ts")).href
 );
 
+const { runBodyRepair } = await import(
+  pathToFileURL(join(ROOT, "lib/sync/body-repair.ts")).href
+);
+
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
   const hit = argv.find((a) => a.startsWith(`--${name}=`));
@@ -50,6 +54,15 @@ const MAX_PAGES = Number(flag("pages", "50"));
  * a feed with no watermark must not silently pull years of history.
  */
 const BOOTSTRAP_START = flag("bootstrap", "2026-08-01 00:00:00");
+/**
+ * Stored-blank messages re-checked per run, after the feeds.
+ *
+ * Bigger than the deployed route's budget because this has no serverless time
+ * limit, small enough that a five-minute tick stays cheap. Newest-first, so a
+ * body that has just landed is repaired on the next tick rather than waiting
+ * for someone to run `repair:bodies`.
+ */
+const REPAIR_LIMIT = Number(flag("repair-limit", "500"));
 
 /** The identity this application is allowed to write as. */
 const EXPECTED_DATABASE = "varmen_db";
@@ -187,10 +200,51 @@ async function run() {
       console.log();
     }
 
+    // Bodies that arrived after their header did.
+    //
+    // WHY THIS RUNS HERE AND NOT ONLY IN `repair:bodies`. `syncFeed` reads
+    // strictly forward of its watermark, so a message stored blank because its
+    // text had not landed yet is never reconsidered by any later sync. Leaving
+    // that to a separate command meant it ran when somebody remembered, which
+    // for the scheduled task is never. This pass reads by primary key and
+    // touches no cursor, so it is safe to run on every tick.
+    //
+    // `repair:bodies` still exists for a large deliberate backlog pass; this is
+    // the small automatic one that stops the backlog forming.
+    let repaired = 0;
+    process.stdout.write("repair   ");
+    try {
+      const outcome = await runBodyRepair(
+        app,
+        source,
+        {
+          marketplaces: feeds.map((feed) => feed.marketplace),
+          limit: REPAIR_LIMIT,
+          dryRun: !APPLY,
+          onBatch: () => process.stdout.write("."),
+        },
+        begin,
+      );
+      repaired = outcome.repaired;
+      const reasons = Object.entries(outcome.skippedByReason)
+        .map(([reason, n]) => `${reason}=${n}`)
+        .join(" ");
+      console.log(
+        `\n  examined=${outcome.examined} repaired=${outcome.repaired} skipped=${outcome.skipped}` +
+          (reasons === "" ? "" : `\n  ${reasons}`) +
+          (outcome.moreAvailable ? "\n  MORE AVAILABLE — re-run to continue" : ""),
+      );
+    } catch (cause) {
+      // A sync that stored its messages has done its job; a failed repair pass
+      // must not make the run look like a failure.
+      console.log(`\n  FAILED: ${cause.message}`);
+    }
+    console.log();
+
     const inserted = results.reduce((n, r) => n + r.messagesInserted, 0);
     console.log(
       APPLY
-        ? `total new messages stored: ${inserted}`
+        ? `total new messages stored: ${inserted}, bodies repaired: ${repaired}`
         : "dry run — nothing written. Re-run with --apply.",
     );
   } finally {

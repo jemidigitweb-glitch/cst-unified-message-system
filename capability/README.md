@@ -13,3 +13,7 @@ What the system can and can't actually do, kept honest and current — the plain
 
 - Aspirational/planned features — this folder describes what exists *now*, not a roadmap
 - Implementation detail — link to the relevant `lib/` module instead of duplicating how it works
+
+## Current status
+
+See [2026-09-08-system-status.md](2026-09-08-system-status.md) — the implemented system status as at 2026-09-08.

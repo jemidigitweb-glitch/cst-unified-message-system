@@ -2,11 +2,13 @@ import "server-only";
 
 import { attachmentsFrom } from "@/lib/domain/attachment";
 import type {
+  AwaitingResponseConversationItem,
   ConversationDetail,
   ConversationMessageView,
   InboxItem,
   NoRuleConversationItem,
 } from "@/lib/domain/inbox";
+import { previewOf } from "@/lib/domain/inbox";
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { classifyCaseType } from "@/lib/knowledge/case-type";
 import { type LoadedRules, loadRulesForConversation } from "@/lib/knowledge/cst-rules-files";
@@ -129,6 +131,153 @@ WHERE c.marketplace = $1
 ORDER BY c.last_source_ts DESC, c.id DESC
 LIMIT $3
 OFFSET $4`;
+
+/**
+ * Conversations nobody has answered yet, before the category is read.
+ *
+ * THE SAME PROJECTION `LIST_CONVERSATIONS` USES, plus the newest customer
+ * message, plus two exclusions. It is a separate statement rather than a
+ * parameter on the existing one on purpose: the inbox's contract is "every
+ * stored conversation, whatever its placement", and adding a predicate that
+ * could ever narrow it is exactly how 3,046 conversations became unreachable
+ * once before. Nothing here touches that query, its callers or its shape.
+ *
+ * THE INNER LATERAL IS THE "A CUSTOMER MESSAGE EXISTS" CONDITION. It resolves
+ * the newest inbound message by the same (source_ts, source_pk) ordering every
+ * other view orders by, and being an inner join it drops any conversation with
+ * no inbound message at all — the 981 outbound-only threads — without a second
+ * predicate that could disagree with `inbound_count`.
+ *
+ * ONE NOT EXISTS CLAUSE IS THE WHOLE FILTER, and it is an absence:
+ *
+ *   No reply after the customer's newest message. Row-value comparison against
+ *   that same (source_ts, source_pk) pair, so a reply sent in the same second as
+ *   the customer's message is ordered by the source PK rather than being counted
+ *   twice or missed. An OLDER reply does not exclude the conversation: the
+ *   customer has written since, and that is unanswered.
+ *
+ * A DRAFT NO LONGER EXCLUDES ANYTHING, and removing that predicate is the point
+ * of this query's second revision. It used to carry a `NOT EXISTS` on
+ * `cst_app.draft_replies`, which read the existence of a draft as an answer —
+ * so generating one made the customer disappear from the notification feed
+ * while they were still waiting. THIS SYSTEM CANNOT SEND: `reviewed` is the
+ * terminal workflow state and there is no transport, so a draft is by
+ * construction work in progress and never evidence that anybody replied. The
+ * only thing that can retire a notification is an actual outbound message,
+ * which is what the surviving clause tests.
+ *
+ * `has_draft` IS STILL READ, AS A LABEL. It moved from the WHERE clause to the
+ * projection: the drawer distinguishes "waiting, nothing written" from
+ * "waiting, draft ready" without either of them leaving the list. Reading it in
+ * the outer query keeps it off the rows the window discards.
+ *
+ * `workflow_state` REMAINS A PROXY AND IS STILL NOT THE TEST. A saved human
+ * edit appends a revision and advances no state, so a conversation carrying an
+ * edited draft still reads `received`. It is projected for display and nothing
+ * here filters on it.
+ *
+ * ACROSS MARKETPLACES, by an explicit list. `= ANY($1::text[])` rather than
+ * `= $1`, so one statement serves the global notification feed and a
+ * single-marketplace read alike. The array is always built from a fixed
+ * allowlist of literals in `marketplace-capabilities.ts` — nothing a caller
+ * supplies reaches it — and it is never omitted, so this cannot degrade into an
+ * unbounded scan of whatever marketplace strings happen to be stored.
+ *
+ * THE BOUND IS PER MARKETPLACE, AND THAT IS THE WHOLE REASON FOR THE CTE.
+ * Measured on live data, the unanswered conversations are wildly uneven:
+ * Shopify 3,342, eBay 309, Amazon 44. A single global `LIMIT 100` over the
+ * newest is therefore ~90% Shopify, and the one Amazon conversation waiting for
+ * an order-change reply fell outside it entirely — the global feed returned
+ * nothing for Amazon while the old per-marketplace feed returned it. A
+ * notification that disappears because a busier marketplace is noisier is worse
+ * than no notification.
+ *
+ * So `row_number() OVER (PARTITION BY c.marketplace ...)` gives every
+ * marketplace its own window of the same size, and the outer query attaches the
+ * expensive per-row reads — the three correlated subqueries — only to the rows
+ * that survive it. Ranking in the CTE and projecting outside it is what keeps
+ * the text aggregation off the thousands of rows that will be discarded.
+ *
+ * `inbox_visibility <> 'filtered'` EXCLUDES WHAT THE INGESTION LAYER ALREADY
+ * DECIDED IS NOT REPLY WORK — a bounce, a courier notice, another channel's
+ * notification, unsolicited mail — each with its reason recorded beside it.
+ * 4,452 of Shopify's 7,794 unanswered conversations are these, so without the
+ * predicate more than half of every window is spent on mail nobody is waiting
+ * on a reply to. This is NOT the `reply_inbox`-only filter the inbox query
+ * removed on purpose: that one decided what EXISTS, and hid conversations from
+ * every view in the application. This decides what NOTIFIES. Every one of these
+ * conversations is still listed, still labelled and still openable in the inbox;
+ * what it no longer does is claim a customer is waiting for an answer.
+ *
+ * Newest customer message first, ACROSS the marketplaces asked for — the
+ * ordering a triage list is read in. A notification about the oldest unanswered
+ * eBay message is not more urgent than a newer Amazon one, so the OUTPUT is not
+ * grouped by marketplace even though the bound is.
+ */
+const LIST_AWAITING_RESPONSE = `
+WITH unanswered AS (
+  SELECT c.id,
+         latest.source_ts                AS latest_ts,
+         latest.body_text                AS latest_body,
+         latest.body_decode_status       AS latest_decode_status,
+         row_number() OVER (
+           PARTITION BY c.marketplace
+           ORDER BY latest.source_ts DESC, c.id DESC
+         )                               AS rank_in_marketplace
+  FROM cst_app.conversations c
+  JOIN LATERAL (
+    SELECT cm.source_ts,
+           cm.source_pk::bigint AS source_pk,
+           cm.body_text,
+           cm.body_decode_status
+    FROM cst_app.conversation_messages cm
+    WHERE cm.conversation_id = c.id
+      AND cm.direction = 'inbound'
+    ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+    LIMIT 1
+  ) latest ON TRUE
+  WHERE c.marketplace = ANY($1::text[])
+    AND c.inbox_visibility <> 'filtered'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM cst_app.conversation_messages o
+      WHERE o.conversation_id = c.id
+        AND o.direction = 'outbound'
+        AND (o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk)
+    )
+)
+SELECT c.id::text                  AS id,
+       c.marketplace,
+       c.sub_source_id,
+       c.counterparty_ref,
+       c.listing_item_ref,
+       c.workflow_state,
+       c.needs_context,
+       c.inbox_visibility,
+       c.first_source_ts::text     AS first_source_ts,
+       c.last_source_ts::text      AS last_source_ts,
+       c.message_count,
+       c.inbound_count,
+       ${LAST_DIRECTION}           AS last_direction,
+       ${INBOUND_TEXT}             AS inbound_text,
+       ${INBOUND_TEXTS}            AS inbound_texts,
+       u.latest_ts::text           AS latest_inbound_ts,
+       u.latest_body               AS latest_inbound_body,
+       u.latest_decode_status      AS latest_inbound_decode_status,
+       -- PROJECTED, NOT FILTERED. See the header: a draft is work in progress,
+       -- not an answer, so it decides how the row is LABELLED and never whether
+       -- it appears. Evaluated in the outer query so it costs only the rows that
+       -- survived the window, like the three correlated reads above it.
+       EXISTS (
+         SELECT 1
+         FROM cst_app.draft_replies d
+         WHERE d.conversation_id = c.id
+       )                           AS has_draft,
+       u.rank_in_marketplace
+FROM unanswered u
+JOIN cst_app.conversations c ON c.id = u.id
+WHERE u.rank_in_marketplace <= $2
+ORDER BY u.latest_ts DESC, c.id DESC`;
 
 /**
  * The No Rule list, source 1 of 2: conversations refused before generation
@@ -301,6 +450,27 @@ type NoRuleConversationRow = ConversationRow & {
   reason: string;
 };
 
+/**
+ * An awaiting-response row: every inbox field plus the newest customer message.
+ * The body arrives here so the preview is built once, server-side, from the
+ * same `previewOf` the domain already exposes.
+ */
+type AwaitingResponseRow = ConversationRow & {
+  latest_inbound_ts: string;
+  latest_inbound_body: string | null;
+  latest_inbound_decode_status: string;
+  /**
+   * Whether a draft has been written for this conversation.
+   *
+   * A LABEL, NEVER A FILTER. It says what state the work is in, not whether the
+   * customer has been answered — only an outbound message says that. See
+   * `LIST_AWAITING_RESPONSE`.
+   */
+  has_draft: boolean;
+  /** Position within its OWN marketplace's window. See `LIST_AWAITING_RESPONSE`. */
+  rank_in_marketplace: number | string;
+};
+
 /** The `no_citation` query's row: same shape, minus the case type it doesn't have yet. */
 type UngroundedDraftRow = ConversationRow & {
   revision_id: string;
@@ -458,6 +628,32 @@ function toInboxItem(row: ConversationRow): InboxItem {
     category: categoryFor(row),
     // Alongside the category, not derived from it. See `priorityFor`.
     priority: priorityFor(row),
+  };
+}
+
+/**
+ * Adds the newest customer message to an inbox item.
+ *
+ * `toInboxItem` is called, never reimplemented, so the category and the
+ * priority on a notification row are the SAME readings the inbox shows for the
+ * same conversation — there is one classifier call site and this is not a
+ * second one.
+ */
+function toAwaitingResponseItem(row: AwaitingResponseRow): AwaitingResponseConversationItem {
+  return {
+    ...toInboxItem(row),
+    latestCustomerMessageAt: row.latest_inbound_ts,
+    // Truncated here rather than in the browser: the row displays a preview, so
+    // a preview is what crosses the boundary. An undecodable body renders as
+    // the shared "content unavailable" copy, exactly as the thread view does.
+    latestCustomerMessagePreview: previewOf({
+      bodyText: row.latest_inbound_body,
+      bodyDecodeStatus:
+        row.latest_inbound_decode_status as ConversationMessageView["bodyDecodeStatus"],
+    }),
+    // Coerced rather than trusted: a driver that hands back "t"/"f" or 1/0
+    // would otherwise make every row read as drafted.
+    hasDraft: row.has_draft === true,
   };
 }
 
@@ -675,6 +871,133 @@ async function filterToUnresolvedCitations(
     const refs = refsByRevision.get(row.revision_id) ?? [];
     return resolveEvidence(rules, refs).cited.length === 0;
   });
+}
+
+/**
+ * One page of awaiting-response conversations, and what it took to find them.
+ *
+ * `scanned` and `hasMore` describe the CANDIDATE set, not `items`. The category
+ * is not a stored column and cannot be a SQL predicate (see
+ * `listAwaitingResponseByCategory`), so the database bounds the unanswered
+ * conversations and the classifier narrows them afterwards — which means a page
+ * can legitimately return two items out of a hundred candidates. Both numbers
+ * are returned so an interface can say that plainly instead of presenting a
+ * short list as a complete one.
+ */
+export type AwaitingResponsePage = {
+  readonly items: AwaitingResponseConversationItem[];
+  /** How many unanswered conversations were read and classified. */
+  readonly scanned: number;
+  /** Whether an unanswered conversation older than the last one scanned exists. */
+  readonly hasMore: boolean;
+  /**
+   * The marketplaces actually queried, after the suppressed ones were dropped.
+   *
+   * Returned rather than assumed, because it is NOT the list the caller passed:
+   * a marketplace whose category is suppressed can never match and is not
+   * scanned. An interface saying "checked every marketplace" would otherwise be
+   * saying something untrue.
+   */
+  readonly marketplaces: readonly Marketplace[];
+};
+
+/**
+ * Conversations in one case area that nobody has answered yet.
+ *
+ * THREE CONDITIONS, AND TWO OF THEM ARE IN SQL:
+ *
+ *   a customer message exists      the inner LATERAL in `LIST_AWAITING_RESPONSE`
+ *   no reply after that message    NOT EXISTS, row-value compared
+ *   the category matches           HERE, in application code
+ *
+ * THERE IS DELIBERATELY NO DRAFT CONDITION. A draft is not a reply and this
+ * system cannot send one, so a conversation stays here until an outbound
+ * message actually lands. Whether a draft exists travels on the row as
+ * `hasDraft`, for the interface to label with — see `LIST_AWAITING_RESPONSE`.
+ *
+ * THE CATEGORY CANNOT BE A PREDICATE, and this is the design constraint the
+ * whole function is shaped around. There is no category column: it is read on
+ * every request by `classifyConversationCategory` from the customer's own text
+ * — see the header of `lib/knowledge/message-category.ts` for why nothing is
+ * stored, and `categoryFor` above for the four outcomes. So the filter below
+ * compares against the value `toInboxItem` already produced, and no second
+ * detector, no keyword match and no stored copy exists anywhere in this path.
+ *
+ * ACROSS MARKETPLACES, AND NOT SCOPED TO A SELECTED TAB. The caller passes the
+ * marketplaces to read; the notification feed passes every conversation-backed
+ * one. Each item already carries its own `marketplace`, so a global list needs
+ * no second query and no merge step.
+ *
+ * A SUPPRESSED MARKETPLACE IS DROPPED BEFORE THE QUERY, NOT AFTER. B&Q and Temu
+ * classify to null by construction (`CATEGORY_SUPPRESSED_MARKETPLACES`), so no
+ * row of theirs can equal a requested category — scanning them would spend the
+ * classifier on candidates that cannot match and, worse, would consume the row
+ * bound that marketplaces which CAN match are competing for. The rule is
+ * inherited rather than decided here: this reads the same constant
+ * `categoryFor` reads, and the filter below is a consequence of it, not a
+ * second opinion about it.
+ *
+ * BOUNDED, AND IT SAYS SO. Classification is pure but not free — four witnesses
+ * over every customer message in the candidate set — so the SQL bound applies to
+ * the unanswered conversations, not to the matches, and the caller is told how
+ * many were scanned and which marketplaces were actually read. A silent cap here
+ * would read as "there are none".
+ */
+export async function listAwaitingResponseByCategory(
+  client: Queryable,
+  options: {
+    /**
+     * Which marketplaces to read. A list rather than one value, because the
+     * notification feed is global: it is deliberately independent of whichever
+     * marketplace tab happens to be on screen.
+     */
+    readonly marketplaces: readonly Marketplace[];
+    /**
+     * The case area to watch. A `MessageCategory`, so a value outside the
+     * classifier's own vocabulary is a compile error rather than a list that is
+     * always empty.
+     */
+    readonly category: MessageCategory;
+    /** How many unanswered conversations to read and classify. Bounded as everywhere else. */
+    readonly limit?: number;
+  },
+): Promise<AwaitingResponsePage> {
+  const marketplaces = options.marketplaces.filter(
+    (marketplace) => !CATEGORY_SUPPRESSED_MARKETPLACES.has(marketplace),
+  );
+  // Nothing classifiable was asked for. Answer without a round trip rather than
+  // issuing a query whose result cannot contain a match.
+  if (marketplaces.length === 0) {
+    return { items: [], scanned: 0, hasMore: false, marketplaces };
+  }
+
+  const limit = clampLimit(options.limit);
+  const { rows } = await client.query({
+    text: LIST_AWAITING_RESPONSE,
+    // One extra row PER MARKETPLACE, never returned and never classified,
+    // purely to learn whether that marketplace has an older unanswered
+    // conversation past its own window.
+    values: [[...marketplaces], limit + 1],
+  });
+
+  /**
+   * The overfetched row of each marketplace is dropped here rather than in SQL.
+   *
+   * `hasMore` means "at least one marketplace was truncated", which is the only
+   * honest summary a single flag can carry when each has its own window: the
+   * drawer uses it to say it did not reach the end, and saying so when ANY
+   * marketplace was cut is the reading that cannot understate the gap.
+   */
+  const withinWindow = (rows as AwaitingResponseRow[]).filter(
+    (row) => Number(row.rank_in_marketplace) <= limit,
+  );
+  const hasMore = withinWindow.length < rows.length;
+
+  const items = withinWindow
+    .map(toAwaitingResponseItem)
+    .filter((item) => item.category === options.category);
+
+  return { items, scanned: withinWindow.length, hasMore, marketplaces };
 }
 
 /** A conversation id as it arrives from a URL, before it is trusted. */

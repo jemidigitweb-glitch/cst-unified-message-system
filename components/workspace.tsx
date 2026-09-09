@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type {
+  AwaitingResponseFeed,
   ConversationDetail,
   InboxItem,
   NoRuleConversationItem,
@@ -16,6 +17,8 @@ import { ContextPanel, SECTION_HEADING_CLASS } from "./context-panel";
 import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
+import { NotificationBell } from "./notification-bell";
+import { NotificationDrawer } from "./notification-drawer";
 import {
   ALL_CATEGORIES,
   ALL_PRIORITIES,
@@ -125,6 +128,36 @@ export function Workspace() {
    */
   const [noRule, setNoRule] = useState<NoRuleConversationItem[] | null>(null);
   const [noRuleError, setNoRuleError] = useState<string | null>(null);
+  /**
+   * EVERY marketplace's order-change conversations that nobody has answered —
+   * a customer message exists, no draft was ever written, and no reply of ours
+   * came after that message. What the bell counts and the drawer lists.
+   *
+   * GLOBAL, AND DELIBERATELY NOT PART OF THE PER-MARKETPLACE STATE BELOW. It is
+   * not cleared by `switchMarketplace` and not refetched by the `[marketplace]`
+   * effect, because a customer waiting on an Amazon order change is waiting
+   * whether or not the reviewer is looking at eBay. Scoping it to the selected
+   * tab was the previous behaviour and it hid exactly the notifications a
+   * reviewer had no other way to find.
+   *
+   * Fetched up front rather than when the drawer opens: the count has to be on
+   * screen BEFORE anyone clicks the bell, which is the whole point of it.
+   *
+   * PURELY OBSERVED. Nothing here writes, and nothing about opening, reading or
+   * ignoring it changes a conversation, a draft or a workflow state. There is
+   * no read/unread flag, no dismissal and no acknowledgement — a row leaves
+   * this list when a draft is written or a reply lands, and by no other means.
+   */
+  const [orderChange, setOrderChange] = useState<AwaitingResponseFeed | null>(null);
+  const [orderChangeError, setOrderChangeError] = useState<string | null>(null);
+  /**
+   * Whether the notification drawer is on screen.
+   *
+   * Local to the workspace, like every other panel toggle here. There is
+   * deliberately no notification store, context or provider: one boolean and
+   * one already-fetched list is the entire mechanism.
+   */
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   /**
    * Which top-level view is on screen.
    *
@@ -268,6 +301,41 @@ export function Workspace() {
     };
   }, [marketplace]);
 
+  /**
+   * The notification feed, on its OWN effect with its own dependency.
+   *
+   * NOT `[marketplace]`. It is global, so refetching it on every tab switch
+   * would spend the classifier on an identical answer and blank the bell while
+   * it reloaded — a count that flickers to nothing every time a reviewer
+   * changes tab is a count they stop trusting.
+   *
+   * `[draftGeneration]` instead, so the bell reflects the work just done: a
+   * conversation leaves this list the moment a draft is written for it, and a
+   * badge still showing it afterwards is a badge that is wrong. That is the
+   * only refresh — no interval, no polling, no subscription.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/conversations/awaiting-response");
+        if (!response.ok) throw new Error("request failed");
+        const data = (await response.json()) as AwaitingResponseFeed;
+        if (!cancelled) {
+          setOrderChange(data);
+          setOrderChangeError(null);
+        }
+      } catch {
+        if (!cancelled) setOrderChangeError("Unable to load conversations needing a reply.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [draftGeneration]);
+
   const switchMarketplace = useCallback((next: Marketplace) => {
     setMarketplace(next);
     // Never carry data or a selection across marketplaces. Cleared here in the
@@ -286,6 +354,12 @@ export function Workspace() {
     setFeedError(null);
     setNoRule(null);
     setNoRuleError(null);
+    // The notification feed is deliberately NOT cleared here. It spans every
+    // marketplace, so it is not per-marketplace state: blanking it on a tab
+    // switch would empty the bell and then refill it with the same answer.
+    // The drawer stays open across a switch for the same reason — its contents
+    // do not change.
+    //
     // A new marketplace always opens on its list, on a phone exactly as it
     // already does on a wider screen.
     setMobilePanel("list");
@@ -377,8 +451,25 @@ export function Workspace() {
     setMobilePanel(null);
   }, []);
 
+  /**
+   * Opens one conversation in the detail pane.
+   *
+   * `from` NAMES THE MARKETPLACE THE CONVERSATION BELONGS TO, and defaults to
+   * the tab on screen — which is what every list in the left column passes,
+   * because their rows are that tab's rows.
+   *
+   * It exists for the notification drawer, which is the one place a selection
+   * can cross marketplaces. `/api/conversations/:id` 404s a conversation that
+   * does not belong to the marketplace named in the request — a deliberate
+   * guard against a stale URL surfacing one tab's thread inside another — so
+   * opening an Amazon notification from the eBay tab has to state Amazon here
+   * rather than inherit eBay from the closure. The caller switches the tab in
+   * the same handler; this parameter is what stops the request racing that
+   * switch, since `marketplace` would still read as the old value for this
+   * render.
+   */
   const select = useCallback(
-    async (id: string) => {
+    async (id: string, from: Marketplace = marketplace) => {
       setSelectedId(id);
       setSelectedKind("conversation");
       setDetail(null);
@@ -393,7 +484,7 @@ export function Workspace() {
       // it opens only when asked for.
       setDetailsOpen(window.innerWidth >= MOBILE_DETAILS_BREAKPOINT);
       try {
-        const response = await fetch(`/api/conversations/${id}?marketplace=${marketplace}`);
+        const response = await fetch(`/api/conversations/${id}?marketplace=${from}`);
         if (response.status === 404) {
           setDetailError("This conversation is not available in this marketplace.");
           return;
@@ -412,14 +503,36 @@ export function Workspace() {
   return (
     <div className="flex h-dvh flex-col">
       <header className="flex shrink-0 flex-col gap-2 border-b border-black/10 pt-3 dark:border-white/15">
-        <div className="flex flex-col gap-0.5 px-5">
-          <h1 className="text-base font-semibold">CST Unified Message System</h1>
-          {/* One plain sentence for a reviewer who has never opened this
-              screen before — where to start, and what the screen is for,
-              before anything else on the page asks for a decision. */}
-          <p className="text-xs opacity-70">
-            Pick a marketplace and Generate Your Reply with AI
-          </p>
+        <div className="flex items-start justify-between gap-3 px-5">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <h1 className="text-base font-semibold">CST Unified Message System</h1>
+            {/* One plain sentence for a reviewer who has never opened this
+                screen before — where to start, and what the screen is for,
+                before anything else on the page asks for a decision. */}
+            <p className="text-xs opacity-70">
+              Pick a marketplace and Generate Your Reply with AI
+            </p>
+          </div>
+          {/*
+            * THE NOTIFICATION ENTRY POINT, and the whole of it.
+            *
+            * Top-right of the title row, above the view tabs and deliberately
+            * apart from them: No Rule and AI Usage change WHAT IS ON SCREEN,
+            * and this does not — it opens a drawer over whatever the reviewer
+            * was already doing and closes again when they pick something. A
+            * fourth tab in that row said the opposite, which is why it is gone.
+            *
+            * Marketplace-scoped, like the lists behind the tabs, because the
+            * feed is: switching marketplace refetches it and closes the drawer.
+            *
+            * `count` is null until the fetch lands, so the badge cannot claim
+            * an empty queue before anything has been read. See NotificationBell.
+            */}
+          <NotificationBell
+            count={orderChange === null ? null : orderChange.conversations.length}
+            open={notificationsOpen}
+            onToggle={() => setNotificationsOpen((isOpen) => !isOpen)}
+          />
         </div>
         <div className="flex items-end justify-between gap-3 pr-5">
           {/* min-w-0 lets this shrink below the tab bar's natural width on a
@@ -569,6 +682,51 @@ export function Workspace() {
           </div>
         </div>
       </header>
+
+      {/*
+        * THE NOTIFICATION DRAWER, over everything and outside the grid.
+        *
+        * Mounted here rather than inside a column because it belongs to no
+        * view: it opens over the inbox, over No Rule and over AI Usage alike,
+        * and it must not add or resize a layout column. Renders nothing at all
+        * while closed.
+        *
+        * SELECTING A NOTIFICATION USES THE EXISTING PATH AND ONLY THAT. It
+        * closes the drawer, returns to the inbox view — otherwise a
+        * conversation opened from here would sit beside the No Rule list it is
+        * not part of, or behind the AI Usage panel entirely — and then calls
+        * the SAME `select(id)` the inbox list calls. The conversation view, the
+        * context panel and the draft panel are reached exactly as they always
+        * were and know nothing about this.
+        */}
+      <NotificationDrawer
+        feed={orderChange}
+        error={orderChangeError}
+        open={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        onSelect={(id, from) => {
+          setNotificationsOpen(false);
+          setView("inbox");
+          /*
+           * THE TAB FOLLOWS THE NOTIFICATION, and it has to.
+           *
+           * The detail route 404s a conversation that does not belong to the
+           * marketplace named in the request, so an Amazon notification opened
+           * from the eBay tab would otherwise show "not available in this
+           * marketplace". Switching also puts the reviewer in the tab whose
+           * inbox actually contains the conversation they just opened, rather
+           * than beside a list it is not in.
+           *
+           * `switchMarketplace` clears the selection among the rest of the
+           * per-marketplace state; `select` below re-sets it in the same batch,
+           * so the clear cannot land after the open. `select` is told the
+           * marketplace explicitly rather than reading it from state, which
+           * still holds the OLD tab for this render.
+           */
+          if (from !== marketplace) switchMarketplace(from);
+          void select(id, from);
+        }}
+      />
 
       {/*
         * ONE LAYOUT, BOTH LISTS. There is no longer a conversation-backed

@@ -13,3 +13,7 @@ The record of what was decided and finished, once a piece of work is actually do
 - In-progress notes or plans — those aren't closed yet
 - Test plans or acceptance criteria themselves — that's `validation/`; this folder records the *outcome*, not the checklist
 - Anything that duplicates a git commit message — only add a closure record when there's context worth keeping that the commit message doesn't carry
+
+## Current status
+
+See [2026-09-08-implemented-scope-status.md](2026-09-08-implemented-scope-status.md) — the implemented system status as at 2026-09-08.

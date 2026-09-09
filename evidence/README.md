@@ -16,3 +16,7 @@ Proof that a piece of work was actually done and actually checked — not the wo
 - Anything that duplicates what a test already proves — a passing test is evidence too; this folder is for things a test can't capture (visual state, a live run's output)
 
 Name files by date and what they're evidence of, e.g. `2026-08-26-return-context-sidebar.png`.
+
+## Current status
+
+See [2026-09-08-implementation-evidence.md](2026-09-08-implementation-evidence.md) — the implemented system status as at 2026-09-08.

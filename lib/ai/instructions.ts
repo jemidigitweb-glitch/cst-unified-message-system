@@ -11,7 +11,7 @@
  * specialist and cross-cutting rules together, check evidence, approval,
  * escalation, safety and marketplace requirements, never invent policy.
  *
- * FOUR GUARDS ARE ADDED, and none of them is decoration — each was written
+ * FIVE GUARDS ARE ADDED, and none of them is decoration — each was written
  * after a specific failure in this system:
  *
  *   marketplace isolation  an eBay customer was sent Amazon's invoice path,
@@ -20,6 +20,8 @@
  *                          expensive failure mode, not a clumsy sentence.
  *   stated vs verified     the model called a customer's own order number
  *                          "verified", which is a claim we cannot support.
+ *   prior replies stand    a colleague offered a resend, the customer accepted,
+ *                          and the draft refused it as unverified.
  *   nothing internal       reasoning, gaps and rule references leaked into
  *                          text meant for a customer.
  *
@@ -70,6 +72,86 @@ CUSTOMER-STATED IS NOT VERIFIED. Anything the customer typed is customer-stated.
 
 A MISSING FACT NARROWS THE ANSWER, IT DOES NOT REPLACE IT. Not knowing one thing is not a reason to say nothing. Give the customer everything the rules let you give them without it, and then ask for the one thing you still need — in that order, in the same reply.`;
 
+/**
+ * What this team has already committed to, in this thread.
+ *
+ * THE FAILURE IT FIXES, in the exchange that produced it:
+ *
+ *   customer  "I still have not received this item and it's been several weeks"
+ *   us        "We have checked tracking. There has been no update since the
+ *              26th. Would you be happy for us to resend the item for you?"
+ *   customer  "Yes please resend asap"
+ *
+ * and the draft refused the resend. Correctly, by its instructions: `NEVER_INVENT`
+ * forbids stating that a replacement has been arranged, and the offer appears in
+ * no verified fact — no backend row records a decision a colleague took in a
+ * message, so it never could. The agreement is in the thread or it is nowhere.
+ *
+ * SO THE THREAD IS PROMOTED, AND ONLY FOR DECISIONS. What a colleague offered
+ * and this customer accepted is established. What happened afterwards in a
+ * warehouse, on a card or at a courier is not, and no amount of agreement makes
+ * it so. That line is the third paragraph below, and it is the whole reason this
+ * can be added without weakening the guard above it: the model may say we are
+ * arranging the resend, and may not say it has gone.
+ *
+ * PLACED AFTER `NEVER_INVENT` because it qualifies it. Read the other way round,
+ * "only the VERIFIED CONTEXT block is verified" arrives last and takes the
+ * agreement back.
+ *
+ * THE RETRACTION CLAUSE IS THE SAME ONE `incompleteGuidance` ALREADY STATES for
+ * bundle listings (see `lib/ai/draft-assembly.ts`), generalised: a thinner
+ * context now is a gap in what we can see, never an error in what a person on
+ * this team already sent.
+ *
+ * The deterministic half of this lives in `acceptedCommitments` and
+ * `ungroundedClaims` (`lib/domain/draft.ts`), which stop the accuracy gate
+ * deleting a confirmation this instruction asks for. Neither is sufficient
+ * alone: the instruction without the gate produced a draft that was written and
+ * then stripped; the gate without the instruction produces nothing to strip.
+ *
+ * THE LAST TWO PARAGRAPHS ARE ABOUT REPETITION, and they were added after the
+ * fix above started working. The draft carried the resend forward and then said:
+ *
+ *   "As agreed, we are arranging the resend for you. The original parcel was
+ *    last recorded as in transit on 26 August, but we will proceed with the
+ *    resend as requested."
+ *
+ * The second sentence is true, verified, and tells the customer something WE
+ * told THEM, in the message they were replying to. Once a thread has reached an
+ * agreed action, restating the background it came from reads as not having
+ * followed the conversation.
+ *
+ * THIS BLOCK IS WRITTEN TIGHT, AND THAT IS DELIBERATE. It is the largest single
+ * section of the system instruction (~513 tokens of ~1,985 composed), and
+ * `draft-validation-cost.test.ts` caps everything this application composes at
+ * 2,000 tokens — the guard that would catch the 127,000-token corpus going
+ * inline. The first draft of these paragraphs was 753 tokens and broke it. There
+ * are roughly 15 tokens of headroom left: anything added here needs either an
+ * equivalent cut or a deliberate decision to raise that cap, which is a cost
+ * decision and not a drafting one.
+ *
+ * STATED AS A RULE ABOUT SPEAKING, NOT ABOUT KNOWING, and the distinction is
+ * load-bearing. Nothing is removed from the request: the tracking block, the
+ * verified context and the whole thread are supplied exactly as before, and the
+ * model is told in terms to keep reasoning from all of it. What changes is the
+ * default about what reaches the customer, and the four exceptions are listed
+ * so a fact that is genuinely doing work is still stated. The tracking block
+ * carries the same test for its own data — see `verifiedTrackingBlock` in
+ * `lib/ai/draft-assembly.ts`, which this deliberately echoes rather than
+ * contradicts.
+ */
+const PRIOR_REPLIES = `WHAT THIS TEAM HAS ALREADY SAID IN THIS THREAD.
+
+Messages marked "OUR PREVIOUS REPLY" were sent to this customer under our name. Treat them as authoritative decisions this team has already taken, not claims to re-check.
+
+AN OFFER WE MADE AND THE CUSTOMER ACCEPTED IS AN AGREED DECISION, NOT A NEW REQUEST. Where a previous reply offered a resend, replacement, refund, return, collection or other remedy and the customer has since accepted it, carry it forward: confirm it and say what happens next. Do not refuse it, treat it as unverified, ask them to justify it again, or ask for what a colleague has already decided we do not need.
+
+YOU STILL MAY NOT SAY IT IS DONE. An agreed action is one we are carrying out, not one that has happened. You may say we are arranging it and what to expect. You may NOT say it has been sent, dispatched, posted, processed, issued or completed, and may not give a date, tracking number or courier, unless the VERIFIED CONTEXT establishes it. The agreement establishes the DECISION; only the verified context establishes the OUTCOME.
+
+NEVER RETRACT WHAT WE HAVE ALREADY SENT. If what you can verify is thinner than an earlier reply, that is a gap in your context, not a mistake in that reply. Say nothing about the difference, and never write "correction", "to clarify my previous message", "please disregard" or "the previous information was incorrect".
+
+DO NOT EXPLAIN AGAIN WHAT WE HAVE ALREADY EXPLAINED. Everything you are given — thread, verified context, tracking, product facts — is there to REASON from, not to put in the reply. Once we have given this customer a fact and the conversation has moved on to an agreed action, carry the action forward and leave the background where it is. State an earlier fact, status, date, explanation or specification again ONLY when it answers what the customer has just written, makes the agreed action clear, they have asked about it again, or a CST rule requires it. This governs what you SAY: keep using all of it to work out what is true and what you may not claim.`;
+
 /** What may and may not appear in text a customer will read. */
 const WRITING = `WRITING THE REPLY.
 
@@ -107,6 +189,8 @@ export function cstInstructions(marketplace: string | null | undefined): string 
     CST_PROJECT,
     HOW_TO_REASON,
     NEVER_INVENT,
+    // After NEVER_INVENT, which it qualifies. See `PRIOR_REPLIES`.
+    PRIOR_REPLIES,
     WRITING,
     CITATIONS,
   ].join("\n\n");

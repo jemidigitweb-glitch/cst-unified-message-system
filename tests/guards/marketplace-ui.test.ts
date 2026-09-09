@@ -155,12 +155,50 @@ describe("marketplace isolation", () => {
     }
   });
 
-  it("scopes every request to the selected marketplace", () => {
+  it("scopes every list request to the selected marketplace", () => {
     expect(workspace).toContain("/api/conversations?marketplace=${marketplace}");
     expect(workspace).toContain("/api/marketplace-messages?marketplace=${marketplace}");
-    // The detail request carries the marketplace too, so a stale id cannot
-    // surface one marketplace's thread inside another's tab.
-    expect(workspace).toContain("/api/conversations/${id}?marketplace=${marketplace}");
+    expect(workspace).toContain("/api/conversations/no-rule?marketplace=${marketplace}");
+  });
+
+  /**
+   * THE DETAIL REQUEST STILL NAMES A MARKETPLACE, and the thread it opens still
+   * belongs to the tab that ends up on screen.
+   *
+   * This used to assert the literal `?marketplace=${marketplace}` — the
+   * SELECTED tab, always. That was the whole guarantee while every selection
+   * came from a list inside one tab. The notification drawer is global and can
+   * hand back a conversation from another marketplace, so `select` now takes
+   * the marketplace as an argument, defaulting to the selected one.
+   *
+   * The guarantee is unchanged and is asserted in three parts rather than one,
+   * because it is now upheld by a default plus a rule rather than by a single
+   * literal:
+   *
+   *   1. The request is still parameterised by a marketplace — the server-side
+   *      404 on a mismatch is still doing its job, so a stale id cannot surface
+   *      one marketplace's thread inside another's tab.
+   *   2. The parameter DEFAULTS to the selected marketplace, so every existing
+   *      caller — the inbox list, the No Rule list — is byte-identical.
+   *   3. The one caller that overrides it switches the tab to the SAME value in
+   *      the same handler, so the thread on screen always belongs to the tab on
+   *      screen. Asserted here as well as in the notification guard, because
+   *      this is the property that would break silently.
+   */
+  it("opens a conversation only in the marketplace it belongs to", () => {
+    expect(workspace).toContain("/api/conversations/${id}?marketplace=${from}");
+    expect(workspace).toContain("async (id: string, from: Marketplace = marketplace)");
+    expect(workspace).toContain("onSelect={(id) => void select(id)}");
+
+    const overrides = [...workspace.matchAll(/select\(\s*id\s*,\s*(\w+)\s*\)/g)].map(
+      ([, argument]) => argument,
+    );
+    expect(overrides.length).toBeGreaterThan(0);
+    for (const argument of overrides) {
+      expect(workspace).toContain(
+        `if (${argument} !== marketplace) switchMarketplace(${argument});`,
+      );
+    }
   });
 });
 

@@ -7,7 +7,7 @@ import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilitie
 import { messageDirectionSchema } from "@/lib/domain/message";
 import { bodyDecodeStatuses } from "@/lib/domain/source-message";
 import { workflowStateSchema } from "@/lib/domain/workflow";
-import { MESSAGE_CATEGORIES } from "@/lib/knowledge/message-category";
+import { MESSAGE_CATEGORIES, type MessageCategory } from "@/lib/knowledge/message-category";
 import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
 
 /**
@@ -122,6 +122,107 @@ export const noRuleConversationSchema = inboxItemSchema.extend({
 });
 
 export type NoRuleConversationItem = z.infer<typeof noRuleConversationSchema>;
+
+/**
+ * The one case area the notification list watches.
+ *
+ * Typed as `MessageCategory`, so this is a compile error rather than a silently
+ * empty list if the classifier's vocabulary ever moves. It is DECLARED here and
+ * classified nowhere: the value is only ever compared against what
+ * `classifyConversationCategory` already returned for the conversation, which is
+ * why no second detector exists for it.
+ *
+ * Note the exact wording — "Order change, before shipping queries" — is the
+ * classifier's own. Nothing in the codebase says "Order Change Before Queries".
+ */
+export const ORDER_CHANGE_CATEGORY: MessageCategory = "Order change, before shipping queries";
+
+/**
+ * What the notification is CALLED on screen.
+ *
+ * DELIBERATELY NOT THE SAME STRING AS `ORDER_CHANGE_CATEGORY`, and the
+ * difference is worth stating so nobody "fixes" one to match the other.
+ *
+ *   ORDER_CHANGE_CATEGORY            the classifier's own value. It is what the
+ *                                    filter compares against, what the inbox's
+ *                                    category dropdown lists, and what the
+ *                                    category chip prints. Never retyped.
+ *   ORDER_CHANGE_NOTIFICATION_TITLE  the requested heading for the notification
+ *                                    drawer. Display copy only. Nothing is ever
+ *                                    matched, filtered or stored against it.
+ *
+ * They name the same case area in two registers — one is data, one is a title —
+ * and only the first may reach a comparison.
+ */
+export const ORDER_CHANGE_NOTIFICATION_TITLE = "Order Change Before Shipping Queries";
+
+/**
+ * A conversation in the requested case area that nobody has answered.
+ *
+ * Every field an `InboxItem` has, plus the newest customer message itself —
+ * a triage list is read to decide what to open next, and the title, the
+ * marketplace and a timestamp alone do not say what the customer wants.
+ *
+ * The preview is built server-side with the SAME `previewOf` the domain
+ * already exposes, and only the truncated result crosses the boundary: the
+ * browser is given what the row displays and no more.
+ *
+ * NO ORDER NUMBER, DELIBERATELY. A resolved order is not a property of a stored
+ * conversation — it is resolved per conversation against the read-only source
+ * database when the context panel opens. Putting one on a list row would mean
+ * running that resolution for every row of the list. What the row can honestly
+ * carry about the order is what the ingestion layer already recorded: the
+ * capability's own reference (through `conversationTitle`) and `needsContext`.
+ */
+export const awaitingResponseConversationSchema = inboxItemSchema.extend({
+  /** The newest inbound message's stored source timestamp, verbatim. */
+  latestCustomerMessageAt: z.string(),
+  /** Short preview of that message, already truncated. Never the full body. */
+  latestCustomerMessagePreview: z.string(),
+  /**
+   * Whether a draft has been written for this conversation.
+   *
+   * IT DOES NOT MEAN ANSWERED, and that distinction is the reason this field
+   * exists. The feed once excluded any conversation with a draft, so generating
+   * one made a waiting customer vanish from the notification list — while this
+   * system cannot send anything at all, and `reviewed` is its terminal state. A
+   * draft is work in progress; only an outbound message is a reply.
+   *
+   * So it is a LABEL, never a filter: the drawer separates "waiting, nothing
+   * written yet" from "waiting, draft ready" and keeps both on the list.
+   */
+  hasDraft: z.boolean(),
+});
+
+export type AwaitingResponseConversationItem = z.infer<
+  typeof awaitingResponseConversationSchema
+>;
+
+/**
+ * What the notification endpoint returns.
+ *
+ * GLOBAL. The conversations span every marketplace that could be read, and each
+ * one names its own — there is no marketplace on the envelope, because the feed
+ * is deliberately independent of whichever tab is on screen.
+ *
+ * `scanned` and `hasMore` describe how many UNANSWERED conversations were read
+ * and classified, not how many matched. They are part of the contract rather
+ * than a server-side detail because the category cannot be a SQL predicate, so
+ * a short list is not evidence of a quiet queue — and an interface that cannot
+ * tell those apart will present one as the other.
+ *
+ * `marketplaces` is what was actually read, which is not the same as every
+ * marketplace: the ones whose category is suppressed at source are dropped
+ * before the query, since no row of theirs could match.
+ */
+export const awaitingResponseFeedSchema = z.object({
+  conversations: z.array(awaitingResponseConversationSchema),
+  scanned: z.number().int(),
+  hasMore: z.boolean(),
+  marketplaces: z.array(marketplaceSchema),
+});
+
+export type AwaitingResponseFeed = z.infer<typeof awaitingResponseFeedSchema>;
 
 export const conversationMessageViewSchema = z.object({
   id: z.string(),
