@@ -154,6 +154,47 @@ no draft row  +  no reply after the customer's newest message  →  listed
   conversation lives in another one. That is navigation, not a workflow
   transition: no state is read, written or advanced by it.
 
+## Added: the thread is read as a record of decisions, not as a new step
+
+Drafting now treats a previous CST reply as something this team decided, and an
+offer the customer accepted as an agreed action to continue. **No workflow state,
+transition or terminal state changed.** The four states and their transition
+table are byte-identical.
+
+Where it sits in the flow above: entirely inside the "AI draft" box. The thread
+was already being read there — the full ordered conversation has always reached
+the model, labelled `CUSTOMER` and `OUR PREVIOUS REPLY`. What changed is what is
+read OUT of it.
+
+```
+verify context ──▶ AI draft ──▶ review / edit / regenerate ──▶ save ──▶ reviewed
+                      │
+                      ├── verified facts        (backend established)
+                      └── accepted commitments  (NEW: an offer we made,
+                                                 accepted by a later message)
+```
+
+Two things worth stating plainly about this shape:
+
+- **An accepted commitment is a second, deliberately narrower grounding source,
+  not a widening of the first.** It can support only "we are arranging this",
+  and only for a remedy that appears as an offer in one of our own replies and
+  is accepted by a later customer message, in that order. It cannot support a
+  dispatch, a date, a courier or a tracking number — those still require the
+  verified context, and that is enforced deterministically.
+- **It grounds one generation and nothing more.** Nothing is written down. The
+  commitment is re-read from the thread on every draft call, exactly as the
+  category and intent already are, so there is no stored decision to go stale
+  and no backfill to run. A reviewer editing or regenerating re-reads it.
+
+The regeneration loop is unchanged, including the part that matters most here:
+the accuracy gate still buys exactly one regeneration and only for a critical
+finding. What changed is which drafts are critical. A reply confirming an agreed
+resend previously raised `unsupported_claim` and bought a regeneration that
+rewrote it into a refusal; a correct terse reply that left settled background
+out raised two `intent_not_addressed` findings and bought one that put the
+background back. Both now pass, so the loop runs less often, not more.
+
 ## Next pending items
 
 - Marketplace reply sending, and any state after `reviewed` — not built, out of

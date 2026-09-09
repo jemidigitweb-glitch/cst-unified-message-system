@@ -148,8 +148,79 @@ and the single-marketplace read is the same function with a one-element array.
 assigns each row exactly one rank within one partition, and a conversation
 belongs to exactly one marketplace, so no row can be counted in two windows.
 
+## Added: accepted commitments — duplication assessed
+
+**No new duplication risk.** Reading a commitment writes nothing, stores nothing
+and caches nothing, so there is no row to duplicate and no snapshot to go stale.
+What it could have duplicated, and what was done instead:
+
+| Could have been duplicated | What was done instead |
+| --- | --- |
+| The grounding check | `ungroundedClaims` gained a third parameter, defaulting to `[]`. There is still one prohibited-claim table and one scan. No second validator, no parallel "commitment-aware" path. |
+| The claim patterns | The replacement entry was **split**, not copied: "arranged" carries the commitment, "dispatched" does not. Two rows in the one table, so a future edit to the wording cannot update one copy and miss another. |
+| The message body reader | `displayBody`, the same function the thread view and the notification preview use. An undecodable body reads the same everywhere, and an offer inside one grounds nothing. |
+| The intent detector | `WANTS_A_RESEND` is a new constant read **only** by `detectIntents`, added beside `WANTS_A_REPLACEMENT` rather than merged into it — precisely so the category decision in `refine` keeps reading the same expression it read before, and the frozen classifier baseline does not move. |
+| The reply-side coverage vocabulary | `INTENT_COVERAGE.wants_replacement.topic` was widened in place. One expression, still. |
+
+**The commitment cannot be double-counted within one thread.**
+`acceptedCommitments` returns a de-duplicated list of at most two kinds, and an
+acceptance is matched against offers seen strictly BEFORE it. A thread
+containing three separate resend offers and one acceptance yields
+`["replacement"]` once, not three times.
+
+**Re-generation safety is unchanged and slightly improved.** The commitment is
+re-derived from the same stored thread on every call, so two generations of the
+same conversation see the same commitments — this is a pure function of rows
+that already exist, with no clock, no random and no cache. The observable change
+is that the accuracy gate now buys **fewer** regenerations: a confirmation of an
+agreed remedy previously raised a critical `unsupported_claim` and a correct
+terse reply raised two critical `intent_not_addressed` findings, and each bought
+a rewrite that made the draft worse.
+
+**One risk worth naming rather than dismissing.** The offer and acceptance
+patterns are regular expressions over customer and agent prose, so they are a
+judgement, not a proof. A false positive would let a draft say "we are arranging
+a replacement" where no offer was really made. Three things bound it: the offer
+must appear in an OUTBOUND message, the acceptance must come after it, and the
+only claim it can license is an arrangement — never a dispatch, a date, a
+courier or a tracking number, all of which remain blocked by the unchanged
+patterns and still require the verified context.
+
+## Added: SOT product facts — no duplication, and one latent collision
+
+The pre-sale product investigation made no code change, but it did surface a
+duplication risk worth recording before someone meets it.
+
+**`"sku not assigneds"` is a placeholder that behaves like a key.** 4,768 eBay
+parent listing rows carry that literal string in `sku`. It is non-empty, so it
+passes `btrim(el.sku) <> ''` and is handed to `findSotProductBySku` as though it
+were a SKU. Today it matches nothing and the lookup harmlessly returns null —
+which means **those 4,768 listings currently depend on the ABSENCE of a
+catalogue row under that exact string.** If one were ever created, one product's
+attributes would attach to 4,768 unrelated listings at once, and every one of
+them would present it as verified. Rejecting the placeholder before the lookup
+is about three lines; it was not done, because this was an investigation.
+
+**The existing anti-duplication rules held everywhere else**, and are worth
+recording as having been checked rather than assumed:
+
+- `findSotProductForListing` counts distinct parent SKUs and returns null on
+  more than one. It never picks.
+- `findSotProductBySku` counts distinct `components_sot_skus.id` and returns
+  null on more than one, so rows spanning two catalogue records are refused
+  rather than merged.
+- SKUs are matched exactly — no `upper()`, no `btrim()`, no case-fold, no split
+  on `+`. Normalisation would buy zero extra rows (647 either way, measured) and
+  cost the guarantee.
+- The bundle resolver's variant-agreement rule is itself a de-duplicator: an
+  attribute survives only where every variant yields one identical value, so a
+  7-pattern listing contributes one fitting type and **no** diameter, because
+  the patterns disagree (135/150/160/190mm).
+
 ## Next pending items
 
+- Reject the `"sku not assigneds"` placeholder before the catalogue lookup, so
+  those 4,768 listings do not depend on a row never being created.
 - A periodic snapshot-health query pack (counts by `resolution` and marketplace)
   run on a schedule rather than on demand.
 - A recorded procedure for resetting stale context snapshots after a matching

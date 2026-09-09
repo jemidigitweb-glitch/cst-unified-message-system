@@ -157,8 +157,96 @@ Order Change tab and no `view` for it; both were removed.
 scheduled job, no credential. The feature is live as soon as the code is
 deployed.
 
+## Added: prior CST replies as agreed decisions
+
+**Where it lives.** `acceptedCommitments` in `lib/domain/draft.ts` (the reader
+and the claim table), `threadCommitments` in `lib/ai/draft-validation.ts` (the
+adapter from conversation messages), the `PRIOR_REPLIES` block in
+`lib/ai/instructions.ts` (the instruction), and one sentence inside
+`verifiedTrackingBlock` in `lib/ai/draft-assembly.ts`. Nothing else.
+
+**What to know before changing it:**
+
+- **DECISION versus OUTCOME is the whole safety argument.** An agreement lets a
+  draft say we are ARRANGING something. It does not let it say the thing has
+  HAPPENED. In `PROHIBITED_CLAIM_PATTERNS` exactly one entry carries a
+  `commitment` field — "replacement arrangement". "Replacement decision"
+  (dispatched/sent) deliberately does not, and neither does any refund entry.
+  **If you add a `commitment` to a second pattern, be sure you have decided
+  that an agreement can establish that claim**, because that is what you are
+  saying.
+- **The commitment is derived, never stored.** No column, no snapshot, no
+  migration. It is re-read from the thread on every draft call, like the
+  category and the intent. Do not add a table for it; the reasons are the same
+  ones recorded in `data-maps/` for the category.
+- **Both new parameters default to `[]`.** `ungroundedClaims(draft, facts,
+  commitments = [])` and `settleReviewRequirement(result, facts,
+  commitments = [])`. A caller that does not pass a thread behaves exactly as it
+  did before — including `lib/ai/draft-generator.ts`, which is off the live path
+  and was deliberately left on the default. If you wire a new caller, passing
+  the thread is opt-in.
+- **`WANTS_A_RESEND` is beside `WANTS_A_REPLACEMENT`, not merged into it, and
+  this is load-bearing.** `WANTS_A_REPLACEMENT` is also read by `refine` for the
+  `exchange_or_replacement` CATEGORY decision, and the classifier is frozen
+  against a compiled baseline. Merging the two would move that baseline. The new
+  constant is wired only into `detectIntents`.
+- **The instruction is ~15 tokens under its cost guard.**
+  `tests/ai/draft-validation-cost.test.ts` caps the composed instruction and
+  input at 2,000 estimated tokens; it currently measures 1,984.75. The guard is
+  there to catch the ~127,000-token Gemini corpus going inline, so **do not
+  raise it to make room** — cut something instead, or make raising it an
+  explicit, argued decision. The block was already rewritten from 753 tokens to
+  513 for exactly this reason.
+- **The accuracy gate can fight an instruction, and it did.** Before the
+  coverage vocabulary learned the word "resend", the correct terse draft raised
+  two critical findings and would have bought a regeneration that undid the
+  instruction. If you add a rule telling the model to say LESS, check what
+  `validateDraftAccuracy` makes of the draft you want, or the gate will buy a
+  rewrite back to the draft you don't.
+- **A correct draft still carries one minor `intent_not_addressed` finding** on
+  a settled delivery thread. Expected, asserted in the test, and harmless —
+  minor findings buy no model call and change no text.
+- **`restrictedInstructions()` has none of this.** It is the reduced
+  instruction and carries no prior-reply or no-repeat rule. Deliberate, but know
+  it before assuming the policy is global.
+
+**Nothing new to operate.** No migration, no environment variable, no scheduled
+job, no credential. Live as soon as the code is deployed.
+
+## Added: what a new owner should know about product facts
+
+Investigated 2026-09-09 after a pre-sale draft declined to state a lampshade's
+weight. **No code changed.** Three things are worth carrying forward:
+
+1. **There is no weight in the source, for any product.** `weight_g` is `NULL`
+   or `[VERIFY]` on all 1,824 SOT SKUs, as are every packaged, volumetric, outer
+   and chargeable weight column, and `suppliers.child_item_products` holds no
+   weights either. A draft asked for a weight can only say it will check. If
+   this is reported as a bug again, it is a **data** task — populate `Weight_g`
+   in the SOT sheet — and no code change will help.
+2. **The "SOT resolves for 3 of 869" figure describes one route of two.** The
+   parent-listing route reaches 308 of 31,155 parent listings (1.0%); the
+   component route through `order_combo`, which `resolveBundleProductContext`
+   already uses, reaches 19,319 (62%). Do not conclude from the small figure
+   that the catalogue is unreachable — most pre-sale conversations that get
+   product facts get them through the bundle path.
+3. **`"sku not assigneds"` is a placeholder on 4,768 parent listing rows**, and
+   it is passed to the catalogue lookup as though it were a SKU. It misses
+   today. Those listings therefore depend on nobody ever creating a catalogue
+   row under that literal string; if one appeared, one product would attach to
+   all 4,768. Rejecting it before the lookup is a few lines and is listed below.
+
+Also: the doc comments in `lib/context/resolve-sot-product-context.ts` and
+`lib/repositories/sot-product-repository.ts` still say SOT holds 1,001 SKUs
+across three tabs. It now holds 1,824 across six (lampshade, ceilingrose, bulb,
+lampholder, pendantholder, wallarm). Stale comment, not a defect — but do not
+size a change from it.
+
 ## Next pending items
 
+- Reject the `"sku not assigneds"` placeholder before the SOT lookup.
+- Populate `Weight_g` in the SOT sheet, or accept that weight questions are
+  unanswerable — a business decision, not an engineering one.
 - Marketplace reply sending — not built and out of Phase 1 scope.
 - Automatic sending.
 - Invoice email sending.

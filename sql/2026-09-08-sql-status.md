@@ -146,8 +146,71 @@ for the marketplace, a hash anti-join against the small `draft_replies` table,
 and `ix_conversation_messages_thread_order` backward for both message lookups.
 No migration was written, and no DDL exists for this feature.
 
+## Added: the first saved inspection queries — `sot-product-reachability.sql`
+
+**This folder is no longer empty.** `sql/sot-product-reachability.sql` holds the
+seven read-only queries behind the pre-sale product investigation, which is the
+first of the packs described in `query-packs/` to be written down here rather
+than left in prose.
+
+Seven statements, all `SELECT` against the marketplace source:
+
+| # | Question |
+| --- | --- |
+| 1 | Which SOT attributes hold a *usable* value, applying the resolver's own `[VERIFY]`/blank test? |
+| 2 | For an attribute reporting zero usable values, what is actually stored — `NULL`, or the sentinel? |
+| 3 | How big is the catalogue and how is it organised into tabs? |
+| 4 | How many parent listing SKUs are placeholders or combo strings? |
+| 5 | **Reachability** — parent route vs component route, counted |
+| 6 | Trace one listing end to end: parent, children, variations, catalogue presence |
+| 7 | Variant agreement — which attributes a bundle listing may safely state |
+
+Properties that made them fit to keep, matching the discipline above:
+
+- **Read-only.** Every statement is a `SELECT`. The one non-`SELECT` line is
+  `SET statement_timeout = '60s'`, guarding query 5, which joins across ~1.19M
+  order lines and ~2.01M combo rows.
+- **The `[VERIFY]` test mirrors the application exactly** — matched as a
+  SUBSTRING, never as the whole value, because the sentinel appears embedded in
+  otherwise-real text and an equality check would pass those through as facts.
+  A measurement taken here therefore means what `statableValue` means.
+- **SKUs are matched with `=` throughout.** No `upper()`, no `btrim()`, no
+  case-fold, no split on `+` — the same rule `lib/domain/sku.ts` enforces in
+  code. Measured live, normalising buys zero extra rows and costs the guarantee.
+- **No customer data, and none can be added without changing the shape.** Every
+  query returns catalogue metadata, listing metadata, SKU strings and counts.
+  None reads a message, a buyer, an address or an order value.
+- Query 6 carries a literal item id and query 7 a literal SKU list, because the
+  file is run by hand. Both are listing/catalogue identifiers, not customer
+  data. Parameterise if either is ever called from code.
+
+### What query 5 established, and why it belongs in this folder
+
+Two routes exist from a conversation into the product catalogue, and only one
+of them was being measured:
+
+| Route | Used by | Listings reached |
+| --- | --- | --- |
+| Parent listing SKU | `resolveSotProductContext` | 308 of 31,155 (1.0%) |
+| Component decomposition | `resolveBundleProductContext` | **19,319 of 31,155 (62%)** |
+
+The parent route fails structurally rather than through bad matching: 4,768
+parent rows carry the literal placeholder `"sku not assigneds"` and 1,089 carry
+a combo SKU no catalogue indexes. The component route works because
+`order_management.order_combo` already holds the decomposition this codebase is
+forbidden to derive for itself.
+
+**A `NULL`-safe note for whoever runs query 1 next.** An attribute can have a row
+for every SKU and still hold nothing: `weight_g` has 1,824 rows and zero usable
+values (1,155 `NULL`, 669 `[VERIFY]`). Counting rows would have reported full
+coverage of a column that has never been filled in. The `FILTER` clause is the
+point of the query, not decoration.
+
 ## Next pending items
 
+- Save the remaining packs (A–E) here in the same shape as
+  `sot-product-reachability.sql` — read-only, commented with the finding, no
+  customer data.
 - Save the approved inspection queries described in
   `query-packs/2026-09-08-query-pack-status.md` into this folder, read-only and
   parameterised, with the finding recorded beside each.

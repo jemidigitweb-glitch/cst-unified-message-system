@@ -81,7 +81,11 @@ storefront `sub_source_id`, listing item reference, buyer username.
 - `lib/context/resolve-listing-link.ts` + `/api/conversations/:id/listing` — the
   listing URL, on its own route so it works where no order resolved.
 - `lib/context/resolve-sot-product-context.ts` — the SOT catalogue, where it
-  resolves (3 of 869 eBay listings).
+  resolves (3 of 869 eBay listings by the parent-listing route; the component
+  route used by the bundle resolver reaches far more — see section 9).
+- `lib/context/resolve-bundle-product-context.ts` — the component route into
+  the same catalogue, for a listing whose parent row carries a placeholder or a
+  combo SKU. States only what every variant of the listing agrees on.
 - SKUs are atomic everywhere. A combo SKU such as `AAA+BBB+CCC` is one
   identifier with its own product master row. There is no `parseSku`,
   `splitSku` or `normalizeSku` in the codebase.
@@ -92,9 +96,9 @@ storefront `sub_source_id`, listing item reference, buyer username.
   when set, otherwise OpenAI (CST knowledge in a vector store, retrieved per
   conversation) and Gemini as fallback (all rules inline).
 - `lib/ai/instructions.ts` holds the shared CST instruction — reproducing the
-  CST ChatGPT project instruction plus four guards written after specific
+  CST ChatGPT project instruction plus five guards written after specific
   failures: marketplace isolation, never invent, stated vs verified, nothing
-  internal.
+  internal, and prior replies stand (see section 9).
 - `lib/ai/draft-assembly.ts` builds the prompt: the conversation, the verified
   context block (stating plainly when there is none), the classifier's reading
   of the customer's intent marked as internal guidance rather than fact, and the
@@ -291,3 +295,64 @@ of the candidate set, so a second pass finds nothing.
 
 First run, 2026-09-08: 795 eBay messages examined, **74 repaired**, 721 skipped
 as still empty at source. Second pass repaired 0.
+
+### 9. Prior CST replies as agreed decisions
+
+The thread has always reached the model complete and in order, labelled
+`[CUSTOMER at ...]` and `[OUR PREVIOUS REPLY at ...]`. Nothing filters or
+truncates it. What was missing was any statement of what a previous reply
+*means*, and the result was a draft that refused a resend its own team had
+offered and the customer had accepted.
+
+**The instruction side** (`lib/ai/instructions.ts`, the fifth guard). A message
+marked `OUR PREVIOUS REPLY` was sent under our name and is a decision already
+taken. An offer we made and the customer accepted is an agreed decision, not a
+new request. The draft may not say the action is done, may not retract an
+earlier reply, and — added with it — may not restate background the conversation
+has moved past, except where it answers the latest message, clarifies the agreed
+action, the customer asks again, or a CST rule requires it.
+
+**The deterministic side** (`lib/domain/draft.ts`, `lib/ai/draft-validation.ts`).
+`acceptedCommitments` reads the thread for an offer construction in one of our
+own replies followed by an acceptance in a later customer message, matched per
+sentence so a question about an offer is not agreement. It yields at most
+`replacement` or `refund`, and it is a *second, narrower* grounding source: the
+replacement claim pattern is split so "we have arranged" can be grounded on an
+agreement while "we have dispatched" cannot. Callers pass the commitments list
+as a parameter defaulting to `[]`, so nothing that does not pass a thread
+changes behaviour.
+
+**The tracking block** (`lib/ai/draft-assembly.ts`) carries the same rule about
+its own data, gated on three conditions at once and handing relevance straight
+back when the customer asks again. The block itself is byte-identical whether
+the conversation has settled or not — only the instruction reads the thread.
+
+Costs and bounds worth knowing: the instruction sits at 1,984.75 estimated
+tokens against a 2,000-token guard, and `WANTS_A_RESEND` was added beside rather
+than merged into `WANTS_A_REPLACEMENT`, because the latter also drives the
+frozen category classifier.
+
+### 10. Product facts in a pre-sale draft — two routes, and a data gap
+
+Recorded after a pre-sale draft correctly declined to state a lampshade's
+weight. Both routes read the same catalogue and both apply the same filters
+(`BLOCKED_SOT_ATTRIBUTE_PATTERNS`, then `statableValue`, which rejects the
+sheet's `[VERIFY]` marker, links, money, and anything over 300 characters).
+
+| Route | Keyed on | Listings reached |
+| --- | --- | --- |
+| `resolveSotProductContext` | the parent listing row's SKU | 308 of 31,155 (1.0%) |
+| `resolveSotProductContextForSku` | the SKU an order named | every resolved order |
+| `resolveBundleProductContext` | components via `order_combo` | 19,319 of 31,155 (62%) |
+
+The parent route is the weak leg — 4,768 parent rows carry the placeholder
+`"sku not assigneds"` and 1,089 a combo SKU no catalogue indexes — and the
+bundle route is what actually serves most pre-sale conversations. It states only
+what every variant of a listing agrees on, so a 7-pattern shade contributes its
+fitting, materials and bulb limits and withholds its diameter and height,
+because the patterns genuinely differ.
+
+**The data gap:** no weight is recorded anywhere the system can read.
+`weight_g` is `NULL` or `[VERIFY]` on all 1,824 SOT SKUs, as are every packaged,
+volumetric, outer and chargeable weight column. A draft asked for a weight can
+only say it will check — which is what it does.

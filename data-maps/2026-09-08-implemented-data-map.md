@@ -84,8 +84,12 @@ seller HTML, marketing rather than specification).
 ### 4. Product catalogue
 
 - `configurator.components_sot_skus` / `components_sot_attributes` /
-  `components_sot_attribute_values` — the SOT catalogue. Resolves for 3 of 869
-  eBay listings, which is why the listing path exists alongside it.
+  `components_sot_attribute_values` — the SOT catalogue. **1,824 SKUs across six
+  sheet tabs** (lampshade, ceilingrose, bulb, lampholder, pendantholder,
+  wallarm), one row per (sku, attribute) pair. Resolves for 3 of 869 eBay
+  conversations *by the parent-listing route*, which is why the listing path
+  exists alongside it — but see "Added: two routes into the catalogue" below,
+  because that figure describes only one of the two routes in use.
 - `order_management.order_combo` — component decomposition for a combo SKU. The
   application never parses a SKU itself; the decomposition already exists here.
 - `inventory.products` — product master.
@@ -206,8 +210,94 @@ stored category column would be a second source of truth that drifts the moment
 the phrase table changes, and would need the backfill the current design exists
 to avoid.
 
+## Added: the thread itself, as a second and narrower grounding source
+
+No source mapping, no column and no table. Drafting now reads one more thing out
+of data it was already given: `cst_app.conversation_messages`, in order, for this
+conversation.
+
+| Read | Already written by | Read as |
+| --- | --- | --- |
+| `conversation_messages.direction` | `lib/sync/conversation-writer.ts` | whose turn it is |
+| `conversation_messages.body_text` (via `displayBody`) | the same writer | an offer, or an acceptance |
+
+`acceptedCommitments` in `lib/domain/draft.ts` maps that sequence to at most two
+values, `replacement` and `refund`, and to nothing else. The mapping is one-way
+and derived per request:
+
+```
+outbound turn containing an offer construction AND a named remedy
+   followed by
+inbound turn containing acceptance wording in a non-question sentence
+   ⇒  that remedy is an agreed commitment for this draft only
+```
+
+**Nothing is stored, and that is the mapping decision.** No column, no snapshot,
+no migration. The commitment is re-derived from the thread on every draft call,
+exactly as the category and the intent already are, for the same reason recorded
+in the notification section above: a stored reading would be a second source of
+truth that drifts the moment the offer wording changes, and would need a
+backfill.
+
+**It maps to grounding, not to facts.** A commitment never becomes a
+`VerifiedFact`, never appears in the VERIFIED CONTEXT block, and never reaches
+the sidebar. It is consumed only by `ungroundedClaims` and
+`settleReviewRequirement`, where it can license exactly one thing — a statement
+that we are ARRANGING a remedy. The claim that a remedy has HAPPENED still maps
+only from the verified order and shipment facts above.
+
+Direction is what makes this readable at all, so it is worth naming which
+marketplaces can support it: eBay, Amazon and Shopify have verified direction;
+B&Q and Temu are inbound-only and therefore contain no `OUR PREVIOUS REPLY` for
+an offer to sit in.
+
+## Added: two routes into the product catalogue, measured
+
+Section 4 above lists the SOT tables. There are **two** mappings from a
+conversation into them, and the coverage figure quoted for the first has been
+read as the coverage of the catalogue as a whole, which understates it.
+
+```
+conversations.listing_item_ref
+   ├── listings.ebay_listings (is_parent = 1) → el.sku → components_sot_skus.sku
+   │      the PARENT route. Reaches 308 of 31,155 parent listings (1.0%).
+   │
+   └── listings.ebay_listings (is_child = 1) → el.sku
+          → order_management.order_item_info.item_sku
+          → order_management.order_combo.sku → components_sot_skus.sku
+          the COMPONENT route. Reaches 19,319 of 31,155 (62%).
+```
+
+Measured 2026-09-09 across every parent listing. The parent route fails for a
+structural reason, not a matching one: **4,768 parent rows carry the literal
+placeholder `"sku not assigneds"`** and 1,089 carry a combo SKU that no
+catalogue indexes. The parent SKU field is also frequently prose rather than an
+identifier — `"Table Lamp"`, `"Multi colour Hand Made Glass Lamp"` — because it
+is a listing-admin field, not a catalogue key.
+
+The component route works because `order_combo` already holds the decomposition
+the application is forbidden to derive itself (`lib/domain/sku.ts` — no
+`parseSku`, no split on `+`). It is the mapping `resolveBundleProductContext`
+uses, which is why a listing with a placeholder parent SKU still produces
+verified product facts.
+
+**SOT is bigger than recorded here:** 1,824 SKUs across six sheet tabs
+(lampshade, ceilingrose, bulb, lampholder, pendantholder, wallarm), not the
+1,001 across three the module doc comments still state.
+
+**One attribute maps to nothing, on every SKU.** `weight_g` is `NULL` for 1,155
+SKUs and `[VERIFY]` for 669 — no usable value exists anywhere in the catalogue,
+and the same is true of `packaged_weight_g`, `volumetric_weight_kg`,
+`outer_weight_kg` and `chargeable_weight_kg`. Outside SOT,
+`suppliers.child_item_products.weight` is null on all 119 rows. There is
+currently **no mapping from any product to a weight**, so no draft can state
+one.
+
 ## Next pending items
 
+- **A weight mapping, once a weight exists to map.** `Weight_g` is unset for all
+  1,824 SOT SKUs; the column and the resolver already exist, so this is a data
+  task and needs no code.
 - Carry the billing party (name/address) through the invoice resolver — a
   deliberate decision about where personal data may travel, not a layout task.
 - Seller/company details for the invoice header.

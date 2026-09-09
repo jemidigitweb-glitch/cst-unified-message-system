@@ -177,8 +177,128 @@ statement plans, and every access path is an index scan
 lookups). The three correlated subqueries sit above the `LIMIT`, so they are
 evaluated for the returned rows, not for the whole candidate set.
 
+## Added: prior CST replies as agreed decisions
+
+**What was built** (commit `5bc614c`):
+
+| File | Change |
+| --- | --- |
+| `lib/ai/instructions.ts` | modified — the fifth guard, `PRIOR_REPLIES`, placed after `NEVER_INVENT` because it qualifies it |
+| `lib/domain/draft.ts` | modified — `acceptedCommitments`, `CommitmentKind`, the split replacement pattern, two optional parameters |
+| `lib/ai/draft-validation.ts` | modified — `threadCommitments`, and the coverage vocabulary widened for "resend" |
+| `lib/ai/draft-assembly.ts` | modified — one sentence in `verifiedTrackingBlock`, and commitments passed to `settleReviewRequirement` |
+| `lib/knowledge/message-category.ts` | modified — `WANTS_A_RESEND`, wired only into `detectIntents` |
+| `tests/ai/accepted-commitments.test.ts` | new — 23 tests |
+| `tests/ai/settled-background.test.ts` | new — 13 tests |
+
+### Test run — 2026-09-09
+
+```
+npm test   (vitest run)
+
+Test Files  124 passed | 12 skipped (136)
+Tests       3406 passed | 30 skipped (3436)
+Duration    37.61s
+```
+
+Measured on the rebased tree, so the figure includes the 45 body-repair tests
+from the merge. The AI suite alone: `npx vitest run tests/ai` → 23 files passed,
+4 skipped, **426 passed**, 9 skipped.
+
+`npx tsc --noEmit` reports one error, pre-existing and unrelated: a stale
+`.next/types/validator.ts` referencing the deleted invoice route. Proved
+pre-existing by `git stash push -u`, re-running, and `git stash pop` — identical
+error with the change absent. `npx eslint` reports the same 4 problems as
+before, all in files this work did not touch.
+
+### What the tests prove, and what they do not
+
+| Claim | How it is tested |
+| --- | --- |
+| An offer we made and the customer accepted is read as a commitment | **Behavioural** — the real reader over a real thread shape |
+| Order is enforced (acceptance before offer grounds nothing) | **Behavioural** |
+| A question about an offer is not acceptance; an acceptance that also asks still is | **Behavioural** — per-sentence |
+| An unreadable body grounds nothing | **Behavioural** |
+| A confirmation of an agreed remedy raises no critical finding | **Behavioural** — the real validator |
+| It buys no regeneration | **Behavioural** — a fake `DraftProvider` counts calls; `calls === 1` |
+| "We have dispatched" is still blocked, with agreement | **Behavioural** |
+| A resend agreement does not ground a refund claim | **Behavioural** |
+| The same promise with no offer is still blocked | **Behavioural** |
+| A caller passing no thread is unchanged | **Behavioural** — the `[]` default |
+| Tracking is still supplied when the conversation has settled | **Behavioural** — `buildDraftInput`, byte-compared against the re-asked thread |
+| The model actually obeys the no-repeat rule | **Not tested, and not testable here** — instruction wording is pinned structurally; compliance is the model's |
+
+The last row is the honest bound on this work. Two of the five changes are
+instruction text, and no unit test can prove a model follows it. What the tests
+do prove is that the deterministic layer no longer *fights* it.
+
+### The regression that made the second half necessary
+
+Worth recording because it is the non-obvious part. The expected terse draft —
+
+> "Thank you for confirming. As agreed, we will proceed with the resend for you."
+
+— raised **two CRITICAL `intent_not_addressed` findings** and
+`regenerationWarranted: true`. The gate would have bought a regeneration
+instructing the model to put the tracking sentence back, defeating the
+instruction entirely. Cause: `INTENT_COVERAGE.wants_replacement.topic` had a
+leading `\b`, so its `send…` alternative could not match inside "resend", and no
+alternative named the word. After widening: no critical findings, and one minor
+`intent_not_addressed` note remains — asserted explicitly in the test, because a
+minor finding buys no model call and changes no word of the draft.
+
+### The prompt cost guard, measured
+
+`tests/ai/draft-validation-cost.test.ts` caps the composed instruction and input
+at 2,000 estimated tokens. Measurements taken with a temporary test, since
+removed:
+
+| Stage | Tokens |
+| --- | --- |
+| First attempt | 2,224.75 — **failed** |
+| After first rewrite | 2,030.25 |
+| After second | 2,004.5 |
+| Shipped | **1,984.75** |
+
+The new block alone went from 753 tokens (39% of the whole instruction) to 513.
+The ceiling was not raised.
+
+## Added: pre-sale SOT product facts — measured source findings
+
+No code was written. These are read-only `SELECT` results against the source
+database, recorded because they answer a question that will be asked again. No
+customer data appears; every figure below is catalogue or listing metadata.
+
+| Finding | Measurement |
+| --- | --- |
+| No product weight exists in SOT | `weight_g` on 1,824 SKUs: 1,155 `NULL`, 669 `[VERIFY]`, **0 usable** |
+| Nor in any other weight column | `packaged_weight_g`, `volumetric_weight_kg`, `outer_weight_kg`, `chargeable_weight_kg` — 0 usable each |
+| Nor outside SOT | `suppliers.child_item_products`: 119 rows, 0 weights |
+| SOT is larger than documented | 1,824 SKUs across 6 tabs, not 1,001 across 3 |
+| The parent-listing route barely reaches SOT | 308 of 31,155 parent SKUs match (1.0%) |
+| The component route reaches most of it | **19,319 of 31,155 (62%)**, a gain of 19,281 |
+| Why the parent route fails | 4,768 parent rows carry `"sku not assigneds"`; 1,089 carry a combo SKU |
+| The traced listing IS in SOT | its Pattern-03 variant carries **71 usable attributes** — including `diameter_mm: 150`, `height_mm: 130`, `bulb_base_type: E27` — and `weight_g: [VERIFY]` |
+| The bundle path served it correctly | 15 attributes agreed across all 7 patterns were available; `diameter_mm`, `height_mm` and `shade_shape` correctly withheld, the patterns differing (135/150/160/190mm) |
+
+**Evidence the draft was right.** The model was given verified catalogue facts
+and no weight, and the standing `NEVER_INVENT` guard forbids stating an
+unverified specification. *"I'll check the exact weight and come back to you"* is
+the designed behaviour, not a failure.
+
+**Evidence nothing was changed.** `git status` showed no modification to
+`lib/context/`, `lib/repositories/` or `lib/ai/` during the investigation. Every
+statement run was a `SELECT`.
+
 ## Next pending items
 
+- **A test pinning the placeholder-SKU case.** Nothing in `tests/` references
+  `"sku not assigned"`, so the 4,768 listings that depend on it matching nothing
+  are unguarded. (The `[VERIFY]` filters are well covered, in both resolvers and
+  the repository.)
+- A test that a pre-sale question whose attribute is `[VERIFY]` produces a draft
+  that defers rather than states a number — the actual bug scenario, currently
+  unpinned.
 - Capture a screenshot of the context panel showing the "Print invoice" control
   against a resolved order, and one of a rendered invoice with synthetic or
   masked data.

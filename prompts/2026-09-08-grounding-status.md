@@ -28,7 +28,7 @@ to work out a business fact for itself, and it never sends anything.
   find the applicable rules, apply specialist and cross-cutting rules together,
   check evidence, approval, escalation, safety and marketplace requirements,
   never invent policy.
-- Four guards were added on top, each after a specific failure in this system:
+- Five guards were added on top, each after a specific failure in this system:
   - **marketplace isolation** — an eBay customer was sent Amazon's invoice path,
     from a rule that documents both platforms.
   - **never invent** — a fluent, confident, wrong commitment is the expensive
@@ -37,6 +37,8 @@ to work out a business fact for itself, and it never sends anything.
     "verified", a claim we cannot support.
   - **nothing internal** — reasoning, gaps and rule references leaked into text
     meant for a customer.
+  - **prior replies stand** — a colleague offered a resend, the customer
+    accepted, and the draft refused it as unverified. See the section below.
 - The instruction states plainly: "You never send anything. There is no recipient
   and no transport; a human reviews every draft."
 - It also tells the model how to *use* the knowledge base — work out everything
@@ -136,10 +138,114 @@ quietly acquires a model call, and this one has none.
   done. That is a re-read of the existing classifier over existing rows — it
   costs no tokens and triggers no generation.
 
+## Added: what this team has already said in this thread
+
+The fifth guard, and now the largest single section of the system instruction.
+The exchange it was written after, which happened:
+
+```
+customer   "I still have not received this item and it's been several weeks"
+us         "...unfortunately there has been no update since the 26th. Would you
+            be happy for us to resend the item for you?"
+customer   "Yes please resend asap"
+```
+
+and the draft refused the resend as an unverified replacement decision. It was
+refusing an offer we had made ourselves. The thread was never the problem — the
+full ordered thread, with `CUSTOMER` and `OUR PREVIOUS REPLY` labels, already
+reached the model. What was missing was any statement of what a previous reply
+*means*.
+
+**Prior replies stand.** A message marked `OUR PREVIOUS REPLY` was sent to this
+customer under our name. It is a decision this team has already taken, not a
+claim to re-check. A remedy we offered and the customer accepted is an agreed
+decision, not a new request, and the draft confirms it and says what happens
+next.
+
+**The DECISION is not the OUTCOME.** This is the line that stops the guard
+becoming a licence, and it is stated in the instruction and enforced
+deterministically. An agreement establishes that we are doing something; only
+the verified context establishes that it happened. "We are arranging a
+replacement" can be grounded on the agreement. "We have dispatched a
+replacement" cannot, and neither can a date, a courier or a tracking number.
+
+**Never retract what we have already sent.** Where the model can verify less
+than an earlier reply asserted, that is a gap in its context, not a mistake in
+that reply. No "correction", no "to clarify my previous message", no "please
+disregard".
+
+**And then say it once.** Carrying the action forward produced a second defect:
+a draft that restated our own previous message back to the person replying to
+it — *"...The original parcel was last recorded as in transit on 26 August, but
+we will proceed with the resend as requested."* Every word verified, and every
+word already said. The instruction now states that everything supplied —
+thread, verified context, tracking, product facts — is there to REASON from and
+is not a list of things to repeat. Once a fact has been given and the
+conversation has moved to an agreed action, the background stays where it is.
+
+Four exceptions, and they are the whole safety of the rule. State an earlier
+fact again when it answers what the customer has just written, when it makes
+the agreed action clear, when they have asked about it again, or when a CST rule
+requires it. The rule closes by saying it governs what the model SAYS — it keeps
+using all of it to work out what is true and what it may not claim.
+
+`verifiedTrackingBlock` in `lib/ai/draft-assembly.ts` says the same about its
+own data, because the standing relevance rule decides from the customer's
+message alone and on a delivery thread answers "give them the position" every
+time, including after a colleague already did. The new sentence is gated on
+three conditions at once — already given, an action agreed since, not currently
+being asked about — and hands relevance straight back the moment the customer
+asks again or contradicts the record.
+
+**Nothing was removed from the model's input.** The tracking block, the scan
+history and the customer-facing status are supplied exactly as before; the
+block is byte-identical whether the conversation has settled or not. Only the
+instruction reads the thread.
+
+### The instruction now has a measured budget
+
+`tests/ai/draft-validation-cost.test.ts` caps everything this application
+composes at 2,000 estimated tokens — the guard that would catch the ~127,000
+token Gemini corpus going inline. The first draft of this guard was 753 tokens
+and broke it at 2,224.
+
+The ceiling was **not** raised. The block was rewritten to 513 tokens with every
+operative clause kept, and the composed input now measures **1,984.75 tokens**
+— roughly 15 tokens of headroom, recorded in the doc comment beside the block
+so the next addition is a decision rather than a surprise.
+
+| | Tokens |
+| --- | --- |
+| Guard | 2,000 |
+| Composed instruction + input, before this work | ~1,472 |
+| First attempt | 2,224 (failed) |
+| Shipped | **1,984.75** |
+
+### What is model-side and what is enforced
+
+Worth separating, because only half of this is deterministic.
+
+| Rule | How it holds |
+| --- | --- |
+| A prior reply is authoritative | Instruction only |
+| An accepted offer may ground "we are arranging" | **Deterministic** — `acceptedCommitments`, `ungroundedClaims` |
+| "We have dispatched" still blocked | **Deterministic** — unchanged pattern |
+| Do not repeat settled background | Instruction only |
+| A terse reply is not faulted for it | **Deterministic** — coverage vocabulary |
+
+The two no-repeat rules are guidance. Nothing stops a model restating tracking;
+what changed is that the accuracy gate no longer *punishes* the draft that does
+not.
+
 ## Next pending items
 
 - Keep versioned change notes here when the instruction changes in a way worth
   explaining outside a commit message.
+- **The instruction is within ~15 tokens of its cost guard.** The next addition
+  needs an equivalent cut or an explicit, argued decision to raise the ceiling.
+- `restrictedInstructions()` carries no prior-reply and no no-repeat rule. That
+  was deliberate — it is the reduced instruction — but it means a restricted
+  draft states no policy on either.
 - No prompt work is planned for sending, VAT invoices or accounting — none of
   those exist, and none of them belongs in a draft.
 

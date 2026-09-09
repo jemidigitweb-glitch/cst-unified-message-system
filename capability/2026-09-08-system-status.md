@@ -181,8 +181,80 @@ inherited, not a new rule.
 Still cannot send anything to a customer. Nothing here adds a state after
 `reviewed`.
 
+## Added: the AI can now act on what we already told this customer
+
+A draft can carry forward a remedy this team offered and the customer accepted,
+and it no longer repeats what has already been settled.
+
+**What it can do that it could not.** Where a previous reply offered a resend,
+replacement, refund, return or collection and the customer has since accepted
+it, the draft confirms the action and says what happens next. Before this, the
+model treated its own team's offer as an unverified claim and refused it — the
+traced case is a customer told there was no tracking update, offered a resend,
+who replied "Yes please resend asap" and was answered with a refusal.
+
+**What it still cannot do, and this is the boundary that matters.** An
+agreement establishes the DECISION, never the OUTCOME. The draft may say we are
+arranging something. It may **not** say it has been sent, dispatched, posted,
+processed or issued, and may not give a date, a courier or a tracking number,
+unless the verified context establishes it. That restriction is enforced
+deterministically, not by instruction: "we have arranged a replacement" can be
+grounded on the agreement, "we have dispatched a replacement" cannot, agreement
+or no agreement.
+
+**It also stops repeating itself.** Once a fact has been given to the customer
+and the conversation has moved to an agreed action, the draft carries the
+action forward instead of restating the background. It still states it again
+when it answers the latest message, clarifies the agreed action, the customer
+asks again, or a CST rule requires it. Nothing was removed from what the model
+is given — the tracking block, scan history and delivery status reach it
+identically whether the conversation has settled or not.
+
+Still cannot send anything. Nothing here adds a state after `reviewed`.
+
+## Added: what the system knows about a product, measured
+
+Investigated after a pre-sale draft answered *"I'll check the exact weight and
+come back to you"* to a customer asking the weight of a lampshade. The draft
+was correct, and the investigation is recorded here because the capability
+question it answers is not the one the report assumed.
+
+**The system cannot state the weight of any product, because no weight is
+recorded anywhere it can read.** `weight_g` exists on all 1,824 SOT SKUs and is
+unusable on every one — 1,155 `NULL`, 669 `[VERIFY]`, zero real values. The
+same holds for `packaged_weight_g`, `volumetric_weight_kg`, `outer_weight_kg`
+and `chargeable_weight_kg`. `suppliers.child_item_products` holds 119 rows and
+no weights. This is a **data gap, not a capability gap**: no code change
+produces the answer, and the drafting layer behaved exactly as designed by
+declining to invent a number.
+
+**What the system CAN state about a product is better than previously
+recorded.** The figure repeated in these folders — the SOT catalogue resolving
+for 3 of 869 eBay listings — describes only the parent-listing route. Measured
+2026-09-09 across all 31,155 parent listings:
+
+| Route to the SOT catalogue | Listings reached |
+| --- | --- |
+| Parent listing SKU (`resolveSotProductContext`) | 308 (1.0%) |
+| Component decomposition (`order_combo`, used by the bundle resolver) | **19,319 (62%)** |
+
+The parent route is the weak leg: 4,768 parent rows carry the placeholder
+`"sku not assigneds"` and 1,089 carry a combo SKU no catalogue indexes. The
+bundle resolver already reads the component route, which is why the traced
+pre-sale conversation received verified catalogue facts at all.
+
+On that listing (a 7-pattern mosaic shade) the bundle path supplied the 15
+attributes every pattern agrees on — `E27`, `E26 / E27` compatible, Easy Fit,
+Glass, 40mm hole, 42mm ring, max bulb 60W / 80mm / 140mm — and correctly
+withheld `diameter_mm`, `height_mm` and `shade_shape`, because the patterns
+genuinely differ (135/150/160/190mm). The variant-agreement rule works as
+designed.
+
 ## Next pending items
 
+- **Populate `Weight_g` in the SOT sheet.** It is unset for all 1,824 SKUs, so
+  every weight question is unanswerable today. This is a data owner's task, not
+  a code change.
 - Marketplace reply sending — not built, out of Phase 1 scope.
 - Automatic sending.
 - Invoice email sending.

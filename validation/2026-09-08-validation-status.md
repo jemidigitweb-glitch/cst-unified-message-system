@@ -219,8 +219,113 @@ the No Rule and AI Usage tabs are unchanged.
 - The row-value reply comparison has not been observed on a real conversation
   where a reply and a customer message share a second.
 
+## Added: prior CST replies as agreed decisions
+
+```
+npm test   →   Test Files  124 passed | 12 skipped (136)
+               Tests      3406 passed | 30 skipped (3436)
+```
+
+Run 2026-09-09 on the rebased tree, so this includes the 45 body-repair tests
+merged from `167092f`. The 36 new tests are 23 in
+`tests/ai/accepted-commitments.test.ts` and 13 in
+`tests/ai/settled-background.test.ts`. **No existing test or guard was edited**,
+and every standing guard is green — including the no-send guard, which this work
+came nowhere near but which any change to the drafting layer should be seen to
+pass.
+
+`npx tsc --noEmit`: one pre-existing, unrelated error (stale
+`.next/types/validator.ts` invoice route), confirmed pre-existing by stashing.
+`npx eslint`: the same 4 problems as before, none in a touched file.
+
+**One type error was caught only by `tsc`**, and it is worth recording as a
+process note rather than a defect: vitest does not typecheck, so a test fixture
+missing `TrackingSource.provider` passed 13 green tests before `npm run
+typecheck` rejected it. A green vitest run is not evidence that the suite
+compiles.
+
+### What is proven and what is asserted
+
+| Condition | How it is tested |
+| --- | --- |
+| offer/acceptance reading, in order, per sentence | **Behavioural** — the real reader |
+| an agreed remedy raises no critical finding | **Behavioural** — the real validator |
+| it buys no regeneration | **Behavioural** — a fake provider counts `generate` calls |
+| "we have dispatched" still blocked, agreement or not | **Behavioural** |
+| a resend agreement does not ground a refund | **Behavioural** |
+| callers passing no thread are unchanged | **Behavioural** — the `[]` default |
+| tracking is still supplied on a settled thread | **Behavioural** — byte-compared against the re-asked thread |
+| the instruction says what it should | **Structural** — the wording is pinned |
+| the model obeys it | **Not tested** — see below |
+
+**The bound on this work, stated plainly.** Two of the five changes are
+instruction prose. No unit test can show that a model follows an instruction, so
+what is proven is one-sided: the deterministic gate no longer penalises a draft
+that carries an agreed action forward, and no longer penalises one that leaves
+settled background out. Whether the model takes the offer is a question for live
+observation.
+
+### Manual checklist — F. Prior replies and settled background (not yet run)
+
+20. **The originating case.** Find or construct an eBay conversation where a CST
+    reply offered a resend and the customer accepted. Generate a draft. It must
+    confirm the resend and say what happens next — not refuse it, not ask the
+    customer to justify it again, and not ask for something a colleague already
+    said was not needed.
+21. **The outcome boundary.** The same draft must **not** say the item has been
+    sent, dispatched, posted or processed, and must give no date, courier or
+    tracking number, unless the verified context establishes it. This is the one
+    check that matters most; it is the line between the fix and a licence.
+22. **No repetition.** The draft should not restate the tracking position the
+    earlier reply already gave. Expected shape: *"Thank you for confirming. As
+    agreed, we will proceed with the resend for you."*
+23. **The re-ask.** On a conversation where the customer accepts AND asks where
+    the original parcel is, the tracking position must reappear. If it does not,
+    the no-repeat rule has been read too broadly and that is the failure mode to
+    watch for.
+24. **First contact unchanged.** A plain "where is my parcel?" with no prior
+    reply must answer from tracking exactly as it did before.
+25. **No retraction.** Confirm no draft anywhere writes "correction", "to clarify
+    my previous message", "please disregard" or "the previous information was
+    incorrect".
+26. **The reviewer note.** A correct terse confirmation still carries one minor
+    `intent_not_addressed` finding. Confirm reviewers are not misled by it — it
+    is expected, and it changes no text.
+
+### Not yet checked by a person
+
+- **No live draft has been generated against a real accepted-commitment
+  conversation.** Everything above is unit-level. This is the outstanding gap
+  for this change.
+- The under-inclusion risk has not been observed either way: whether the
+  no-repeat rule ever omits something a CST rule required.
+
+## Added: pre-sale SOT product facts — validated by measurement, no code changed
+
+The reported bug — a pre-sale draft declining to state a product's weight — was
+**not reproduced as a defect**, because the behaviour is correct. Validated by
+read-only query rather than by inspection:
+
+| Checked | Result |
+| --- | --- |
+| Does SOT hold a weight for this product? | No — `weight_g` is `[VERIFY]` for the traced SKU |
+| For any product? | No — 0 usable values across all 1,824 SKUs |
+| Anywhere else in the source? | No — `suppliers.child_item_products` holds 119 rows, 0 weights |
+| Did the pipeline reach the product at all? | Yes, via the bundle route — 15 verified attributes supplied |
+| Did the parent-listing route resolve? | No — the parent SKU is the placeholder `"sku not assigneds"` |
+
+**The premise of the report was wrong**, and this is recorded so it is not
+re-investigated: the source database does not contain the weight. No code fix
+produces it. The remaining actions are a data task (populate `Weight_g`) and one
+piece of optional hardening (reject the placeholder SKU), both listed below.
+
 ## Next pending items
 
+- **Run checklist F against a live conversation.** This is the highest-value
+  outstanding check in this document: the accepted-commitment behaviour has
+  never been observed end to end with a real model call.
+- Add a regression test for the placeholder SKU, and one for a `[VERIFY]`
+  attribute producing a deferring draft rather than a stated number.
 - Run checklist D and record the results here.
 - Record a coverage run.
 - Nothing is pending for sending, VAT invoices, invoice email or accounting

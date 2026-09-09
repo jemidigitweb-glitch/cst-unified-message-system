@@ -39,7 +39,9 @@ The invoice work is the most recent closed item.
 - **Decision recorded:** the listing a customer asks about is resolved separately
   from the order they bought (commit `464f8ef`). They answer different questions
   and have very different coverage — a listing title resolves for 869 of 869
-  eBay conversations, the SOT catalogue for 3 of 869.
+  eBay conversations, the SOT catalogue for 3 of 869 *by the parent-listing
+  route*. See the SOT section below: the component route reaches far more, and
+  the bare figure understates what the system can describe.
 
 ### Closed — AI draft
 
@@ -182,6 +184,100 @@ cross-marketplace and independent of the tab.
 6. **The feed is no longer per-marketplace state.** It is not cleared on a tab
    switch and not refetched by the `[marketplace]` effect; it refreshes when a
    draft is generated, so a conversation just answered leaves the badge.
+
+## Added: prior CST replies as agreed decisions — decisions taken
+
+Closed. A draft now carries forward a remedy this team offered and the customer
+accepted, and does not restate background the conversation has moved past.
+Commit `5bc614c`.
+
+**The decisions, and why each went the way it did:**
+
+1. **Agreement establishes the DECISION, never the OUTCOME.** This is the whole
+   safety argument and it is enforced in code, not only in the instruction. The
+   replacement claim pattern in `lib/domain/draft.ts` was **split in two**:
+   "we have arranged a replacement" carries `commitment: "replacement"` and can
+   be grounded on an agreement; "we have dispatched a replacement" carries
+   nothing and is blocked exactly as before. Exactly one pattern carries a
+   commitment. A refund claim is not grounded by a resend agreement.
+2. **The offer must be OURS and the acceptance must come AFTER it.**
+   `acceptedCommitments` reads the turns in order and an acceptance only counts
+   for an offer already seen. A customer asking for a resend unprompted grounds
+   nothing, and neither does a reply that merely NAMES a remedy while declining
+   it — an offer construction has to be present.
+3. **Acceptance is read per sentence, not per message.** "Yes but how long would
+   a resend take?" is a question, not agreement. "Yes please resend asap. How
+   long will it take?" is agreement that also asks. Reading the whole message
+   would have got one of those wrong whichever way it went.
+4. **An unreadable body grounds nothing.** The commitment reader goes through
+   `displayBody`, so an offer whose body did not survive decoding cannot be
+   asserted to have been made.
+5. **Nothing is stored.** No table, no column, no migration, no snapshot. The
+   commitment is re-read from the thread on every draft call, like the category
+   and the intent. A stored decision would drift the moment the offer wording
+   changed, and would need the backfill this avoids.
+6. **The default is the old behaviour.** `ungroundedClaims` and
+   `settleReviewRequirement` both take the commitments list as a parameter
+   defaulting to `[]`, so every existing caller — including
+   `lib/ai/draft-generator.ts`, which is off the live path — is byte-identical
+   and still blocks the promise.
+7. **The classifier was not touched.** `WANTS_A_RESEND` was added **beside**
+   `WANTS_A_REPLACEMENT` and wired only into `detectIntents`, deliberately not
+   merged into it: `WANTS_A_REPLACEMENT` is also read by `refine` for the
+   `exchange_or_replacement` CATEGORY decision, and the classifier is frozen
+   against a compiled baseline. Widening it there would have moved the baseline.
+8. **The cost guard was respected, not raised.** The instruction addition first
+   broke `draft-validation-cost.test.ts` at 2,224 tokens against a 2,000 ceiling.
+   The guard exists to catch the ~127,000 token corpus going inline, so it was
+   left alone and the block was rewritten from 753 to 513 tokens. Composed input
+   now measures 1,984.75.
+9. **The accuracy gate had to change too, and this was not optional.** The
+   correct terse reply raised **two critical** `intent_not_addressed` findings,
+   so the gate would have bought a regeneration telling the model to put the
+   background back. The reply-side coverage vocabulary did not know the word
+   "resend". Widening it can only remove findings, never create them.
+
+**Explicitly not done:** no migration, no write, no stored commitment, no change
+to sync, grouping, threading, message ordering, the classifier's category
+decision, the draft workflow or order context. Nothing was removed from the
+model's input.
+
+**Left open deliberately:** a separate, quantified ordering defect surfaced
+during the investigation and was **not** fixed, because it was outside the
+brief. Outbound eBay messages are timestamped from `receive_date`, which runs a
+mean ~4.4 hours earlier than the unused `response_date`; 23.5% of replies are
+ordered earlier in the thread than they were actually sent. It did not cause
+this bug — the thread reached the model complete and in a consistent order —
+but it is a real finding and it is recorded here rather than lost.
+
+## Added: pre-sale SOT product facts — investigated, nothing closed
+
+A pre-sale draft declined to state a product's weight. **No code change was
+made and none is warranted**; recorded here so the question is not reopened
+from zero.
+
+The finding: **no weight exists to state.** `weight_g` is `NULL` or `[VERIFY]`
+on all 1,824 SOT SKUs, and the same holds for every packaged, volumetric, outer
+and chargeable weight column. The pipeline resolved the listing correctly, the
+bundle path supplied 15 verified attributes, and the model declined to invent
+the one number nobody has recorded. That is the designed behaviour.
+
+**One figure in this document was wrong and is now corrected.** "The SOT
+catalogue for 3 of 869" describes the parent-listing route only. Across all
+31,155 parent listings the parent route reaches 308 (1.0%); the component route
+the bundle resolver already uses reaches **19,319 (62%)**.
+
+**Open, and deliberately not taken unilaterally:** `resolveSotProductContext`
+passes the placeholder SKU `"sku not assigneds"` (4,768 parent rows) to the
+catalogue lookup as though it were a SKU. It misses harmlessly today, so those
+4,768 listings depend on the *absence* of a catalogue row under that literal
+string. Rejecting the placeholder before the lookup is ~3 lines and changes no
+draft. **Not** done: it is hardening, not a fix, and this task was an
+investigation.
+
+**Explicitly rejected:** matching a customer's words to a variation ("style3" →
+"Pattern 03"). It is the guess the resolver's whole design exists to prevent,
+and it would not have produced a weight anyway.
 
 ## Next pending items (explicitly NOT closed)
 

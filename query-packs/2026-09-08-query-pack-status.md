@@ -41,7 +41,9 @@ the codebase resolves an order from an order number.
 Finding: over every eBay conversation CST holds, 867 of 890 item references
 resolve to exactly one listing URL, 23 have none, none is ambiguous. A listing
 title resolves for 869 of 869 and variation options for 867, while the SOT
-catalogue resolves for 3 of 869. This is why listing context exists separately
+catalogue resolves for 3 of 869 **by the parent-listing route only — see Pack H,
+which measures the second route and reaches far more**. This is why listing
+context exists separately
 from catalogue context.
 
 ### Pack E — invoice source discovery (new)
@@ -196,3 +198,58 @@ reading. Most of that is system-notice traffic; some is a body still in flight.
 
 The repair pass's own candidate query, `SELECT_REPAIR_CANDIDATES` in
 `lib/sync/body-repair.ts`, is application SQL and lives beside its function.
+
+## Added: Pack H — SOT product reachability and attribute coverage
+
+**The first pack whose SQL is actually saved.** It lives at
+`sql/sot-product-reachability.sql` — seven read-only statements, each commented
+with the finding it produced. Everything below is answerable by running it.
+
+The pack behind the pre-sale product investigation. It exists because a bug
+report asserted that the catalogue held a product's weight and that the drafting
+layer had failed to use it, and both halves of that needed measuring rather than
+reasoning about.
+
+| Question | Answer found |
+| --- | --- |
+| Does SOT hold a weight for any product? | **No.** `weight_g` has a row for all 1,824 SKUs and **zero usable values** — 1,155 `NULL`, 669 `[VERIFY]`. |
+| Any other weight column? | No. `packaged_weight_g`, `volumetric_weight_kg`, `outer_weight_kg`, `chargeable_weight_kg` — zero usable each. |
+| Anywhere outside SOT? | No. `suppliers.child_item_products`: 119 rows, 0 weights. |
+| How big is the catalogue? | 1,824 SKUs across six tabs — not the 1,001 across three the module docs still state. |
+| How many listings reach SOT by the parent SKU? | 308 of 31,155 (1.0%). |
+| How many reach it through their components? | **19,319 (62%)** — a gain of 19,281. |
+| Why is the parent route so poor? | 4,768 parent rows carry `"sku not assigneds"`; 1,089 carry a combo SKU. The field is listing admin, not a catalogue key — real values include `"Table Lamp"`. |
+| Did the traced listing have a catalogue record? | Yes — its Pattern-03 variant carries **71 usable attributes**, including `diameter_mm: 150` and `bulb_base_type: E27`. Only the weight was missing. |
+| What did the draft actually receive? | The 15 attributes all seven patterns agree on, via the bundle route. `diameter_mm`, `height_mm` and `shade_shape` were correctly withheld — the patterns differ (135/150/160/190mm). |
+
+Used by: `lib/context/resolve-sot-product-context.ts`,
+`lib/context/resolve-bundle-product-context.ts`,
+`lib/repositories/sot-product-repository.ts`.
+
+**Two traps this pack exists to stop the next person falling into.**
+
+1. **Counting rows is not counting values.** `weight_g` has a row for every SKU
+   and no usable value on any of them, so a `count(*)` reports full coverage of
+   a column nobody has ever filled in. Query 1 applies the resolver's own test —
+   not null, not blank, not `[VERIFY]` — and that `FILTER` clause is the point
+   of the query, not decoration.
+2. **`[VERIFY]` must be matched as a substring, never as the whole value.** It
+   appears embedded in otherwise-real text (`"Kitchen, Dining, Hallway
+   [VERIFY]"`), and an equality check would pass those through as facts. The
+   saved queries mirror `statableValue` exactly, so a number measured here means
+   what the application means.
+
+**A caveat for anyone running it by hand:** query 5 joins across ~1.19M order
+lines and ~2.01M combo rows. It completes well inside its 60-second guard, but
+it is not a query to put in a loop.
+
+**Pack D above is corrected by this one.** "The SOT catalogue resolves for 3 of
+869" measures the parent-listing route alone. The component route — which
+`resolveBundleProductContext` already uses in production — reaches 62% of
+listings, and reading the smaller figure as the catalogue's total coverage
+understates what the system can describe by two orders of magnitude.
+
+### Still pending for this pack
+
+- Packs A–F remain described-but-unsaved. Pack H sets the shape for them:
+  read-only, commented with the finding beside the query, no customer data.
