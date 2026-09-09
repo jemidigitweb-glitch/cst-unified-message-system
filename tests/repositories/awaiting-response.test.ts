@@ -248,6 +248,30 @@ describe("a draft does not retire a notification", () => {
     expect(page.items[0]!.hasDraft).toBe(true);
   });
 
+  /**
+   * NO STAGE OF DRAFTING RETIRES A NOTIFICATION, and the point of covering all
+   * three is that each is a plausible place for someone to draw the line later:
+   *
+   *   drafting        a draft is being written
+   *   pending_review  a draft is saved and waiting for a reviewer
+   *   reviewed        a human has read it and marked it done — HERE
+   *
+   * None of them is a reply. `reviewed` is this system's terminal state and
+   * there is no transport after it, so even the last of the three says only
+   * that our side finished, never that the customer heard from us.
+   */
+  it.each(["drafting", "pending_review", "reviewed"])(
+    "keeps a conversation whose draft is in %s",
+    async (state) => {
+      const { page } = await listOrderChange([
+        awaitingRow({ workflow_state: state, has_draft: true }),
+      ]);
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]!.workflowState).toBe(state);
+      expect(page.items[0]!.hasDraft).toBe(true);
+    },
+  );
+
   /** Only a true boolean counts, so a driver returning "t" or 1 cannot mislabel every row. */
   it("reads the draft flag strictly", async () => {
     for (const raw of [false, null, undefined, 0, "f"]) {
@@ -269,6 +293,33 @@ describe("no reply after the customer's newest message", () => {
     expect(sql).toContain(
       "(o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk)",
     );
+  });
+
+  /**
+   * AN OLDER REPLY MUST NOT RETIRE THE NOTIFICATION.
+   *
+   * A thread we answered in June, that the customer wrote to again in August,
+   * is unanswered work — and this is the predicate that decides it. The test is
+   * that the comparison is RELATIVE to the newest inbound message rather than a
+   * bare "has this conversation ever had an outbound", which is the shape a
+   * simplification would collapse it to.
+   *
+   * Structural, because a fake client cannot execute SQL — the same standard the
+   * No Rule queries are held to.
+   */
+  it("does not let an outbound reply OLDER than the newest customer message count", async () => {
+    const { calls } = await listOrderChange([]);
+    const sql = calls[0]!.text;
+
+    // The outbound test is bound to `latest`, the newest inbound row.
+    expect(sql).toMatch(
+      /o\.direction = 'outbound'[\s\S]{0,120}\(o\.source_ts, o\.source_pk::bigint\) > \(latest\.source_ts, latest\.source_pk\)/,
+    );
+    // Strictly after, never "at or after": a reply in the same second is ordered
+    // by the source PK, and `>=` would drop a conversation on a tie.
+    expect(sql).not.toContain(">= (latest.source_ts");
+    // And no unqualified existence test that would ignore the ordering entirely.
+    expect(sql).not.toMatch(/o\.direction = 'outbound'\s*\)/);
   });
 
   it("resolves the newest customer message the way every other view orders", async () => {
