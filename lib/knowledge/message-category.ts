@@ -3096,6 +3096,47 @@ const LISTING_MISMATCH = new RegExp(
 const WANTS_A_REPLACEMENT =
   /\b(?:replac\w*|send\s+(?:me\s+)?(?:a\s+|the\s+)?(?:new|correct|right)|the\s+correct\s+one|the\s+right\s+one|exchang\w*|swap|ersatz\w*|nachliefer\w*|austausch\w*|umtausch\w*)\b/i;
 
+/**
+ * Wants the SAME thing sent again — a resend.
+ *
+ * SEPARATE FROM `WANTS_A_REPLACEMENT` ON PURPOSE, and the separation is the
+ * whole point of this constant rather than an oversight. That pattern is read
+ * twice: once for the intent list, and once by `refine` to decide
+ * `exchange_or_replacement`, which is a CATEGORY decision. Widening it would
+ * move conversations between categories, and the category classifier is frozen
+ * against a compiled baseline. This feeds the INTENT list only, so the draft
+ * layer learns what the customer asked for and nothing a reviewer sees beside a
+ * conversation moves.
+ *
+ * WHY IT WAS NEEDED. A customer answering our own offer — "yes please resend
+ * asap as I really need this soon" — carried NO intent at all: `resend` appears
+ * nowhere in the vocabulary above, so `customerIntents` fell back to the whole
+ * thread, graded the case as a delivery query, and a draft that ignored the
+ * agreed resend passed the accuracy check. See `lib/ai/draft-validation.ts`.
+ *
+ * NARROW BY CONSTRUCTION. Each alternative names the act of sending it AGAIN.
+ * A bare "send it" is deliberately absent — "can you send it to my new address"
+ * is an amendment, not a resend, and a pattern loose enough to catch the one
+ * catches the other.
+ */
+const WANTS_A_RESEND = new RegExp(
+  [
+    // resend, re-send, resent, resending, re-sending
+    "\\bre-?sen[dt]\\w*\\b",
+    // "send it again", "send them out again", "send another one again"
+    "\\bsend(?:ing)?\\s+(?:it|them|this|these|one|another|a\\s+new\\s+one)?\\s*(?:out\\s+)?again\\b",
+    // "send another", "send me another one", "send us another"
+    "\\bsend(?:ing)?\\s+(?:me\\s+|us\\s+)?another\\b",
+    // "post it out again" / "post another"
+    "\\bpost(?:ing)?\\s+(?:it|them|another)\\s+(?:out\\s+)?(?:again)?\\b",
+    // German
+    "\\bnachsend\\w*\\b",
+    "\\berneut\\s+(?:senden|schicken|zusenden|versenden)\\b",
+    "\\bnoch\\s+einmal\\s+(?:senden|schicken|zusenden)\\b",
+  ].join("|"),
+  "i",
+);
+
 /* ------------------------------------------------------------------------- *
  * THE GOODS ARE ALREADY WITH THE CUSTOMER
  *
@@ -3884,7 +3925,10 @@ export function detectIntents(customerText: string | null): MessageIntent[] {
   };
 
   add("wants_refund", wantsMoneyBack(text));
-  add("wants_replacement", WANTS_A_REPLACEMENT.test(text));
+  // A resend is a replacement intent: the customer wants goods sent, not money.
+  // Only the intent list widens — see `WANTS_A_RESEND` for why the category
+  // path deliberately does not.
+  add("wants_replacement", WANTS_A_REPLACEMENT.test(text) || WANTS_A_RESEND.test(text));
   add("wants_order_change", AMENDMENT_REQUEST.test(text) || amendsAnOrderAlreadyPlaced(text));
   add(
     "received_wrong_item",

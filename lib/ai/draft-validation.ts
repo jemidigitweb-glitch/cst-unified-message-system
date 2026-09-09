@@ -1,5 +1,10 @@
 import type { BundleContext } from "@/lib/domain/bundle-context";
-import { type VerifiedFact, ungroundedClaims } from "@/lib/domain/draft";
+import {
+  type CommitmentKind,
+  type VerifiedFact,
+  acceptedCommitments,
+  ungroundedClaims,
+} from "@/lib/domain/draft";
 import { type ConversationMessageView, displayBody } from "@/lib/domain/inbox";
 import {
   carrierHasReportedMovement,
@@ -575,8 +580,25 @@ const INTENT_COVERAGE: Partial<
   },
   wants_replacement: {
     label: "a replacement request",
+    /*
+     * `re-?sen[dt]` IS HERE BECAUSE A REPLY THAT SAYS IT WAS BEING FAILED.
+     *
+     * "As agreed, we will proceed with the resend for you" addresses a
+     * replacement request completely, and this pattern did not match it: the
+     * leading `\b` means the `send…` alternative cannot fire inside "resend",
+     * and nothing else named the word. Measured on the settled-resend thread,
+     * that produced a CRITICAL `intent_not_addressed` — which buys a
+     * regeneration and instructs the model to add back the very sentence
+     * `PRIOR_REPLIES` had just told it to leave out.
+     *
+     * COVERAGE ONLY WIDENS. This vocabulary decides whether a reply is ABOUT
+     * the right subject, so an addition can only remove a finding, never create
+     * one. It is the reply-side mirror of `WANTS_A_RESEND` in
+     * `lib/knowledge/message-category.ts`, which does the same job for what the
+     * customer wrote.
+     */
     topic:
-      /\b(?:replac\w*|send\s+(?:you\s+)?(?:a\s+|an\s+|another|out)|new\s+one|exchange|ersatz\w*|austausch\w*|nachsend\w*)\b/i,
+      /\b(?:replac\w*|re-?sen[dt]\w*|send\s+(?:you\s+)?(?:a\s+|an\s+|another|out)|send\s+(?:it|them|one)\s+(?:out\s+)?again|new\s+one|exchange|ersatz\w*|austausch\w*|nachsend\w*)\b/i,
     rule: "Replacement requests: address the replacement",
   },
   wants_order_change: {
@@ -652,6 +674,32 @@ function newestCustomerText(messages: readonly ConversationMessageView[]): strin
     if (body.available) return body.text;
   }
   return null;
+}
+
+/**
+ * The remedies already agreed with this customer, read from the thread.
+ *
+ * THE ONE PLACE THE THREAD IS TURNED INTO COMMITMENTS, so the accuracy gate and
+ * the stored `missing_information` cannot reach different conclusions about the
+ * same conversation — `validateDraft` in `draft-assembly.ts` calls this too.
+ *
+ * READABILITY IS DECIDED HERE, by `displayBody`, exactly as every other reader
+ * in the application decides it. An offer in a message whose body did not
+ * survive is not an offer we can show anybody, so it is passed as null and
+ * grounds nothing.
+ */
+export function threadCommitments(
+  messages: readonly ConversationMessageView[],
+): CommitmentKind[] {
+  return acceptedCommitments(
+    messages.map((message) => {
+      const body = displayBody(message);
+      return {
+        direction: message.direction === "inbound" ? ("inbound" as const) : ("outbound" as const),
+        text: body.available ? body.text : null,
+      };
+    }),
+  );
 }
 
 /** Every inbound message, oldest first — the fallback when the newest carries no intent. */
@@ -1552,7 +1600,16 @@ function hallucinationCheck(draft: DraftUnderReview): DraftFinding[] {
 
   // The existing scan, reported through the same channel so a reviewer reads
   // one list rather than two that overlap.
-  for (const claim of ungroundedClaims(draft.reply, draft.facts)) {
+  //
+  // The thread travels with it: a remedy a colleague offered and this customer
+  // accepted is a decision this team has already taken, and a draft carrying it
+  // out is not making a commitment of its own. Only a pattern that names a
+  // commitment kind can use it — every completion claim is unaffected.
+  for (const claim of ungroundedClaims(
+    draft.reply,
+    draft.facts,
+    threadCommitments(draft.messages),
+  )) {
     findings.push({
       issue: "unsupported_claim",
       // Always critical: an invented refund, replacement or dispatch is the

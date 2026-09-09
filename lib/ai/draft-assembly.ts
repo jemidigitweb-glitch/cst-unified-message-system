@@ -20,7 +20,7 @@ import { normaliseRef } from "@/lib/knowledge/rule-evidence";
 import { CARRIER_LABELS } from "@/lib/tracking/carrier";
 import { TRACKING_STATUS_LABELS, type TrackingResult } from "@/lib/tracking/provider";
 
-import { correctionBlock, dispatchState } from "./draft-validation";
+import { correctionBlock, dispatchState, threadCommitments } from "./draft-validation";
 import { DraftGenerationUnavailable, type DraftRequest } from "./provider";
 
 /**
@@ -741,6 +741,26 @@ export function verifiedTrackingBlock(
      */
     "VERIFIED SHIPMENT TRACKING INFORMATION IS AUTHORITATIVE. Use it before requesting information from the customer. Never ask them for the latest tracking update, the current parcel status, or the tracking history — all of it is above.",
     "IT IS EVIDENCE, NOT SOMETHING YOU MUST REPEAT. Before putting any of it in the reply, ask yourself: does this customer need delivery or shipment information to have THEIR message answered? If yes — they are asking where the parcel is, whether it arrived, when it will come, about a delay, a delivery attempt, a redelivery or a collection — then give them the customer-facing delivery status above and what it means for them. If no — they are asking about a missing part, a refund amount, a replacement decision, a wrong or damaged item, or the product itself — then use the tracking silently, to check your assumptions and to avoid contradicting the record, and do not narrate it. Answer the question they actually asked.",
+    /*
+     * THE SAME TEST, APPLIED TO A THREAD THAT HAS ALREADY MOVED ON.
+     *
+     * The rule above decides relevance from the customer's message alone, and on
+     * a delivery thread that reads as "yes" every time — including after a
+     * colleague has already given them the position and they have accepted a
+     * resend on the strength of it. Measured on the reported exchange, the draft
+     * confirmed the resend and then added "the original parcel was last recorded
+     * as in transit on 26 August", which is us repeating our own previous
+     * message back to the person who was answering it.
+     *
+     * NARROW, AND IT SUPPRESSES NOTHING. Three conditions have to hold at once —
+     * already given, an action agreed since, and no fresh question about it —
+     * and the moment they ask again the sentence above applies unchanged. The
+     * block, the scan history and the customer-facing status are all still here;
+     * this decides only whether to say it a second time. See `PRIOR_REPLIES` in
+     * `lib/ai/instructions.ts`, which states the general form of this for every
+     * kind of background, not just tracking.
+     */
+    "ALREADY TOLD IS NOT UNTOLD. If an earlier reply has already given this customer the delivery position and the conversation has since moved to an action we agreed with them, do not state it again: carry the action forward and leave the tracking as reasoning. This applies only while they are not asking about it — a new question about where the parcel is, or a conflict with what they describe, makes it relevant again and the rules above apply as written.",
     "USE ONLY THIS VERIFIED TRACKING INFORMATION. Do not guess the delivery status, do not estimate when it will arrive, and do not describe any movement not listed above. If the status is unknown, say that we are checking with the carrier — do not fill the gap.",
     /*
      * The one case where raising it unprompted IS right. Without this, the
@@ -864,7 +884,10 @@ export function validateDraft(
     });
 
   const result: DraftResult = { ...validated.data, sources_used: sources };
-  const settled = settleReviewRequirement(result, request.facts);
+  // Same reading of the thread the accuracy gate makes, from the same function,
+  // so a draft carrying out an agreed remedy is not reported to the reviewer as
+  // an unsupported claim by one layer and accepted by the other.
+  const settled = settleReviewRequirement(result, request.facts, threadCommitments(request.messages));
 
   return {
     result,
