@@ -13,6 +13,48 @@ NNNN_<description>.down.sql   reverses it
 | `0001_cst_core_schema` | Core schema: users, conversations, messages, sync state, verified context, audit | Applied |
 | `0002_unresolved_marketplace_messages` | Storage for source messages whose direction, identity and grouping are unverified | **Written, NOT executed — awaiting review** |
 | `0005_cst_knowledge_base` | CST rule corpus: sources and sign-off, categories, rules, examples, triggers | **Written, NOT executed — awaiting review** |
+| `0011_post_dispatch_automation` | Post-dispatch automation: templates, settings, records | Applied 2026-09-21 |
+
+## Why `0011` exists
+
+A dispatched shipment is scheduled, rechecked when it comes due, and processed
+against a saved message template. It is deterministic: no model runs, no corpus
+is retrieved, and nothing is drafted or reviewed.
+
+**There is no transport in this phase, and the schema is where that is
+enforced.** `automation_items.test_mode` is `NOT NULL` with no default, and
+`ck_automation_items_sent_requires_test_mode` permits `status = 'sent'` only
+while it is true. Every processed row therefore states, as a stored fact rather
+than as a convention, that it was processed locally and that no message left the
+system. Building a real transport has to start by deliberately changing that
+constraint; it cannot be forgotten.
+
+`sent` is the lifecycle word this automation was specified with — the full set is
+`scheduled`, `sent`, `skipped`, `failed`, `cancelled`. A private synonym was
+considered and rejected: it would put a translation step in every screen, query
+and report. The honesty is carried by `test_mode` and `processed_mode`, which
+travel with the row, and by the interface, which labels the status
+"Processed (test)" for a test-mode row, reserving "Sent" for a row a real
+transport accepted — a branch nothing can reach while the CHECK above stands.
+`tests/guards/no-send-capability.test.ts`
+and `tests/guards/draft-workflow.test.ts` each carry a narrow, documented
+exemption for this one word in these files, and
+`tests/guards/automation-no-transport.test.ts` is the price of it: no marketplace
+or mail host, no credential, no outbound URL at all, no `fetch`.
+
+`automation_settings.not_before` is seeded NULL **on purpose**. The source holds
+600,914 dispatched shipments with a recorded dispatch time, every one older than
+`dispatched_at + 24h` and therefore immediately due. Without a floor the first
+scan would queue every order this business has ever shipped, so the scan refuses
+to run until an operator sets one.
+
+This migration holds no drafts, no revisions and no citations. **The CST
+conversation draft workflow (0004, 0005) is untouched** and continues to serve
+customer replies; nothing in 0011 reads or writes any of its tables.
+
+Source ids (`source_order_id`, `source_shipment_id`, `sub_source_id`) are plain
+columns with no foreign key, like the `management_user_id` link: they point into
+a different, read-only database this schema must not couple itself to.
 
 ## Why `0005` exists
 

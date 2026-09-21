@@ -15,6 +15,7 @@ import {
   readStateOf,
 } from "@/lib/domain/inbox";
 import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
+import { ALL_CATEGORIES, ALL_PRIORITIES, visibleConversations } from "@/components/inbox-list";
 
 function view(overrides: Partial<ConversationMessageView> = {}): ConversationMessageView {
   return {
@@ -234,5 +235,52 @@ describe("the inbox item's priority field", () => {
   it("parses an item back exactly as it was given", () => {
     const before = item({ priority: "HIGH", category: "Delivery queries" });
     expect(inboxItemSchema.parse(before)).toEqual(before);
+  });
+});
+
+describe("the open conversation is never filtered out of the list", () => {
+  /**
+   * A conversation opened from the notification panel or a customer note has
+   * no reason to satisfy the list's filters — the read filter defaults to
+   * Unread and an answered thread is Read. Without the exemption the list
+   * showed everything except the thread being looked at.
+   *
+   * Synthetic rows only; no real conversation appears here.
+   */
+  const answered = {
+    ...item({ id: "900" }),
+    lastDirection: "outbound" as const,
+    category: "Admin related issues" as const,
+    priority: null,
+  };
+  const filters = {
+    readFilter: "unread" as const,
+    categoryFilter: ALL_CATEGORIES,
+    priorityFilter: ALL_PRIORITIES,
+  };
+
+  it("hides an answered conversation when it is not the selected one", () => {
+    expect(visibleConversations([answered], filters)).toEqual([]);
+    expect(visibleConversations([answered], { ...filters, selectedId: "other" })).toEqual([]);
+  });
+
+  it("keeps it when it is the one open", () => {
+    expect(visibleConversations([answered], { ...filters, selectedId: "900" })).toHaveLength(1);
+  });
+
+  it("exempts it from the category and priority filters too", () => {
+    const narrowed = {
+      ...filters,
+      categoryFilter: "Delivery queries" as const,
+      priorityFilter: "HIGH" as const,
+      selectedId: "900",
+    };
+    expect(visibleConversations([answered], narrowed)).toHaveLength(1);
+  });
+
+  it("exempts exactly one row and no other", () => {
+    const another = { ...answered, id: "901" };
+    const visible = visibleConversations([answered, another], { ...filters, selectedId: "900" });
+    expect(visible.map((row) => row.id)).toEqual(["900"]);
   });
 });

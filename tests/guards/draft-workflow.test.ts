@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { extname, join } from "node:path";
+import { extname, join, sep } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -55,6 +55,43 @@ describe("the workflow terminates at reviewed", () => {
   });
 });
 
+/**
+ * The post-dispatch automation is a DIFFERENT FEATURE, and is exempt from two
+ * of the checks below.
+ *
+ * It has its own five-value lifecycle — scheduled, sent, skipped, failed,
+ * cancelled — in which `sent` means "processed successfully"; and its screens
+ * and schema say, in words, that nothing is transmitted. A guard that forbade
+ * the word would forbid the denial along with the claim.
+ *
+ * NOTHING IS LOST. `tests/guards/automation-no-transport.test.ts` checks those
+ * files far harder than this one does: no marketplace, mail or model host, no
+ * credential, no outbound URL at all, no `fetch`, and no import from the CST
+ * draft layer. And 0011 constrains `sent` to test-mode rows, so the word cannot
+ * become a claim about a customer without that constraint being removed.
+ *
+ * This guard continues to protect the CST conversation draft workflow, which is
+ * what it was written for and which this exemption does not touch.
+ */
+function isPostDispatchAutomation(file: string): boolean {
+  const relative = file.replace(ROOT + sep, "").replace(/\\/g, "/");
+  return (
+    relative.startsWith("lib/domain/automation/") ||
+    relative === "lib/repositories/automation-repository.ts" ||
+    relative === "lib/repositories/dispatch-event-repository.ts" ||
+    relative.startsWith("app/api/automations/") ||
+    relative === "app/api/cron/automation/route.ts" ||
+    relative.startsWith("app/automations/") ||
+    relative === "components/automation-admin.tsx" ||
+    relative === "components/automation-status-badge.tsx" ||
+    relative === "migrations/0011_post_dispatch_automation.up.sql" ||
+    relative === "migrations/0011_post_dispatch_automation.down.sql"
+  );
+}
+
+/** The one pattern the automation files are exempt from. Named, not inlined. */
+const TRANSMIT_PATTERN = /\btransmit\w*\b/i;
+
 describe("no send capability anywhere in the draft feature", () => {
   it("declares no post-review state, in code or in SQL", () => {
     const offenders: string[] = [];
@@ -70,6 +107,8 @@ describe("no send capability anywhere in the draft feature", () => {
         // literal in this one file — every other state stays forbidden here, and
         // `'approved'` stays forbidden everywhere else.
         if (state === "'approved'" && file.endsWith("0005_cst_knowledge_base.up.sql")) continue;
+        // The post-dispatch automation owns `sent` as a lifecycle word. See above.
+        if ((state === "'sent'" || state === '"sent"') && isPostDispatchAutomation(file)) continue;
         if (code.includes(state)) offenders.push(`${file} :: ${state}`);
       }
     }
@@ -113,6 +152,10 @@ describe("no send capability anywhere in the draft feature", () => {
         .replace(/--[^\n]*/g, " ")
         .replace(/\/\/.*$/gm, " ");
       for (const pattern of forbidden) {
+        // These files say "nothing is transmitted" in prose the strip above
+        // does not reach — JSX text and SQL string literals. A denial is the
+        // opposite of the capability this looks for. See above.
+        if (isPostDispatchAutomation(file) && pattern.source === TRANSMIT_PATTERN.source) continue;
         if (pattern.test(code)) offenders.push(`${file} :: ${pattern}`);
       }
     }
