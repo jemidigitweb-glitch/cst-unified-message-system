@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import type {
@@ -9,6 +10,12 @@ import type {
   NoRuleConversationItem,
   ReadState,
 } from "@/lib/domain/inbox";
+import {
+  DEFAULT_CUSTOMER_NOTE_CHANNEL,
+  type CustomerNote,
+  type CustomerNoteChannelFilter,
+  type CustomerNoteFeed,
+} from "@/lib/domain/customer-note";
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import type { UnresolvedFeed } from "@/lib/domain/unresolved-messages";
@@ -17,8 +24,9 @@ import { ContextPanel, SECTION_HEADING_CLASS } from "./context-panel";
 import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
+import { CustomerNotesButton } from "./customer-notes-button";
 import { NotificationBell } from "./notification-bell";
-import { NotificationDrawer } from "./notification-drawer";
+import { NotificationDrawer, type NotificationPanelMode } from "./notification-drawer";
 import {
   ALL_CATEGORIES,
   ALL_PRIORITIES,
@@ -41,6 +49,21 @@ import { UsagePanel } from "./usage-panel";
  * and share the same drawer/column mechanics; only this one default differs.
  */
 const MOBILE_DETAILS_BREAKPOINT = 640;
+
+/**
+ * What `/api/customer-notes/[noteId]` answers with.
+ *
+ * `resolved: false` is a NORMAL answer carrying a reason, not an error — the
+ * route returns 200 for it, because "no conversation has been matched to this
+ * order yet" is a fact about the data rather than a failed request.
+ */
+type NoteResolutionPayload = {
+  readonly resolved?: boolean;
+  readonly message?: string;
+  readonly conversationId?: string;
+  readonly marketplace?: Marketplace;
+  readonly error?: string;
+};
 
 /**
  * CST workspace: marketplace tabs above a shared layout.
@@ -158,6 +181,62 @@ export function Workspace() {
    * one already-fetched list is the entire mechanism.
    */
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  /**
+   * WHICH LIST THE ONE PANEL IS SHOWING.
+   *
+   * There is exactly one drawer, one backdrop and one open flag; this says what
+   * is inside it. A second panel for notes would have to re-decide the width,
+   * the header, the scroll area and the dismissal behaviour, and would then
+   * drift from the one that already exists.
+   *
+   * The mode is NOT reset on close. Reopening the panel where a reviewer left
+   * it is what they expect; the two buttons each force their own mode anyway,
+   * so a stale mode is never reachable by accident.
+   */
+  const [notificationPanelMode, setNotificationPanelMode] = useState<NotificationPanelMode>(
+    "notifications",
+  );
+  /**
+   * Buyer notes on orders — `note_type = 'buyer'` at the source, never `team`.
+   *
+   * FETCHED WHEN THE NOTES LIST IS FIRST OPENED, not up front. Unlike the bell's
+   * count, nothing about notes appears on screen until somebody asks for them —
+   * there is no badge and no queue — so loading them on every page view would be
+   * a source query nobody reads.
+   *
+   * PURELY OBSERVED, like the notification feed beside it: no read, dismissed or
+   * acknowledged state exists anywhere in this feature, and nothing here writes.
+   */
+  const [customerNotes, setCustomerNotes] = useState<CustomerNoteFeed | null>(null);
+  const [customerNotesError, setCustomerNotesError] = useState<string | null>(null);
+  /**
+   * Why individual notes would not open, keyed by note id.
+   *
+   * Per note, because a refusal belongs beside the row that caused it. Cleared
+   * for a note when it is clicked again, so a retry after the order matching
+   * has moved on does not show yesterday's reason.
+   */
+  const [noteFailures, setNoteFailures] = useState<Record<string, string>>({});
+  /**
+   * Which marketplace's notes are on screen.
+   *
+   * Opens on eBay, which is what the rest of this workspace opens on. There
+   * is deliberately no "all" tab: a mixed list asks the reader to check each
+   * row's marketplace before they can act on it, which is the work the tabs
+   * exist to remove.
+   */
+  const [noteChannel, setNoteChannel] = useState<CustomerNoteChannelFilter>(
+    DEFAULT_CUSTOMER_NOTE_CHANNEL,
+  );
+  /**
+   * The note a conversation was opened from, if any.
+   *
+   * Shown as separate context above the thread — never as a chat bubble, which
+   * is this application's shape for a message someone actually sent. Cleared
+   * whenever the conversation changes or closes, so a note can never appear
+   * over a thread it has nothing to do with.
+   */
+  const [activeNote, setActiveNote] = useState<CustomerNote | null>(null);
   /**
    * Which top-level view is on screen.
    *
@@ -336,6 +415,39 @@ export function Workspace() {
     };
   }, [draftGeneration]);
 
+  /**
+   * The buyer notes, fetched UP FRONT like the bell's count.
+   *
+   * They were loaded lazily on first open until the note button gained a badge.
+   * A badge has to be on screen before anyone clicks, which is the whole point
+   * of it — so the list is fetched once on mount, exactly as the notification
+   * feed beside it is.
+   *
+   * ONCE, and not on `draftGeneration`. A note is written by a customer on the
+   * order; nothing this workspace does adds, removes or answers one, so there
+   * is no event here worth re-reading the source for.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/customer-notes");
+        if (!response.ok) throw new Error("request failed");
+        const data = (await response.json()) as CustomerNoteFeed;
+        if (!cancelled) {
+          setCustomerNotes(data);
+          setCustomerNotesError(null);
+        }
+      } catch {
+        if (!cancelled) setCustomerNotesError("Unable to load customer notes.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const switchMarketplace = useCallback((next: Marketplace) => {
     setMarketplace(next);
     // Never carry data or a selection across marketplaces. Cleared here in the
@@ -427,6 +539,8 @@ export function Workspace() {
    */
   const clearSelection = useCallback(() => {
     setSelectedId(null);
+    // A note belongs to exactly one conversation; nothing is selected now.
+    setActiveNote(null);
     setSelectedKind(null);
     setDetail(null);
     setDetailError(null);
@@ -441,6 +555,8 @@ export function Workspace() {
    */
   const selectMessage = useCallback((id: string) => {
     setSelectedId(id);
+    // An unresolved message is not a conversation, so no note applies to it.
+    setActiveNote(null);
     setSelectedKind("message");
     // An unresolved message has no thread to expand, so any conversation
     // detail still on screen belongs to a different selection entirely.
@@ -471,6 +587,10 @@ export function Workspace() {
   const select = useCallback(
     async (id: string, from: Marketplace = marketplace) => {
       setSelectedId(id);
+      // Opened by an ordinary path, so no note context applies. The note
+      // handler re-sets it after this resolves, which is the only way a note
+      // ever appears over a thread.
+      setActiveNote(null);
       setSelectedKind("conversation");
       setDetail(null);
       setDetailError(null);
@@ -498,6 +618,139 @@ export function Workspace() {
       }
     },
     [marketplace],
+  );
+
+  /**
+   * PUTS THE OPEN CONVERSATION INTO THE LEFT-HAND LIST when it is not already
+   * there.
+   *
+   * A conversation opened from the notification panel or from a customer note
+   * is very often not on the loaded page — the eBay inbox alone runs to 1,804
+   * conversations and the list holds 100 at a time — so the pane on the right
+   * showed a thread while the list on the left had no row for it at all.
+   *
+   * `detail.conversation` IS an `InboxItem` (see `conversationDetailSchema`),
+   * so nothing is fabricated here: the row is the same shape, from the same
+   * endpoint, as every other row in the list. Paired with the selected-row
+   * exemption in `visibleConversations`, the open conversation is always
+   * visible and highlighted wherever it was opened from.
+   *
+   * IDENTITY-PRESERVING, which is what makes it safe to depend on `inbox`.
+   * When the row is already present the same array reference is returned,
+   * React bails out, and the effect cannot loop.
+   */
+  useEffect(() => {
+    if (detail === null) return;
+    const item = detail.conversation;
+    // Only into the list it belongs to. A tab switch fires this again once
+    // that marketplace's own inbox has loaded.
+    if (item.marketplace !== marketplace) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- merges the open conversation into the loaded list; returns the same reference when already present
+    setInbox((current) => {
+      if (current === null) return current;
+      return current.some((row) => row.id === item.id) ? current : [item, ...current];
+    });
+  }, [detail, marketplace, inbox]);
+
+  /**
+   * Loads the buyer notes once, when the notes list is first asked for.
+   *
+   * Re-requested on a later open only if the previous attempt failed — a
+   * reviewer who hits an error and reopens the panel expects another go, and a
+   * successful list is not worth re-fetching every time the panel is toggled.
+   */
+  const loadCustomerNotes = useCallback(async () => {
+    if (customerNotes !== null) return;
+    setCustomerNotesError(null);
+    try {
+      const response = await fetch("/api/customer-notes");
+      if (!response.ok) throw new Error("request failed");
+      setCustomerNotes((await response.json()) as CustomerNoteFeed);
+    } catch {
+      setCustomerNotesError("Unable to load customer notes.");
+    }
+  }, [customerNotes]);
+
+  /**
+   * The bell: the notification list, in the shared panel.
+   *
+   * Open in notifications mode when closed; SWITCH to notifications when the
+   * notes list is showing; toggle closed when it is already showing
+   * notifications. The last of those is the behaviour the bell has always had
+   * and it is unchanged.
+   */
+  const toggleNotifications = useCallback(() => {
+    if (notificationsOpen && notificationPanelMode === "notes") {
+      setNotificationPanelMode("notifications");
+      return;
+    }
+    setNotificationPanelMode("notifications");
+    setNotificationsOpen((isOpen) => !isOpen);
+  }, [notificationsOpen, notificationPanelMode]);
+
+  /** The note button: the same panel, the other list, the mirrored behaviour. */
+  const toggleCustomerNotes = useCallback(() => {
+    if (notificationsOpen && notificationPanelMode === "notifications") {
+      setNotificationPanelMode("notes");
+      void loadCustomerNotes();
+      return;
+    }
+    setNotificationPanelMode("notes");
+    setNotificationsOpen((isOpen) => {
+      if (!isOpen) void loadCustomerNotes();
+      return !isOpen;
+    });
+  }, [notificationsOpen, notificationPanelMode, loadCustomerNotes]);
+
+  /**
+   * Opens the conversation a note belongs to — or explains why it cannot.
+   *
+   * THE RESOLUTION IS THE SERVER'S. This sends a note id and does as it is
+   * told; it never picks a conversation, and the note text never travels in a
+   * URL. A refusal leaves the panel open, writes the reason beside that row,
+   * and navigates nowhere — "never guess another conversation" is the whole
+   * rule, and today `unlinked` is the ordinary answer because only a fraction
+   * of orders have been matched to a conversation at all.
+   */
+  const openCustomerNote = useCallback(
+    async (noteId: string) => {
+      // A retry should not show the previous attempt's reason while it runs.
+      setNoteFailures((was) => {
+        const next = { ...was };
+        delete next[noteId];
+        return next;
+      });
+
+      let payload: NoteResolutionPayload | null = null;
+      try {
+        const response = await fetch(`/api/customer-notes/${noteId}`);
+        payload = (await response.json().catch(() => null)) as NoteResolutionPayload | null;
+        if (!response.ok) throw new Error(payload?.error ?? "request failed");
+      } catch {
+        setNoteFailures((was) => ({ ...was, [noteId]: "Unable to open this note just now." }));
+        return;
+      }
+
+      if (payload?.resolved !== true || payload.conversationId === undefined) {
+        setNoteFailures((was) => ({
+          ...was,
+          [noteId]: payload?.message ?? "This note could not be matched to a conversation.",
+        }));
+        return;
+      }
+
+      const note = customerNotes?.notes.find((candidate) => candidate.id === noteId) ?? null;
+      const from = payload.marketplace ?? marketplace;
+      // The same crossing the notification drawer already does: switch the tab
+      // the conversation lives in, then open it by the one existing path.
+      if (from !== marketplace) switchMarketplace(from);
+      setNotificationsOpen(false);
+      await select(payload.conversationId, from);
+      // AFTER the open: `select` clears the note, because every other way of
+      // opening a conversation should show no note at all.
+      setActiveNote(note);
+    },
+    [customerNotes, marketplace, switchMarketplace, select],
   );
 
   return (
@@ -528,11 +781,26 @@ export function Workspace() {
             * `count` is null until the fetch lands, so the badge cannot claim
             * an empty queue before anything has been read. See NotificationBell.
             */}
-          <NotificationBell
-            count={orderChange === null ? null : orderChange.conversations.length}
-            open={notificationsOpen}
-            onToggle={() => setNotificationsOpen((isOpen) => !isOpen)}
-          />
+          {/*
+            * TWO CONTROLS, ONE PANEL. They sit together because they open the
+            * same drawer and differ only in what is inside it — putting the
+            * note button anywhere else would imply a second panel.
+            *
+            * `open` on each is the panel being open AND showing that button's
+            * own list, so exactly one of the two ever looks active.
+            */}
+          <div className="flex shrink-0 items-center gap-2">
+            <NotificationBell
+              count={orderChange === null ? null : orderChange.conversations.length}
+              open={notificationsOpen && notificationPanelMode === "notifications"}
+              onToggle={toggleNotifications}
+            />
+            <CustomerNotesButton
+              count={customerNotes === null ? null : customerNotes.notes.length}
+              open={notificationsOpen && notificationPanelMode === "notes"}
+              onToggle={toggleCustomerNotes}
+            />
+          </div>
         </div>
         <div className="flex items-end justify-between gap-3 pr-5">
           {/* min-w-0 lets this shrink below the tab bar's natural width on a
@@ -679,6 +947,23 @@ export function Workspace() {
             >
               AI Usage
             </button>
+            {/*
+             * A LINK, NOT A TAB, and it is styled to sit in the row without
+             * pretending to be one.
+             *
+             * The tabs beside it change what this page shows; post-dispatch
+             * automation is a separate screen with its own settings and its own
+             * records, and it is not part of the inbox. Rendering it as a tab
+             * would promise that clicking it swaps a panel in here — and then
+             * navigate away, which is the one thing a tab must not do.
+             */}
+            <Link
+              href="/automations"
+              title="Post-dispatch automation: scheduled records and settings. Opens its own page."
+              className={`-mb-px shrink-0 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-sm opacity-70 transition-colors hover:border-black/20 hover:opacity-100 dark:hover:border-white/25 ${SECTION_HEADING_CLASS}`}
+            >
+              Dispatch Automation
+            </Link>
           </div>
         </div>
       </header>
@@ -700,8 +985,17 @@ export function Workspace() {
         * were and know nothing about this.
         */}
       <NotificationDrawer
+        mode={notificationPanelMode}
         feed={orderChange}
         error={orderChangeError}
+        notes={customerNotes}
+        notesError={customerNotesError}
+        noteChannel={noteChannel}
+        onSelectNoteChannel={setNoteChannel}
+        noteFailures={noteFailures}
+        onSelectNote={(noteId) => {
+          void openCustomerNote(noteId);
+        }}
         open={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
         onSelect={(id, from) => {
@@ -907,6 +1201,9 @@ export function Workspace() {
                  travel down this branch too: the panel that SETS it is in the
                  aside, and the panel that SENDS it is inside this view. */
               selectedOrderNumber={selectedOrderNumber}
+              /* Set only when this conversation was opened from a customer
+                 note, and cleared by every other way of opening one. */
+              note={activeNote}
             />
           )}
         </main>

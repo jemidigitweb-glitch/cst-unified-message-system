@@ -44,3 +44,27 @@ export function PanelIcon() {
     </svg>
   );
 }
+
+/**
+ * A note with a folded corner, for "a customer wrote something on the order".
+ *
+ * Deliberately NOT a speech bubble: a bubble is this application's shape for a
+ * message in a thread, and a customer note is not one — it is attached to the
+ * order and never appears in the conversation as a bubble. Same 16px box and
+ * 1.5 stroke as the bell it sits beside, so the two read as one class of
+ * control rather than as a control and a decoration.
+ */
+export function NoteIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M9.25 1.75H4.5a1.75 1.75 0 0 0-1.75 1.75v9a1.75 1.75 0 0 0 1.75 1.75h7a1.75 1.75 0 0 0 1.75-1.75V6.25L9.25 1.75Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path d="M9 2v4.25h4.25" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M5.75 9.25h4.5M5.75 11.5h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}

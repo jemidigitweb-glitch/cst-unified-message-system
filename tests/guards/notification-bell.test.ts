@@ -201,7 +201,14 @@ describe("the drawer opens, closes and shows the required fields", () => {
   });
 
   it("shows the requested notification title", () => {
-    expect(drawer).toContain("{ORDER_CHANGE_NOTIFICATION_TITLE}");
+    // The panel now carries two contents and so two titles. What this always
+    // protected is that the notification title comes from the shared constant
+    // rather than a literal typed into the markup — that still holds, and the
+    // notes title comes from its own constant the same way.
+    expect(drawer).toMatch(
+      /showingNotes\s*\?\s*CUSTOMER_NOTES_TITLE\s*:\s*ORDER_CHANGE_NOTIFICATION_TITLE/,
+    );
+    expect(drawer).toContain("{title}");
     expect(ORDER_CHANGE_NOTIFICATION_TITLE).toBe("Order Change Before Shipping Queries");
   });
 

@@ -1,6 +1,15 @@
 "use client";
 
 import {
+  CUSTOMER_NOTES_EMPTY,
+  CUSTOMER_NOTES_TITLE,
+  CUSTOMER_NOTE_TAB_LABEL,
+  type CustomerNoteChannelFilter,
+  type CustomerNoteFeed,
+  customerNoteChannelTabs,
+  customerNotesForChannel,
+} from "@/lib/domain/customer-note";
+import {
   type AwaitingResponseFeed,
   ORDER_CHANGE_NOTIFICATION_TITLE,
   conversationTitle,
@@ -77,15 +86,192 @@ function draftStatus(item: {
  * Dismissed by the backdrop or the Close button, the same two ways the list
  * drawer and the details panel are already dismissed.
  */
+/**
+ * The customer-note rows, in the panel's own loading / empty / error shapes.
+ *
+ * THE SAME FOUR STATES AS THE NOTIFICATION LIST, in the same order and with the
+ * same classes: error, then not-yet-loaded, then empty, then rows. `null` is
+ * "not known yet" and is not an empty list — the same distinction the bell's
+ * count makes, for the same reason.
+ *
+ * A NOTE THAT WOULD NOT OPEN SAYS SO UNDER ITSELF. It stays on the list, the
+ * panel stays open, and nothing navigates. The reason is a sentence handed in
+ * by the workspace, never a code.
+ */
+function CustomerNoteList({
+  notes,
+  error,
+  failures,
+  channel,
+  onSelectChannel,
+  onSelectNote,
+}: {
+  notes: CustomerNoteFeed | null;
+  error: string | null;
+  failures: Readonly<Record<string, string>>;
+  channel: CustomerNoteChannelFilter;
+  onSelectChannel: (channel: CustomerNoteChannelFilter) => void;
+  onSelectNote: (noteId: string) => void;
+}) {
+  if (error !== null) return <p className="p-5 text-sm opacity-70">{error}</p>;
+  if (notes === null) return <p className="p-5 text-sm opacity-60">Loading…</p>;
+  if (notes.notes.length === 0) {
+    return <p className="p-5 text-sm opacity-60">{CUSTOMER_NOTES_EMPTY}</p>;
+  }
+
+  /*
+   * MARKETPLACE TABS, DERIVED FROM WHAT IS LOADED.
+   *
+   * Both the tab set and the filtering are pure functions in the domain, so
+   * this panel still holds no state and decides nothing — the selected tab is
+   * the workspace's, like every other piece of state here.
+   *
+   * A marketplace with no notes gets no tab, and platforms this application
+   * has no channel for are grouped under "Other" rather than being hidden or
+   * filed under a marketplace they do not belong to.
+   */
+  const tabs = customerNoteChannelTabs(notes.notes, channel);
+  const visible = customerNotesForChannel(notes.notes, channel);
+
+  return (
+    <>
+      <div
+        role="tablist"
+        aria-label="Marketplace"
+        className="flex shrink-0 flex-wrap gap-1.5 border-b border-black/5 px-4 py-2.5 dark:border-white/10"
+      >
+        {tabs.map((tab) => {
+          const label =
+            tab.value === "other"
+              ? CUSTOMER_NOTE_TAB_LABEL.other
+              : capabilityOf(tab.value).label;
+          const selected = tab.value === channel;
+          return (
+            <button
+              key={tab.value}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              onClick={() => onSelectChannel(tab.value)}
+              className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                selected
+                  ? "border-black/30 bg-black/[0.06] font-medium dark:border-white/35 dark:bg-white/[0.10]"
+                  : "border-black/10 opacity-75 hover:opacity-100 dark:border-white/15"
+              }`}
+            >
+              {label} <span className="tabular-nums opacity-70">{tab.count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {visible.length === 0 ? (
+        <p className="p-5 text-sm opacity-60">{CUSTOMER_NOTES_EMPTY}</p>
+      ) : (
+        <ul>
+          {visible.map((note) => {
+        const stamp = note.createdAt === null ? null : formatSourceTimestamp(note.createdAt);
+        const failure = failures[note.id];
+        return (
+          <li key={note.id}>
+            <button
+              type="button"
+              onClick={() => onSelectNote(note.id)}
+              className="flex w-full flex-col gap-1 border-b border-black/5 px-4 py-3 text-left transition-colors hover:bg-black/[0.03] dark:border-white/10 dark:hover:bg-white/[0.05]"
+            >
+              <span className="flex items-baseline justify-between gap-2">
+                {/*
+                  THE ORDER REFERENCE, THEN WHOSE ORDER IT IS.
+                  No "Order" label in front of it: every row in this list is an
+                  order, so the word is the same on all of them and buys
+                  nothing but width on a narrow panel.
+                  The name comes from the ORDER, not from the note — a note
+                  carries no identity at all — so it is shown quieter than the
+                  reference and omitted entirely where the source has none,
+                  rather than padded with a placeholder.
+                */}
+                <span className="truncate text-sm font-medium">
+                  {note.orderNumber ?? "Reference not recorded"}
+                  {note.customerName !== null && (
+                    <span className="font-normal opacity-70"> · {note.customerName}</span>
+                  )}
+                </span>
+                {stamp !== null && (
+                  <span className="shrink-0 text-[11px] tabular-nums opacity-70">
+                    {stamp.date} {stamp.time}
+                  </span>
+                )}
+              </span>
+
+              <span className="line-clamp-2 text-xs opacity-70">{note.noteText}</span>
+
+              {note.channel !== null && (
+                <span className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="rounded bg-black/[0.07] px-1.5 py-0.5 font-medium opacity-80 dark:bg-white/[0.12]">
+                    {capabilityOf(note.channel).label}
+                  </span>
+                </span>
+              )}
+
+              {failure !== undefined && (
+                <span className="text-[11px] text-amber-700 dark:text-amber-300">{failure}</span>
+              )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/**
+ * WHICH LIST THIS PANEL IS SHOWING.
+ *
+ * ONE PANEL, TWO CONTENTS. The bell and the notes button open the same
+ * container, the same width, the same header shape, the same scroll area and
+ * the same backdrop — only the title, the strapline and the rows differ. A
+ * second drawer would have to re-decide all of those, and would then drift.
+ */
+export type NotificationPanelMode = "notifications" | "notes";
+
 export function NotificationDrawer({
+  mode,
   feed,
   error,
+  notes,
+  notesError,
+  noteChannel,
+  onSelectNoteChannel,
+  noteFailures,
+  onSelectNote,
   open,
   onClose,
   onSelect,
 }: {
+  mode: NotificationPanelMode;
   feed: AwaitingResponseFeed | null;
   error: string | null;
+  /** Customer notes, or null while unknown. Fetched by the workspace, not here. */
+  notes: CustomerNoteFeed | null;
+  notesError: string | null;
+  /**
+   * Which marketplace tab is selected.
+   *
+   * Held by the workspace, like every other piece of state on this screen —
+   * this panel deliberately holds none and decides nothing.
+   */
+  noteChannel: CustomerNoteChannelFilter;
+  onSelectNoteChannel: (channel: CustomerNoteChannelFilter) => void;
+  /**
+   * Why individual notes would not open, keyed by note id.
+   *
+   * Per note rather than per panel: a reviewer who clicked one note and was
+   * refused needs the reason beside THAT row, and the other rows are unaffected.
+   */
+  noteFailures: Readonly<Record<string, string>>;
+  onSelectNote: (noteId: string) => void;
   open: boolean;
   onClose: () => void;
   /**
@@ -98,6 +284,8 @@ export function NotificationDrawer({
   if (!open) return null;
 
   const items = feed?.conversations ?? [];
+  const showingNotes = mode === "notes";
+  const title = showingNotes ? CUSTOMER_NOTES_TITLE : ORDER_CHANGE_NOTIFICATION_TITLE;
 
   return (
     <>
@@ -106,18 +294,20 @@ export function NotificationDrawer({
       <div onClick={onClose} aria-hidden className="fixed inset-0 z-40 bg-black/40" />
       <div
         role="dialog"
-        aria-label={ORDER_CHANGE_NOTIFICATION_TITLE}
+        aria-label={title}
         className="fixed inset-y-0 right-0 z-50 flex w-[90vw] max-w-sm flex-col overflow-y-auto border-l border-black/10 bg-[var(--background)] shadow-xl dark:border-white/15"
       >
         <div className="flex shrink-0 items-start justify-between gap-2 border-b border-black/10 px-4 py-3 dark:border-white/15">
           <div className="flex flex-col gap-0.5">
-            <h2 className="text-sm font-semibold">{ORDER_CHANGE_NOTIFICATION_TITLE}</h2>
+            <h2 className="text-sm font-semibold">{title}</h2>
             {/* What being on this list actually means, in the reviewer's own
                 terms rather than in the query's — and that it is not scoped to
                 the tab behind the drawer, which is the one thing a reviewer
                 would otherwise assume. */}
             <p className="text-[11px] opacity-70">
-              All marketplaces · no reply sent yet
+              {showingNotes
+                ? "Written by the buyer on their order · last month, all marketplaces"
+                : "All marketplaces · no reply sent yet"}
             </p>
           </div>
           <button
@@ -129,7 +319,16 @@ export function NotificationDrawer({
           </button>
         </div>
 
-        {error !== null ? (
+        {showingNotes ? (
+          <CustomerNoteList
+            notes={notes}
+            error={notesError}
+            failures={noteFailures}
+            channel={noteChannel}
+            onSelectChannel={onSelectNoteChannel}
+            onSelectNote={onSelectNote}
+          />
+        ) : error !== null ? (
           <p className="p-5 text-sm opacity-70">{error}</p>
         ) : feed === null ? (
           <p className="p-5 text-sm opacity-60">Loading…</p>
@@ -249,11 +448,19 @@ export function NotificationDrawer({
          * that bound, the drawer says so — a short list must not be mistaken
          * for a quiet queue, and the bell's badge has nowhere to put a caveat.
          */}
-        {feed?.hasMore && (
+        {!showingNotes && feed?.hasMore && (
           <p className="px-4 py-3 text-[11px] opacity-55">
             Checked the {feed.scanned} most recent conversations with no reply yet, across{" "}
             {feed.marketplaces.map((marketplace) => capabilityOf(marketplace).label).join(", ")}.
             Older ones are not included.
+          </p>
+        )}
+
+        {/* The same caveat, for the same reason, on the other list. */}
+        {showingNotes && notes?.hasMore && (
+          <p className="px-4 py-3 text-[11px] opacity-55">
+            Showing the {notes.scanned} most recent customer notes. Older ones are not
+            included.
           </p>
         )}
       </div>

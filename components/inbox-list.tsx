@@ -72,18 +72,39 @@ export function visibleConversations(
     readonly readFilter: ReadState;
     readonly categoryFilter: CategoryFilter;
     readonly priorityFilter: PriorityFilter;
+    /**
+     * The conversation currently open, which is never filtered out.
+     *
+     * WHY IT IS EXEMPT. A conversation can be opened from somewhere other than
+     * this list — the notification panel, or a customer note — and it then has
+     * no reason to satisfy the list's filters: the read filter defaults to
+     * Unread, and a thread we have already answered is Read. The row would be
+     * hidden while its own conversation filled the pane beside it, so the list
+     * would be showing everything except the thing being looked at.
+     *
+     * It is an exemption for ONE row and it cannot widen: the id either
+     * matches or it does not, and nothing else here consults it.
+     */
+    readonly selectedId?: string | null;
   },
 ): InboxItem[] {
+  const isSelected = (item: InboxItem) =>
+    filters.selectedId !== null && filters.selectedId !== undefined && item.id === filters.selectedId;
+
   return items
-    .filter((item) => !isEbayPlatformNotice(item))
-    .filter((item) => readStateOf(item) === filters.readFilter)
+    .filter((item) => !isEbayPlatformNotice(item) || isSelected(item))
+    .filter((item) => readStateOf(item) === filters.readFilter || isSelected(item))
     .filter(
       (item) =>
-        filters.categoryFilter === ALL_CATEGORIES || item.category === filters.categoryFilter,
+        filters.categoryFilter === ALL_CATEGORIES ||
+        item.category === filters.categoryFilter ||
+        isSelected(item),
     )
     .filter(
       (item) =>
-        filters.priorityFilter === ALL_PRIORITIES || item.priority === filters.priorityFilter,
+        filters.priorityFilter === ALL_PRIORITIES ||
+        item.priority === filters.priorityFilter ||
+        isSelected(item),
     );
 }
 
@@ -157,7 +178,12 @@ export function InboxList({
     return <p className="p-5 text-sm opacity-60">Loading conversations…</p>;
   }
 
-  const filtered = visibleConversations(items, { readFilter, categoryFilter, priorityFilter });
+  const filtered = visibleConversations(items, {
+    readFilter,
+    categoryFilter,
+    priorityFilter,
+    selectedId,
+  });
   const everyItemNeedsContext = filtered.every((item) => item.needsContext);
 
   return (

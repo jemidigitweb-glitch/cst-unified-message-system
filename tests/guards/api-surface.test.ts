@@ -22,8 +22,40 @@ const API_DIR = join(ROOT, "app", "api");
 /** Never allowed on any route. */
 const FORBIDDEN_METHODS = ["PUT", "DELETE", "HEAD", "OPTIONS"];
 
-/** Allowed to mutate, because a draft is the one thing this phase writes. */
-const MUTABLE_ROUTES = [/[\\/]draft[\\/]route\.tsx?$/, /[\\/]workflow[\\/]route\.tsx?$/];
+/**
+ * Allowed to mutate.
+ *
+ * Drafts and their workflow, plus ONE narrow exemption: the post-dispatch
+ * automation's own configuration. That is the first mutable thing in this
+ * application that is not a draft, and it earns the exemption because switching
+ * the automation on is a decision with consequences an operator must be able to
+ * reverse from the screen — leaving it to a hand-written SQL statement makes
+ * "off" harder than "on", which is the wrong way round for a safety control.
+ *
+ * It writes `cst_app.automation_settings` and nothing else. "the automation
+ * settings route writes only configuration" below pins that, so widening this
+ * list did not widen what the route can do.
+ */
+const MUTABLE_ROUTES = [
+  /[\\/]draft[\\/]route\.tsx?$/,
+  /[\\/]workflow[\\/]route\.tsx?$/,
+  /[\\/]automations[\\/]settings[\\/]route\.tsx?$/,
+  /[\\/]automations[\\/][^\\/]+[\\/]cancel[\\/]route\.tsx?$/,
+];
+
+const SETTINGS_ROUTE = join(API_DIR, "automations", "settings", "route.ts");
+const CANCEL_ROUTE = join(API_DIR, "automations", "[itemId]", "cancel", "route.ts");
+
+/**
+ * The operator-triggered run route, and it must stay absent.
+ *
+ * It existed so somebody could start a pass from the screen while no scheduler
+ * was registered. The automation is driven by `/api/cron/automation` alone now —
+ * authenticated, bounded, and the path a real transport would eventually run
+ * on. An unauthenticated route that starts real work is not something to re-add
+ * by accident.
+ */
+const REMOVED_RUN_ROUTE = join(API_DIR, "automations", "run", "route.ts");
 
 function walk(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -76,6 +108,62 @@ describe("API surface", () => {
       if (!mutable || /[\\/]draft[\\/]/.test(file)) {
         expect(source).toMatch(/export\s+async\s+function\s+GET\b/);
       }
+    }
+  });
+
+  /**
+   * The exemption above, pinned.
+   *
+   * The settings route may mutate configuration. It may not reach a work item,
+   * a revision, a review or a workflow state, and it may not acquire a
+   * transport — so the writer it imports is named here rather than left to
+   * whatever a future edit happens to reach for.
+   */
+  it("keeps the automation settings route to configuration only", () => {
+    expect(existsSync(SETTINGS_ROUTE)).toBe(true);
+    const source = readFileSync(SETTINGS_ROUTE, "utf8");
+
+    expect(source).toMatch(/updateAutomationSettings/);
+    for (const forbidden of [
+      "saveAutomationRevision",
+      "markDraftItemReviewed",
+      "markDraftItemSkipped",
+      "markDraftItemFailed",
+      "insertScheduledDraftItem",
+      "claimDueDraftItems",
+      "draftForItem",
+      "advanceWorkflowState",
+      "saveRevision",
+    ]) {
+      expect(source, `settings route must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  /** See `REMOVED_RUN_ROUTE`: the automation is cron-driven only. */
+  it("exposes no operator-triggered run route", () => {
+    expect(existsSync(REMOVED_RUN_ROUTE)).toBe(false);
+  });
+
+  /**
+   * The cancel route, pinned.
+   *
+   * Stopping a scheduled record is the ONLY thing an operator may do to one.
+   * This route must not acquire a way to process, resend or otherwise finish a
+   * record, and it must never write a status itself beyond the cancellation.
+   */
+  it("keeps the automation cancel route to cancelling", () => {
+    expect(existsSync(CANCEL_ROUTE)).toBe(true);
+    const source = readFileSync(CANCEL_ROUTE, "utf8");
+
+    expect(source).toMatch(/cancelScheduledItem/);
+    for (const forbidden of [
+      "markItemProcessed",
+      "runPostDispatchAutomation",
+      "processDueItems",
+      "updateAutomationSettings",
+      "insertScheduledItem",
+    ]) {
+      expect(source, `cancel route must not call ${forbidden}`).not.toContain(forbidden);
     }
   });
 

@@ -10,6 +10,7 @@ import {
   messageSide,
 } from "@/lib/domain/inbox";
 import type { MarketplaceCapability } from "@/lib/domain/marketplace-capabilities";
+import type { CustomerNote } from "@/lib/domain/customer-note";
 import type { WorkflowState } from "@/lib/domain/workflow";
 
 import { DraftPanel } from "./draft-panel";
@@ -48,6 +49,7 @@ export function ConversationView({
   detailsOpen,
   onToggleDetails,
   selectedOrderNumber,
+  note,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
@@ -81,6 +83,14 @@ export function ConversationView({
    */
   detailsOpen?: boolean;
   onToggleDetails?: () => void;
+  /**
+   * The customer note this conversation was opened from, when it was.
+   *
+   * Optional, and absent on every other path — the workspace clears it on any
+   * selection change. Rendered as context above the thread, never as a bubble;
+   * see the render below for why that distinction matters.
+   */
+  note?: CustomerNote | null;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -227,6 +237,47 @@ export function ConversationView({
       </div>
 
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        {/*
+         * THE NOTE THIS CONVERSATION WAS OPENED FROM, as context above the
+         * thread and NOT as a bubble.
+         *
+         * A bubble is this application's shape for a message somebody sent on
+         * the thread, left for the customer and right for us. A customer note
+         * is neither: it was attached to the ORDER, it has no side, and drawing
+         * it as a bubble would put it in the conversation's history where it
+         * never happened. A labelled card above the thread says what it is.
+         *
+         * Absent on every ordinary open — the workspace clears it whenever the
+         * selection changes — so a note can never hang over a thread it has
+         * nothing to do with. It also renders independently of the messages
+         * below: if the thread fails to load, this still shows, and if the note
+         * is missing the thread is completely unaffected.
+         */}
+        {note !== null && note !== undefined && (
+          <section
+            data-testid="customer-note-context"
+            className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2.5"
+          >
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide opacity-70">
+              Customer note
+            </h3>
+            <p className="mt-0.5 text-xs opacity-70">
+              {note.orderNumber ?? "Reference not recorded"}
+              {note.customerName === null ? "" : ` · ${note.customerName}`}
+              {note.createdAt === null
+                ? ""
+                : ` · ${formatSourceTimestamp(note.createdAt).date} ${
+                    formatSourceTimestamp(note.createdAt).time
+                  }`}
+            </p>
+            {/* `wrap-anywhere` for the same reason every other verbatim body
+                here has it: a note is free text a customer typed and routinely
+                contains an address, a URL or a long reference that no space
+                breaks. See tests/guards/message-wrapping.test.ts. */}
+            <p className="mt-1.5 whitespace-pre-wrap wrap-anywhere text-sm">{note.noteText}</p>
+          </section>
+        )}
+
         {messages.length === 0 ? (
           <p className="text-sm opacity-60">This conversation has no messages.</p>
         ) : (
