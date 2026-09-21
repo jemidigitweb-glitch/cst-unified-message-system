@@ -954,12 +954,28 @@ export function Workspace() {
              * The tabs beside it change what this page shows; post-dispatch
              * automation is a separate screen with its own settings and its own
              * records, and it is not part of the inbox. Rendering it as a tab
-             * would promise that clicking it swaps a panel in here — and then
-             * navigate away, which is the one thing a tab must not do.
+             * would promise that clicking it swaps a panel in here. It opens a
+             * new tab instead — see the link itself — so the inbox it was
+             * opened from is still there when the reviewer comes back.
              */}
             <Link
               href="/automations"
-              title="Post-dispatch automation: scheduled records and settings. Opens its own page."
+              /**
+               * ITS OWN TAB, so a reviewer keeps the inbox beside it.
+               *
+               * Following this link used to replace the workspace, which
+               * discarded whatever conversation was open — reopening it meant
+               * finding it again in the inbox. Automation is a second opinion
+               * held against the message being reviewed, so it belongs next to
+               * that message rather than on top of it.
+               *
+               * `rel` is spelled out even though Next sets `noopener` itself:
+               * naming it here keeps the guarantee visible in the markup, the
+               * same way the customer-image and listing links do.
+               */
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Post-dispatch automation: scheduled records and settings. Opens its own page in a new tab."
               className={`-mb-px shrink-0 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-sm opacity-70 transition-colors hover:border-black/20 hover:opacity-100 dark:hover:border-white/25 ${SECTION_HEADING_CLASS}`}
             >
               Dispatch Automation
