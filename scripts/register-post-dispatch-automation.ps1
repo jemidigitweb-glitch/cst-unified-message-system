@@ -1,4 +1,22 @@
 # =============================================================================
+# SUPERSED. Use scripts\register-automation-worker.ps1 instead.
+#
+# THAT SCRIPT registers the always-running worker, which waits on the exact
+# `scheduled_at` of the next due record instead of being woken every 15 minutes.
+# This file remains only to REMOVE the old task, and now says so on every run:
+#
+#     powershell -ExecutionPolicy Bypass -File scripts\register-post-dispatch-automation.ps1 -Remove
+#
+# TWO TRIGGERS FOR ONE AUTOMATION IS THE CONFUSION THIS REMOVES. If both tasks
+# are registered, both will process records. They cannot double-process one --
+# the claim is `FOR UPDATE SKIP LOCKED` inside a transaction -- but the second is
+# pure contention: a timer running a job that is already running on time.
+#
+# The Vercel cron entry for /api/cron/automation was removed at the same time, so
+# nothing anywhere on a timer drives this automation any more.
+#
+# ORIGINAL HEADER FOLLOWS, kept for the record.
+#
 # Registers (or re-registers) the automatic post-dispatch automation.
 #
 #     powershell -ExecutionPolicy Bypass -File scripts\register-post-dispatch-automation.ps1

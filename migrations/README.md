@@ -14,6 +14,33 @@ NNNN_<description>.down.sql   reverses it
 | `0002_unresolved_marketplace_messages` | Storage for source messages whose direction, identity and grouping are unverified | **Written, NOT executed — awaiting review** |
 | `0005_cst_knowledge_base` | CST rule corpus: sources and sign-off, categories, rules, examples, triggers | **Written, NOT executed — awaiting review** |
 | `0011_post_dispatch_automation` | Post-dispatch automation: templates, settings, records | Applied 2026-09-21 |
+| `0012_automation_worker_wake` | Wake signal for the always-running automation worker: one function, four triggers | **Written, NOT executed — awaiting review** |
+
+## Why `0012` exists
+`scripts/run-automation-worker.mjs` starts once and waits on the exact
+`scheduled_at` of the next due record instead of polling every fifteen minutes.
+It cannot see a row appear, so the writer tells it: every statement that can
+change which record is next calls `cst_app.automation_wake()`, which performs
+`pg_notify('cst_automation_wake', reason)`.
+
+**`pg_notify` inside a transaction is delivered only on COMMIT.** A rolled-back
+insert wakes nobody, so the worker never wakes to find nothing there. The four
+triggers are **statement-level**: a scan that inserts 500 records costs one
+notification, not 500, and the insert trigger's `WHEN` clause reads the
+statement-level transition table `new_rows` to announce only rows that arrived
+`scheduled`.
+
+**This is latency, not correctness.** The worker also re-reads the soonest moment
+on its own interval (15s by default) and claims nothing early because of it, so an
+unwakeable case — 0012 not applied, a direct SQL edit, a dropped listener
+connection — degrades the delay, never the outcome. Correctness comes from
+`FOR UPDATE SKIP LOCKED` in `selectDueItems`, untouched by this migration.
+
+It adds **no column, no table and no row**, and alters no existing constraint.
+The honest caveat: five triggers and one function are new objects against tables
+that already exist, which is a real change to the database even though the schema
+of the data is unchanged. `0012.down.sql` drops them with `RESTRICT` and is
+non-destructive — the worker falls back to its interval.
 
 ## Why `0011` exists
 

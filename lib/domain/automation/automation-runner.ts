@@ -1,11 +1,14 @@
 import "server-only";
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { eligibilityForPostDispatch } from "./automation-eligibility-service";
 import { scanRefusal } from "./automation-settings-service";
+import {
+  POST_DISPATCH_AUTOMATION_KEY,
+  type AutomationSettings,
+} from "./automation-types";
 import { renderTemplate, templateIsUsable, templateVariables } from "./automation-template-service";
-import { POST_DISPATCH_AUTOMATION_KEY } from "./automation-types";
 import {
   automationSettings,
   cancelItem,
@@ -200,6 +203,43 @@ export async function processDueItems(input: {
   if (settings === undefined || scanRefusal(settings) !== null) return REFUSED_DUE;
 
   const connection = await input.app.connect();
+  try {
+    return await claimAndProcessDue(input, settings, connection);
+  } finally {
+    connection.release();
+  }
+}
+
+/**
+ * THE CLAIM AND THE PROCESSING, in one transaction, on a connection the caller
+ * owns. Exported so the long-running local worker can drive exactly this code
+ * instead of a second copy of it.
+ *
+ * `SELECT ... FOR UPDATE SKIP LOCKED` on the select, and every outcome written
+ * inside the same transaction, is what makes duplicate processing impossible: a
+ * second caller takes a disjoint set, and a crash mid-run leaves rows `scheduled`
+ * rather than half-processed. Nothing here is new — `processDueItems` is now this
+ * function plus the three lines that borrow and return a connection.
+ *
+ * WHY IT IS EXTRACTED RATHER THAN REWRITTEN. The recheck below is the safety
+ * property of this whole feature: a record is re-read from the source, and an
+ * order that has since been cancelled, refunded or returned is skipped rather
+ * than rendered. A worker holding its own version of that would be a second
+ * implementation of the only rule that matters, and the two would drift.
+ *
+ * `input` IS TAKEN BUT ONLY PARTLY USED, and that is deliberate. It is the same
+ * `{ app, source, limit }` the caller already holds, passed through so the two
+ * entry points share one signature: `app` is the caller's connection's own pool
+ * and `source` is not read here because the rechecks below go through
+ * `dispatchEventForShipment`, which needs the pool the caller opened. Widening or
+ * narrowing this parameter list would put the worker and the route on different
+ * code paths, which is the one thing extracting it was meant to prevent.
+ */
+export async function claimAndProcessDue(
+  input: { readonly app: Pool; readonly source: SourceQueryable; readonly limit: number },
+  settings: AutomationSettings,
+  connection: PoolClient,
+): Promise<AutomationRunSummary["due"]> {
   let claimed = 0;
   let processed = 0;
   let skipped = 0;
@@ -301,8 +341,6 @@ export async function processDueItems(input: {
     // never returned. Nothing was committed, so every record stays scheduled.
     console.error("[automation] processing failed", cause);
     throw cause;
-  } finally {
-    connection.release();
   }
 
   return { claimed, processed, skipped, failed };

@@ -17,6 +17,9 @@
     "repair:bodies": "node --import ./scripts/register-hooks.mjs scripts/repair-message-bodies.mjs",
     "sync:auto": "node scripts/run-message-sync.mjs",
     "sync:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-message-sync.ps1",
+    "worker:automation": "node --import ./scripts/register-hooks.mjs scripts/run-automation-worker.mjs",
+    "worker:automation:once": "node --import ./scripts/register-hooks.mjs scripts/run-automation-worker.mjs --once",
+    "worker:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-automation-worker.ps1",
     "test:coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=text"
   },
   "dependencies": {

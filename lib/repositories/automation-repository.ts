@@ -405,6 +405,41 @@ export async function selectDueItems(
   return (rows as ItemRow[]).map(itemOf);
 }
 
+/**
+ * The soonest scheduled record, or nothing when none is waiting.
+ *
+ * ADDED FOR THE LONG-RUNNING WORKER, and it changes no behaviour on its own: it
+ * is a SELECT, and every statement the automation issues is still reviewed in
+ * this one file.
+ *
+ * IT TAKES NO LOCK, DELIBERATELY. The worker runs it plain, outside any
+ * transaction, because it is asking a question — "when is the next moment?" —
+ * and holding a row open for the hours until that moment would be a lock held
+ * across every other caller's working day for no gain: the claim that actually
+ * matters is `selectDueItems`, which takes `FOR UPDATE SKIP LOCKED` in the
+ * transaction the processing runs in. This is the difference between the two
+ * reads, and the reason this one is safe to run on the interval.
+ *
+ * It reads `status = 'scheduled'` and nothing else, so a cancelled record —
+ * which is no longer scheduled — can never be the thing the worker waits for.
+ * The partial index `ix_automation_items_due` covers exactly this shape, so the
+ * interval recheck is one row, not a scan.
+ */
+export async function nextScheduledItem(
+  db: Db,
+  input: { readonly automationKey: string },
+): Promise<AutomationItem | undefined> {
+  const { rows } = await db.query({
+    text: `SELECT ${ITEM_COLUMNS} ${ITEM_FROM}
+            WHERE i.automation_key = $1 AND i.status = 'scheduled'
+            ORDER BY i.scheduled_at ASC, i.id ASC
+            LIMIT 1`,
+    values: [input.automationKey],
+  });
+  const row = rows[0] as ItemRow | undefined;
+  return row === undefined ? undefined : itemOf(row);
+}
+
 export async function itemById(db: Db, id: string): Promise<AutomationItem | undefined> {
   const { rows } = await db.query({
     text: `SELECT ${ITEM_COLUMNS} ${ITEM_FROM} WHERE i.id = $1::bigint`,
