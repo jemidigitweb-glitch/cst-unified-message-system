@@ -142,6 +142,17 @@ export const inboxItemSchema = z.object({
    * renders as "arrival time not established" rather than as a countdown.
    */
   slaStartsAt: z.string().nullable().default(null),
+  /**
+   * WHICH timestamp `slaStartsAt` came from, so the countdown can say so.
+   *
+   * `customer_message` is the normalised UTC send time; `ingest` is
+   * `ingested_at`, which is what the COALESCE above falls back to and what
+   * every conversation uses today, since `source_ts_utc` is empty on all
+   * 23,412 inbound messages. Null on projections that do not compute it, which
+   * the panel renders as no note at all rather than as a claim about the
+   * customer's own clock — see `SlaStartSource`.
+   */
+  slaStartsAtSource: z.enum(["customer_message", "ingest"]).nullable().default(null),
 });
 
 export type InboxItem = z.infer<typeof inboxItemSchema>;

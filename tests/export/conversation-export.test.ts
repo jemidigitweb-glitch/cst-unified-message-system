@@ -48,6 +48,7 @@ function conversation(overrides: Partial<InboxItem> = {}): InboxItem {
     urgent: false,
     beforeShipmentOutcome: null,
     slaStartsAt: null,
+    slaStartsAtSource: null,
     ...overrides,
   };
 }

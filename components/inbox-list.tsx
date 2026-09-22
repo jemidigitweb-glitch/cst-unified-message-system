@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import {
   type InboxItem,
   NEEDS_CONTEXT_LABEL,
@@ -32,6 +34,46 @@ export type CategoryFilter = MessageCategory | typeof ALL_CATEGORIES;
  */
 export const ALL_PRIORITIES = "all" as const;
 export type PriorityFilter = MessagePriority | typeof ALL_PRIORITIES;
+
+/**
+ * How often the SLA clock advances, in milliseconds.
+ *
+ * THIRTY SECONDS, AND THE UNIT ON SCREEN IS WHY. Every figure the panel prints
+ * is whole minutes — `formatDuration` floors — so a tick faster than a minute
+ * changes nothing a reader can see, and this bounds how stale the smallest
+ * visible unit can get to half of it. A one-second interval would re-render a
+ * hundred-row list sixty times a minute to redraw identical text.
+ *
+ * It was previously absent ON PURPOSE: with no approved duration every panel
+ * rendered the same "not configured" line, so a timer would have animated
+ * nothing. Now that `RESPONSE_SLA_MINUTES` is set, a countdown that only moves
+ * when the reviewer reloads is a countdown that lies between reloads.
+ */
+const SLA_TICK_MS = 30_000;
+
+/**
+ * `now`, re-read on an interval so the countdown advances on its own.
+ *
+ * ONE CLOCK FOR THE WHOLE LIST. It lives here rather than inside
+ * `ResponseSlaTimer` so every panel is measured against the same moment and the
+ * component stays a pure function of its props — two rows reading their own
+ * clocks microseconds apart could disagree about how much time is left, and a
+ * component that reads a clock cannot be rendered in a test without freezing
+ * time. `tests/guards/before-shipment-urgency.test.ts` pins that.
+ *
+ * THE INITIAL VALUE IS READ IN A LAZY INITIALISER, so it is taken once per
+ * mount rather than on every render. There is no hydration hazard: the list
+ * returns early while `items` is null, which is what a server render sees, so
+ * no panel is ever produced outside the browser.
+ */
+function useNow(intervalMs: number): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
 
 /**
  * NOT A CUSTOMER CONVERSATION: eBay's own platform notices (order updates,
@@ -174,19 +216,23 @@ export function InboxList({
   loadingMore: boolean;
   onLoadMore: () => void;
 }) {
+  /**
+   * ONE `now` FOR THE WHOLE RENDER, so every SLA panel in the list is measured
+   * against the same moment. Reading the clock per row would let two rows
+   * rendered microseconds apart disagree about how much time is left.
+   *
+   * CALLED BEFORE THE EARLY RETURNS BELOW, because it is a hook and hooks may
+   * not sit behind a conditional. It costs one interval on a list that is
+   * loading or errored, and that interval drives no visible work.
+   */
+  const now = useNow(SLA_TICK_MS);
+
   if (error !== null) {
     return <p className="p-5 text-sm opacity-70">{error}</p>;
   }
   if (items === null) {
     return <p className="p-5 text-sm opacity-60">Loading conversations…</p>;
   }
-
-  /**
-   * ONE `now` FOR THE WHOLE RENDER, so every SLA panel in the list is measured
-   * against the same moment. Reading the clock per row would let two rows
-   * rendered microseconds apart disagree about how much time is left.
-   */
-  const now = new Date();
 
   const filtered = visibleConversations(items, {
     readFilter,
@@ -317,12 +363,14 @@ export function InboxList({
                  * not left yet.
                  *
                  * `now` is passed rather than read inside the component so a
-                 * server render and a client render of the same moment agree.
-                 * There is deliberately no ticking interval yet: no approved
-                 * duration exists, so every panel renders the same "not
-                 * configured" line and a timer would re-render the list once a
-                 * second to change nothing. Adding one is the right move on the
-                 * day `RESPONSE_SLA_MINUTES` is set, and not before.
+                 * server render and a client render of the same moment agree,
+                 * and it now advances on its own — see `useNow` and
+                 * `SLA_TICK_MS`. The interval lives at the top of this list, so
+                 * every panel moves together on one clock.
+                 *
+                 * `startSource` is passed so a countdown measured from ingest
+                 * rather than from the customer's own send time says so. Today
+                 * that is every one of them.
                  */}
                 {item.urgent && (
                   <ResponseSlaTimer
@@ -331,6 +379,7 @@ export function InboxList({
                       receivedAt: item.slaStartsAt === null ? null : new Date(item.slaStartsAt),
                       now,
                     })}
+                    startSource={item.slaStartsAtSource}
                   />
                 )}
               </button>

@@ -188,6 +188,28 @@ const LATEST_INBOUND_INSTANT = `(
 )`;
 
 /**
+ * WHICH half of the COALESCE above actually answered.
+ *
+ * The same subquery, the same ordering, the same one row — so it can never
+ * describe a different message than the instant it explains. It is a separate
+ * projection rather than a second COALESCE arm because the two answer different
+ * questions: one is WHEN, this is HOW WE KNOW.
+ *
+ * Today it returns `ingest` for every conversation, because `source_ts_utc` is
+ * populated for 0 of 23,412 inbound messages. That is precisely why it is
+ * carried: a fallback that is invisible is a fallback nobody can challenge, and
+ * a 48-hour deadline measured from the import rather than from the customer is
+ * a fact an agent disputing a breach is entitled to see. See `SlaStartSource`.
+ */
+const LATEST_INBOUND_INSTANT_SOURCE = `(
+  SELECT CASE WHEN cm.source_ts_utc IS NOT NULL THEN 'customer_message' ELSE 'ingest' END
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'inbound'
+  ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+  LIMIT 1
+)`;
+
+/**
  * The customer's NEWEST message, and only that one.
  *
  * THE WHOLE POINT IS THAT IT IS ONE MESSAGE. Whether the customer is asking to
@@ -291,6 +313,7 @@ SELECT c.id::text                  AS id,
          c.counterparty_ref
        )                           AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
+       ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
        ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
        ${LATEST_INBOUND_TEXT}      AS latest_inbound_text,
        EXISTS (
@@ -533,6 +556,7 @@ SELECT c.id::text                  AS id,
          )
        END                         AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
+       ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
        ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
        ${LATEST_INBOUND_TEXT}      AS latest_inbound_text,
        EXISTS (
@@ -721,6 +745,8 @@ type ConversationRow = {
   order_number?: string | null;
   /** A real instant — see `LATEST_INBOUND_INSTANT`. */
   sla_starts_at?: string | Date | null;
+  /** Which half of that COALESCE answered — see `LATEST_INBOUND_INSTANT_SOURCE`. */
+  sla_starts_at_source?: string | null;
   /** OUR newest reply, for `staffClosedTheOrder`. See `LATEST_OUTBOUND_TEXT`. */
   latest_outbound_text?: string | null;
   /** The customer's newest message, for the order-change intent. One message. */
@@ -986,6 +1012,17 @@ function toInboxItem(row: ConversationRow): InboxItem {
     urgent: false,
     beforeShipmentOutcome: null,
     slaStartsAt: instantOf(row.sla_starts_at),
+    /*
+     * VALIDATED, NOT CAST. The column is `text` on the wire and only two values
+     * are meaningful, so anything else becomes null — "we did not establish it"
+     * — rather than a third string the panel would have to guess at. A
+     * projection that does not select it lands here as undefined and gets the
+     * same null.
+     */
+    slaStartsAtSource:
+      row.sla_starts_at_source === "customer_message" || row.sla_starts_at_source === "ingest"
+        ? row.sla_starts_at_source
+        : null,
   };
 }
 

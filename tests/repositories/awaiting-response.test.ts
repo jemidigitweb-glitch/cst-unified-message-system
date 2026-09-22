@@ -621,6 +621,10 @@ describe("the notification row", () => {
       urgent: true,
       beforeShipmentOutcome: "eligible",
       slaStartsAt: "2026-08-02T10:00:00.000Z",
+      // The fixture row selects no provenance column, so the clock's origin was
+      // not established and is reported as such rather than claimed to be the
+      // customer's own send time. See `LATEST_INBOUND_INSTANT_SOURCE`.
+      slaStartsAtSource: null,
       latestCustomerMessageAt: "2026-08-02 10:00:00",
       latestCustomerMessagePreview: "Please cancel my order.",
       hasDraft: false,

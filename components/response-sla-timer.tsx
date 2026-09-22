@@ -1,7 +1,9 @@
 import {
   type ResponseSlaStatus,
   SLA_NOT_CONFIGURED_TEXT,
+  SLA_STARTED_AT_INGEST_TEXT,
   SLA_UNKNOWN_START_TEXT,
+  type SlaStartSource,
   formatDuration,
   formatSlaDueAt,
   isSlaCritical,
@@ -50,8 +52,31 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
   );
 }
 
-export function ResponseSlaTimer({ status }: { status: ResponseSlaStatus }) {
+export function ResponseSlaTimer({
+  status,
+  startSource = null,
+}: {
+  status: ResponseSlaStatus;
+  /**
+   * Which timestamp this countdown was actually measured from.
+   *
+   * OPTIONAL, AND ITS ABSENCE MEANS "NOT STATED" rather than "the good one":
+   * a caller that cannot establish the provenance says nothing instead of
+   * claiming the customer's own send time. Only `ingest` prints a line, because
+   * that is the one a reader would otherwise assume wrongly.
+   */
+  startSource?: SlaStartSource | null;
+}) {
   const critical = isSlaCritical(status);
+
+  /*
+   * Shown under a RUNNING clock only. On `not_configured` and
+   * `unknown_received_time` there is no deadline for the caveat to qualify, and
+   * a provenance note under "no target exists" would be noise about a
+   * measurement nobody is making.
+   */
+  const running = status.state === "within" || status.state === "expired";
+  const fromIngest = running && startSource === "ingest";
 
   /*
    * Red only for a real breach; a quiet neutral frame otherwise. The border and
@@ -97,6 +122,19 @@ export function ResponseSlaTimer({ status }: { status: ResponseSlaStatus }) {
             </span>
           </span>
         </>
+      )}
+
+      {/*
+       * WHERE THE CLOCK STARTED, when it was not the customer's own send time.
+       *
+       * Deliberately not red and deliberately not a warning icon: this
+       * qualifies a measurement, it does not report a breach. It sits last so
+       * it reads as a footnote to the figures above rather than competing with
+       * them — and it is printed at all because a fallback nobody can see is a
+       * fallback nobody can challenge. See `SlaStartSource`.
+       */}
+      {fromIngest && (
+        <span className="mt-0.5 text-[10px] opacity-60">{SLA_STARTED_AT_INGEST_TEXT}</span>
       )}
     </div>
   );

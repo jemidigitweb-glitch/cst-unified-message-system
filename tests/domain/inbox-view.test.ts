@@ -172,6 +172,7 @@ function item(overrides: Partial<InboxItem> = {}): InboxItem {
     urgent: false,
     beforeShipmentOutcome: null,
     slaStartsAt: null,
+    slaStartsAtSource: null,
     ...overrides,
   };
 }
@@ -240,6 +241,7 @@ describe("the inbox item's priority field", () => {
         "urgent",
         "beforeShipmentOutcome",
         "slaStartsAt",
+        "slaStartsAtSource",
       ].sort(),
     );
   });
@@ -282,6 +284,7 @@ describe("the open conversation is never filtered out of the list", () => {
     urgent: false,
     beforeShipmentOutcome: null,
     slaStartsAt: null,
+    slaStartsAtSource: null,
   };
   const filters = {
     readFilter: "unread" as const,

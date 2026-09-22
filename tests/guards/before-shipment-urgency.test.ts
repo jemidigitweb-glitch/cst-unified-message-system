@@ -16,6 +16,7 @@ import { ORDER_CHANGE_CATEGORY } from "@/lib/domain/inbox";
 import {
   RESPONSE_SLA_MINUTES,
   SLA_NOT_CONFIGURED_TEXT,
+  SLA_STARTED_AT_INGEST_TEXT,
   formatDuration,
   formatSlaDueAt,
   isSlaCritical,
@@ -176,18 +177,27 @@ describe("the rule does not fire", () => {
 });
 
 /* ------------------------------------------------------------------------- *
- * THE RECENCY WINDOW — 24h / 48h / 72h all count; older does not
+ * THE RECENCY WINDOW — 24h and 48h count; older does not
+ *
+ * THESE THREE ASSERTIONS WERE STALE AND FAILING BEFORE THIS CHANGE. The window
+ * was 72 hours on the original reasoning that a Friday-evening order is still
+ * unshipped on Monday morning; CST replaced it with 48, and
+ * `BEFORE_SHIPMENT_RECENCY_HOURS` was changed without these being brought with
+ * it. They are corrected here rather than left red because the response SLA now
+ * depends on this number — see "expires strictly inside the window that keeps
+ * the row on screen" — and a test asserting 72 would make that dependency
+ * unreadable.
  * ------------------------------------------------------------------------- */
 
 describe("every before-shipping query in the window counts", () => {
-  it("includes 24, 48 and 72 hours old alike", () => {
-    for (const ageHours of [0, 1, 24, 48, 71, 72]) {
+  it("includes 24 and 48 hours old alike", () => {
+    for (const ageHours of [0, 1, 24, 47, 48]) {
       expect(beforeShipmentEligibility(eligible({ ageHours })), `${ageHours}h`).toBe("eligible");
     }
   });
 
   it("drops anything past the window", () => {
-    for (const ageHours of [72.5, 100, 24 * 30]) {
+    for (const ageHours of [48.5, 72, 100, 24 * 30]) {
       expect(beforeShipmentEligibility(eligible({ ageHours })), `${ageHours}h`).toBe("too_old");
     }
   });
@@ -198,7 +208,7 @@ describe("every before-shipping query in the window counts", () => {
   });
 
   it("states the window as one number", () => {
-    expect(BEFORE_SHIPMENT_RECENCY_HOURS).toBe(72);
+    expect(BEFORE_SHIPMENT_RECENCY_HOURS).toBe(48);
   });
 });
 
@@ -560,19 +570,56 @@ describe("the urgent indicator", () => {
 describe("the response SLA timer", () => {
   const received = new Date("2026-09-22T09:00:00Z");
 
-  /** BLOCKER, PINNED. No approved duration exists, so none was invented. */
-  it("has no invented duration", () => {
-    expect(RESPONSE_SLA_MINUTES).toBeNull();
+  /**
+   * THE APPROVED FIGURE, PINNED.
+   *
+   * This test previously asserted the constant was NULL — the blocker that
+   * stood while no duration had been agreed. CST has now approved 24 hours, so
+   * the pin moves to that exact figure rather than being deleted: a number this
+   * one drifts to silently is the invented target the original blocker existed
+   * to prevent, and "some number is set" would not catch it.
+   */
+  it("carries the approved duration and no other", () => {
+    expect(RESPONSE_SLA_MINUTES).toBe(24 * 60);
   });
 
-  it("says so rather than showing a countdown, while that is true", () => {
+  /**
+   * THE REASON 24 AND NOT 48. The urgent sweep drops a conversation once the
+   * newest customer message passes `BEFORE_SHIPMENT_RECENCY_HOURS`, and the
+   * panel renders on urgent rows only — so a target equal to that window would
+   * put the deadline and the row's disappearance on the same instant and make
+   * CRITICAL / ESCALATE unreachable. The gap is what makes a breach visible.
+   */
+  it("expires strictly inside the window that keeps the row on screen", () => {
+    expect(RESPONSE_SLA_MINUTES).not.toBeNull();
+    expect(RESPONSE_SLA_MINUTES!).toBeLessThan(BEFORE_SHIPMENT_RECENCY_HOURS * 60);
+  });
+
+  /** The unset state is still reachable, and still says so rather than counting down. */
+  it("says so rather than showing a countdown, when no duration is set", () => {
     const status = responseSlaStatus({
-      targetMinutes: RESPONSE_SLA_MINUTES,
+      targetMinutes: null,
       receivedAt: received,
       now: NOW,
     });
     expect(status.state).toBe("not_configured");
     expect(isSlaCritical(status)).toBe(false);
+  });
+
+  /**
+   * The approved figure exercised end to end: a message 25 hours old is one
+   * hour past a 24-hour promise, and the row is still inside the 48-hour urgent
+   * window, so this is the state an agent will actually meet.
+   */
+  it("goes overdue on the approved duration, while the row is still urgent", () => {
+    const status = responseSlaStatus({
+      targetMinutes: RESPONSE_SLA_MINUTES,
+      receivedAt: received,
+      now: new Date(received.getTime() + 25 * 60 * 60_000),
+    });
+    expect(status.state).toBe("expired");
+    expect(status.state === "expired" && status.minutesOver).toBe(60);
+    expect(isSlaCritical(status)).toBe(true);
   });
 
   it("reports an unestablished arrival time rather than guessing one", () => {
@@ -680,6 +727,94 @@ describe("the response SLA timer", () => {
   it("reads no clock of its own", () => {
     const source = read("components", "response-sla-timer.tsx");
     expect(source).not.toMatch(/Date\.now|new Date\(/);
+  });
+
+  /* --- where the clock started --- */
+
+  const panelWithSource = (
+    status: Parameters<typeof ResponseSlaTimer>[0]["status"],
+    startSource: Parameters<typeof ResponseSlaTimer>[0]["startSource"],
+  ) =>
+    ResponseSlaTimer({ status, startSource }) as {
+      props: { className: string; children: unknown[] };
+    };
+
+  const within = {
+    state: "within",
+    targetMinutes: 24 * 60,
+    dueAt: new Date("2026-09-23T09:00:00Z"),
+    minutesLeft: 120,
+  } as const;
+
+  /**
+   * THE FALLBACK IS STATED, NOT HIDDEN. `source_ts_utc` is empty on every
+   * inbound message today, so every live countdown is measured from ingest —
+   * a fact a reader would otherwise assume the other way.
+   */
+  it("says when the countdown was measured from ingest", () => {
+    const rendered = JSON.stringify(panelWithSource(within, "ingest").props.children);
+    expect(rendered).toContain(SLA_STARTED_AT_INGEST_TEXT);
+  });
+
+  it("says nothing extra when the clock started at the customer's own message", () => {
+    const rendered = JSON.stringify(panelWithSource(within, "customer_message").props.children);
+    expect(rendered).not.toContain(SLA_STARTED_AT_INGEST_TEXT);
+  });
+
+  /** An unknown provenance is not a claim that it was the good one. */
+  it("says nothing extra when the provenance was never established", () => {
+    const rendered = JSON.stringify(panelWithSource(within, null).props.children);
+    expect(rendered).not.toContain(SLA_STARTED_AT_INGEST_TEXT);
+  });
+
+  /** A caveat on a measurement is not a breach, and must not be coloured as one. */
+  it("does not colour the panel for an ingest-measured clock", () => {
+    expect(panelWithSource(within, "ingest").props.className).not.toMatch(
+      /\bborder-red-|\bbg-red-/,
+    );
+  });
+
+  /**
+   * There is no deadline for the note to qualify, so it does not appear — a
+   * provenance line under "no target exists" is noise about a measurement
+   * nobody is making.
+   */
+  it("omits the note where there is no running clock", () => {
+    const rendered = JSON.stringify(
+      panelWithSource({ state: "not_configured" }, "ingest").props.children,
+    );
+    expect(rendered).not.toContain(SLA_STARTED_AT_INGEST_TEXT);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE COUNTDOWN ADVANCES WITHOUT A RELOAD
+ * ------------------------------------------------------------------------- */
+
+describe("the SLA clock ticks", () => {
+  /*
+   * SOURCE ASSERTIONS, because vitest runs with `environment: "node"` — there
+   * is no DOM to mount a hook into, and adding one for a single interval would
+   * be a larger change than the interval. These pin the wiring that a DOM test
+   * would exercise: a clock that advances, in ONE place, on a stated cadence.
+   */
+  const source = read("components", "inbox-list.tsx");
+
+  it("re-reads the clock on an interval rather than only on render", () => {
+    expect(source).toMatch(/setInterval\(\s*\(\)\s*=>\s*setNow\(new Date\(\)\)/);
+    expect(source).toMatch(/clearInterval\(id\)/);
+  });
+
+  it("ticks no faster than the smallest unit the panel prints", () => {
+    // Every figure is whole minutes, so a sub-minute redraw changes nothing a
+    // reader can see. 30s bounds the staleness of that unit to half of it.
+    expect(source).toMatch(/const SLA_TICK_MS = 30_000;/);
+  });
+
+  it("keeps one clock for the whole list", () => {
+    // A `now` per row would let two panels rendered microseconds apart
+    // disagree about how much time is left.
+    expect(source.match(/useNow\(/g)).toHaveLength(2); // the definition and its one call
   });
 });
 

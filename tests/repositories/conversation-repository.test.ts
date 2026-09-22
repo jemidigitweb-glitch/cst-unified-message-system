@@ -206,6 +206,7 @@ describe("inbox listing", () => {
       urgent: false,
       beforeShipmentOutcome: null,
       slaStartsAt: null,
+      slaStartsAtSource: null,
     });
   });
 
@@ -380,6 +381,7 @@ describe("No Rule listing", () => {
       urgent: false,
       beforeShipmentOutcome: null,
       slaStartsAt: null,
+      slaStartsAtSource: null,
       caseType: "Damaged item",
       analysedAt: "2026-08-20 09:00:00",
       reason: "no_corpus",
