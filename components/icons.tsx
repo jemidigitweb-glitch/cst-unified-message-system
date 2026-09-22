@@ -68,3 +68,27 @@ export function NoteIcon() {
     </svg>
   );
 }
+
+/**
+ * A pin, for the internal note held above the thread.
+ *
+ * SMALLER THAN THE HEADER GLYPHS — 12px, not 16. Those are controls a reviewer
+ * clicks; this is a marker on a label that says what the card below it is, and
+ * at 16px it read as a button that does nothing when pressed.
+ *
+ * Same 1.5 stroke and outline treatment as the rest of this file, so it still
+ * belongs to the set.
+ */
+export function PinIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M6 1.75h4l-.5 3.5 2.25 2.25v1H4.25v-1L6.5 5.25 6 1.75Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path d="M8 8.5v5.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}

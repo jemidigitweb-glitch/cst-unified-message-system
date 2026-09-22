@@ -6,10 +6,24 @@ import { describe, expect, it } from "vitest";
 /**
  * Standing guard on the HTTP surface.
  *
- * Phase 1 reads, and writes exactly one thing: a draft reply awaiting human
- * review. So POST and PATCH are permitted on the draft and workflow routes and
- * nowhere else, and DELETE/PUT are permitted nowhere at all — draft history is
- * append-only, and nothing else in this phase is mutable.
+ * Phase 1 reads, and writes a small, named set of things: a draft reply
+ * awaiting human review, the automation's own configuration, and a CST agent's
+ * internal notes. POST and PATCH are permitted on those routes and nowhere
+ * else. PUT, HEAD and OPTIONS are permitted nowhere at all.
+ *
+ * DELETE IS PERMITTED ON EXACTLY ONE ROUTE, and the exemption is worth stating
+ * rather than burying. It used to be permitted on none, because draft history
+ * is append-only and nothing else was mutable. An internal note is the first
+ * thing in this application a person writes in their own words, and the first
+ * therefore that a person can get wrong — a note on the wrong case, or one
+ * that should never have been recorded. Leaving removal to a hand-written SQL
+ * statement makes correcting a mistake harder than making it, which is the
+ * wrong way round.
+ *
+ * It is one route, `notes/[noteId]`, and it deletes one row from one table
+ * that nothing else reads. "the internal note route deletes only its own
+ * notes" below pins that, and the writer behind it matches on the conversation
+ * as well as the note id, so the route cannot reach another case's note.
  *
  * What has not changed, and must not: no route may transmit a reply to a
  * customer. That is checked by name, by content, and by the absence of any
@@ -20,7 +34,20 @@ const ROOT = join(__dirname, "..", "..");
 const API_DIR = join(ROOT, "app", "api");
 
 /** Never allowed on any route. */
-const FORBIDDEN_METHODS = ["PUT", "DELETE", "HEAD", "OPTIONS"];
+const FORBIDDEN_METHODS = ["PUT", "HEAD", "OPTIONS"];
+
+/**
+ * DELETE is allowed here and nowhere else. An EXACT path, not a prefix: a new
+ * route under `notes/` does not inherit this, and has to be added on purpose.
+ */
+const DELETE_EXEMPT = join(
+  API_DIR,
+  "conversations",
+  "[conversationId]",
+  "notes",
+  "[noteId]",
+  "route.ts",
+);
 
 /**
  * Allowed to mutate.
@@ -35,13 +62,25 @@ const FORBIDDEN_METHODS = ["PUT", "DELETE", "HEAD", "OPTIONS"];
  * It writes `cst_app.automation_settings` and nothing else. "the automation
  * settings route writes only configuration" below pins that, so widening this
  * list did not widen what the route can do.
+ *
+ * The internal-notes route is the third exemption, and the narrowest kind:
+ * it writes ONE table, `cst_app.internal_notes`, which nothing else in this
+ * application reads. A note is a CST agent's own record of where a case
+ * stands; it is never a message, never a draft, and never anything a customer
+ * receives. "the internal notes route writes only internal notes" below pins
+ * that, so widening this list did not widen what the route can do.
  */
 const MUTABLE_ROUTES = [
   /[\\/]draft[\\/]route\.tsx?$/,
   /[\\/]workflow[\\/]route\.tsx?$/,
   /[\\/]automations[\\/]settings[\\/]route\.tsx?$/,
   /[\\/]automations[\\/][^\\/]+[\\/]cancel[\\/]route\.tsx?$/,
+  /[\\/]conversations[\\/][^\\/]+[\\/]notes[\\/]route\.tsx?$/,
+  /[\\/]conversations[\\/][^\\/]+[\\/]notes[\\/][^\\/]+[\\/]route\.tsx?$/,
 ];
+
+const NOTES_ROUTE = join(API_DIR, "conversations", "[conversationId]", "notes", "route.ts");
+const NOTE_ROUTE = DELETE_EXEMPT;
 
 const SETTINGS_ROUTE = join(API_DIR, "automations", "settings", "route.ts");
 const CANCEL_ROUTE = join(API_DIR, "automations", "[itemId]", "cancel", "route.ts");
@@ -73,7 +112,7 @@ describe("API surface", () => {
     expect(routeFiles.length).toBeGreaterThan(0);
   });
 
-  it("exports no PUT, DELETE, HEAD or OPTIONS anywhere", () => {
+  it("exports no PUT, HEAD or OPTIONS anywhere", () => {
     const offenders: string[] = [];
     for (const file of routeFiles) {
       const source = readFileSync(file, "utf8");
@@ -83,6 +122,13 @@ describe("API surface", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  /** The DELETE exemption, pinned to the one route that holds it. */
+  it("exports DELETE on the internal note route and nowhere else", () => {
+    const pattern = /export\s+(async\s+)?function\s+DELETE\b|export\s+const\s+DELETE\b/;
+    const exporting = routeFiles.filter((file) => pattern.test(readFileSync(file, "utf8")));
+    expect(exporting).toEqual([DELETE_EXEMPT]);
   });
 
   it("mutates only on the draft and workflow routes", () => {
@@ -164,6 +210,82 @@ describe("API surface", () => {
       "insertScheduledItem",
     ]) {
       expect(source, `cancel route must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  /**
+   * The internal-notes exemption, pinned.
+   *
+   * This route may record a CST staff note. It may not reach a draft, a
+   * revision, a review, a workflow state or an automation, and — the one that
+   * matters most — it may not touch the READ-ONLY SOURCE DATABASE. Internal
+   * notes are application data; `getSourcePool` appearing here would mean this
+   * feature had started reaching for the live marketplace database, which it
+   * has no reason to do and no permission to write to.
+   *
+   * Create and view only in this phase: no PATCH, and no DELETE. Those are
+   * already forbidden application-wide above, so this pins the positive half —
+   * that the route exports exactly the two handlers it is meant to.
+   */
+  it("keeps the internal notes route to recording a note", () => {
+    expect(existsSync(NOTES_ROUTE)).toBe(true);
+    const source = readFileSync(NOTES_ROUTE, "utf8");
+
+    expect(source).toMatch(/addInternalNote/);
+    expect(source).toMatch(/findInternalNotes/);
+    expect(source).toMatch(/getAppPool/);
+    expect(source).not.toMatch(/getSourcePool/);
+    expect(source).not.toMatch(/getKnowledgePool/);
+
+    expect(source).toMatch(/export\s+async\s+function\s+GET\b/);
+    expect(source).toMatch(/export\s+async\s+function\s+POST\b/);
+    expect(source).not.toMatch(/export\s+async\s+function\s+PATCH\b/);
+
+    for (const forbidden of [
+      "saveRevision",
+      "advanceWorkflowState",
+      "updateAutomationSettings",
+      "insertScheduledItem",
+      "buildDraftInput",
+      "conversationExport",
+    ]) {
+      expect(source, `internal notes route must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  /**
+   * The edit-and-delete route, pinned.
+   *
+   * It may change one note's text and remove one note. It may not reach a
+   * draft, a workflow state or an automation, and it may not touch the
+   * read-only source database. Most importantly it must keep taking BOTH ids:
+   * the writer functions it calls are the conversation-scoped ones, so a note
+   * id on its own can never reach another conversation's note.
+   */
+  it("keeps the internal note route to editing and removing its own notes", () => {
+    expect(existsSync(NOTE_ROUTE)).toBe(true);
+    const source = readFileSync(NOTE_ROUTE, "utf8");
+
+    expect(source).toMatch(/updateInternalNote/);
+    expect(source).toMatch(/deleteInternalNote/);
+    expect(source).toMatch(/parseConversationId/);
+    expect(source).toMatch(/parseInternalNoteId/);
+    expect(source).toMatch(/getAppPool/);
+    expect(source).not.toMatch(/getSourcePool/);
+    expect(source).not.toMatch(/getKnowledgePool/);
+
+    expect(source).toMatch(/export\s+async\s+function\s+PATCH\b/);
+    expect(source).toMatch(/export\s+async\s+function\s+DELETE\b/);
+
+    for (const forbidden of [
+      "saveRevision",
+      "advanceWorkflowState",
+      "updateAutomationSettings",
+      "buildDraftInput",
+      "conversationExport",
+      "addInternalNote",
+    ]) {
+      expect(source, `internal note route must not call ${forbidden}`).not.toContain(forbidden);
     }
   });
 

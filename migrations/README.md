@@ -14,6 +14,37 @@ NNNN_<description>.down.sql   reverses it
 | `0002_unresolved_marketplace_messages` | Storage for source messages whose direction, identity and grouping are unverified | **Written, NOT executed — awaiting review** |
 | `0005_cst_knowledge_base` | CST rule corpus: sources and sign-off, categories, rules, examples, triggers | **Written, NOT executed — awaiting review** |
 | `0011_post_dispatch_automation` | Post-dispatch automation: templates, settings, records | Applied 2026-09-21 |
+| `0012_internal_notes` | Internal notes: CST staff notes about a conversation | Applied 2026-09-22 |
+
+## Why `0012` exists
+
+A CST agent needs somewhere to record where a case stands — a courier update, an
+instruction from a supervisor, a fault in a listing, what happened last time
+this customer wrote in. There was nowhere for that to live.
+`conversation_messages` is the customer thread, and a row there IS a message
+exchanged with a customer; `audit_log` records state changes from a closed
+action list, not prose; `draft_revisions` describes a reply. A note about the
+case is none of the three.
+
+**These notes are staff-only, and the schema is where that is stated.**
+`internal_notes.visibility` is `NOT NULL` and constrained to the single value
+`'internal'`. A customer-visible note would require altering
+`ck_internal_notes_visibility` on purpose — it cannot be reached by an insert
+that simply omits the column, and it cannot be forgotten. Same device as
+`automation_items.test_mode` in `0011`.
+
+`author_user_id` is **nullable and always written NULL today**. This application
+still has no interactive sign-in, so there is no agent identity to stamp on a
+note — the same reason `draft_revisions.created_by_user_id` and
+`context_snapshots.confirmed_by_user_id` are null. The column is already here,
+so nothing needs backfilling with a guess when sign-in arrives.
+
+`source_order_id` is a plain column with no foreign key, because the order lives
+in the read-only source database this schema must not couple itself to — the
+rule `0011` states for `automation_items.source_order_id`.
+
+Create and view only. Edit and delete are a later phase; `updated_at` exists so
+that phase needs no migration of its own.
 
 ## Why `0011` exists
 
