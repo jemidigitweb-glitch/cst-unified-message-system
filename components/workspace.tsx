@@ -108,6 +108,21 @@ export function Workspace() {
   const [inboxHasMore, setInboxHasMore] = useState(false);
   const [inboxLoadingMore, setInboxLoadingMore] = useState(false);
   /**
+   * How many urgent conversations the server lifted to the top of page 1.
+   *
+   * PAGINATION ARITHMETIC, NOT DISPLAY STATE. `offset` is "how many of the
+   * ordinary stream are already on screen", and the urgent block is not part of
+   * that stream — the server holds those ids out of every page query. Counting
+   * them would push the next `offset` too far and silently skip that many
+   * conversations.
+   *
+   * Taken from the server's own `urgentCount` rather than counted from the
+   * flags on screen, because the two can legitimately differ: if the urgent
+   * sweep hits its cap, an urgent conversation can also arrive inside an
+   * ordinary page, and counting flags would subtract it twice.
+   */
+  const [inboxUrgentLifted, setInboxUrgentLifted] = useState(0);
+  /**
    * Read/Unread sub-tab, local to whichever marketplace tab is on screen.
    *
    * Reset on every marketplace switch alongside the rest of the per-marketplace
@@ -341,10 +356,12 @@ export function Workspace() {
         const data = (await response.json()) as {
           conversations: InboxItem[];
           hasMore: boolean;
+          urgentCount?: number;
         };
         if (!cancelled) {
           setInbox(data.conversations);
           setInboxHasMore(data.hasMore);
+          setInboxUrgentLifted(data.urgentCount ?? 0);
         }
       } catch {
         if (!cancelled) setInboxError("Unable to load the inbox.");
@@ -456,6 +473,7 @@ export function Workspace() {
     setInbox(null);
     setInboxError(null);
     setInboxHasMore(false);
+    setInboxUrgentLifted(0);
     setInboxLoadingMore(false);
     setReadFilter("unread");
     setSelectedId(null);
@@ -480,18 +498,26 @@ export function Workspace() {
   /**
    * Fetches the next page and appends it to what is already loaded.
    *
-   * `offset` is the count already on screen, not a stored cursor — the
-   * inbox is read-only and newest-first, so a conversation cannot be
-   * inserted ahead of what is already loaded between one page and the next.
-   * Guarded on `inboxLoadingMore` so a second tap while the first request is
-   * still in flight cannot fetch (and append) the same page twice.
+   * `offset` is the count of the ORDINARY STREAM already on screen, not a
+   * stored cursor — the inbox is read-only and newest-first, so a conversation
+   * cannot be inserted ahead of what is already loaded between one page and the
+   * next. Guarded on `inboxLoadingMore` so a second tap while the first request
+   * is still in flight cannot fetch (and append) the same page twice.
+   *
+   * THE URGENT BLOCK IS SUBTRACTED, and it has to be. Those conversations were
+   * lifted out of the stream and are excluded from every page query, so they
+   * occupy rows on screen without occupying positions in the sequence the
+   * offset walks. Passing the raw row count would skip exactly that many
+   * ordinary conversations at the seam between page 1 and page 2 — the one
+   * place a paging bug is invisible, because the reviewer never sees what was
+   * not fetched.
    */
   const loadMoreInbox = useCallback(async () => {
     if (inboxLoadingMore || inbox === null) return;
     setInboxLoadingMore(true);
     try {
       const response = await fetch(
-        `/api/conversations?marketplace=${marketplace}&offset=${inbox.length}`,
+        `/api/conversations?marketplace=${marketplace}&offset=${inbox.length - inboxUrgentLifted}`,
       );
       if (!response.ok) throw new Error("request failed");
       const data = (await response.json()) as { conversations: InboxItem[]; hasMore: boolean };
@@ -504,7 +530,7 @@ export function Workspace() {
     } finally {
       setInboxLoadingMore(false);
     }
-  }, [inbox, inboxLoadingMore, marketplace]);
+  }, [inbox, inboxLoadingMore, inboxUrgentLifted, marketplace]);
 
   /**
    * Handles a marketplace tap from either `MarketplaceTabs` instance — the

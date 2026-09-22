@@ -360,6 +360,27 @@ export function fakeApp(initial: {
       return { rows: [{ id: item.id }] };
     }
 
+    /**
+     * UNDO CANCEL, with the real WHERE clause.
+     *
+     * `status = 'cancelled'` is enforced here for the same reason the fake
+     * enforces `status = 'scheduled'` on the other transitions: a test that could
+     * restore a `sent` row would be testing a database this application does not
+     * have.
+     *
+     * NOTHING ELSE IS TOUCHED -- `scheduled_at`, `dispatched_at` and every
+     * provenance column are left alone -- so a test asserting they survive is
+     * asserting something this fake could have got wrong. `cancelled_at` and
+     * `cancelled_reason` are deliberately kept, matching the real statement.
+     */
+    if (/SET status = 'scheduled',/.test(text)) {
+      const item = state.items.find((candidate) => candidate.id === String(values[0]));
+      if (!item || item.status !== "cancelled") return { rows: [] };
+      item.status = "scheduled";
+      item.updated_at = now().toISOString();
+      return { rows: [{ id: item.id }] };
+    }
+
     if (/SET recipient_name = \$2/.test(text)) {
       const [id, name] = values as [string, string | null];
       const item = state.items.find((candidate) => candidate.id === String(id));

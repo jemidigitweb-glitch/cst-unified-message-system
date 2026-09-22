@@ -168,6 +168,10 @@ function item(overrides: Partial<InboxItem> = {}): InboxItem {
     lastDirection: "inbound",
     category: null,
     priority: null,
+    priorityReasons: [],
+    urgent: false,
+    beforeShipmentOutcome: null,
+    slaStartsAt: null,
     ...overrides,
   };
 }
@@ -206,11 +210,15 @@ describe("the inbox item's priority field", () => {
   });
 
   /**
-   * ADDITIVE, PINNED FIELD BY FIELD. The response gained exactly one key and
-   * lost, renamed and re-typed none — which is what "backward compatible"
+   * ADDITIVE, PINNED FIELD BY FIELD. The response has only ever GAINED keys and
+   * has lost, renamed and re-typed none — which is what "backward compatible"
    * has to mean for a contract an existing client already reads.
+   *
+   * `priorityReasons` and `urgent` are the cancellation / stop-dispatch pair,
+   * and both carry a default, so a payload written before they existed still
+   * parses. See `inboxItemSchema`.
    */
-  it("adds one field to the item and changes no other", () => {
+  it("only ever adds fields to the item, and changes none of the others", () => {
     expect(Object.keys(inboxItemSchema.shape).sort()).toEqual(
       [
         "id",
@@ -228,8 +236,26 @@ describe("the inbox item's priority field", () => {
         "lastDirection",
         "category",
         "priority",
+        "priorityReasons",
+        "urgent",
+        "beforeShipmentOutcome",
+        "slaStartsAt",
       ].sort(),
     );
+  });
+
+  /**
+   * The backward-compatibility claim above, exercised rather than asserted: a
+   * payload from before this feature existed still parses, and comes back not
+   * urgent rather than undefined.
+   */
+  it("parses a payload written before the urgent fields existed", () => {
+    const { priorityReasons, urgent, ...legacy } = item();
+    void priorityReasons;
+    void urgent;
+    const parsed = inboxItemSchema.parse(legacy);
+    expect(parsed.priorityReasons).toEqual([]);
+    expect(parsed.urgent).toBe(false);
   });
 
   it("parses an item back exactly as it was given", () => {
@@ -252,6 +278,10 @@ describe("the open conversation is never filtered out of the list", () => {
     lastDirection: "outbound" as const,
     category: "Admin related issues" as const,
     priority: null,
+    priorityReasons: [],
+    urgent: false,
+    beforeShipmentOutcome: null,
+    slaStartsAt: null,
   };
   const filters = {
     readFilter: "unread" as const,

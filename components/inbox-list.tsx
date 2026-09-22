@@ -16,7 +16,10 @@ import type { MessagePriority } from "@/lib/knowledge/message-priority";
 
 import { CategoryTag } from "./category-tag";
 import { PriorityRibbon } from "./priority-ribbon";
+import { ResponseSlaTimer } from "./response-sla-timer";
 import { StatusBadge } from "./status-badge";
+import { UrgentFlag } from "./urgent-flag";
+import { RESPONSE_SLA_MINUTES, responseSlaStatus } from "@/lib/domain/response-sla";
 
 /** The dropdown's "no filter" option — never a value `InboxItem.category` itself holds. */
 export const ALL_CATEGORIES = "all" as const;
@@ -178,6 +181,13 @@ export function InboxList({
     return <p className="p-5 text-sm opacity-60">Loading conversations…</p>;
   }
 
+  /**
+   * ONE `now` FOR THE WHOLE RENDER, so every SLA panel in the list is measured
+   * against the same moment. Reading the clock per row would let two rows
+   * rendered microseconds apart disagree about how much time is left.
+   */
+  const now = new Date();
+
   const filtered = visibleConversations(items, {
     readFilter,
     categoryFilter,
@@ -248,9 +258,23 @@ export function InboxList({
                 {/* Renders nothing when the conversation is unranked. */}
                 <PriorityRibbon priority={item.priority} />
                 <span className="flex items-baseline justify-between gap-2">
-                  {/* Never the bare stored reference — see conversationTitle. */}
-                  <span className="truncate text-sm font-medium">
-                    {conversationTitle(item, capability)}
+                  {/*
+                   * The URGENT badge leads the title rather than joining the
+                   * chips below it. A cancellation is read before the row is,
+                   * so it has to be the first thing on the first line — down
+                   * with the category and the status it would be a fourth
+                   * label competing with three others.
+                   *
+                   * Renders nothing on an ordinary row, so the title's
+                   * position is unchanged for every conversation that is not
+                   * urgent.
+                   */}
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <UrgentFlag urgent={item.urgent} />
+                    {/* Never the bare stored reference — see conversationTitle. */}
+                    <span className="truncate text-sm font-medium">
+                      {conversationTitle(item, capability)}
+                    </span>
                   </span>
                   <span className="shrink-0 text-[11px] tabular-nums opacity-70">
                     {stamp.date} {stamp.time}
@@ -282,6 +306,33 @@ export function InboxList({
                     <StatusBadge state={item.workflowState} />
                   </span>
                 </span>
+
+                {/*
+                 * THE RESPONSE SLA, ON URGENT ROWS ONLY.
+                 *
+                 * A panel on every row would be a wall of identical boxes down
+                 * a list whose whole job is to be scannable. It belongs to the
+                 * rows that carry a deadline, and those are rare by
+                 * construction — a before-shipping query on an order that has
+                 * not left yet.
+                 *
+                 * `now` is passed rather than read inside the component so a
+                 * server render and a client render of the same moment agree.
+                 * There is deliberately no ticking interval yet: no approved
+                 * duration exists, so every panel renders the same "not
+                 * configured" line and a timer would re-render the list once a
+                 * second to change nothing. Adding one is the right move on the
+                 * day `RESPONSE_SLA_MINUTES` is set, and not before.
+                 */}
+                {item.urgent && (
+                  <ResponseSlaTimer
+                    status={responseSlaStatus({
+                      targetMinutes: RESPONSE_SLA_MINUTES,
+                      receivedAt: item.slaStartsAt === null ? null : new Date(item.slaStartsAt),
+                      now,
+                    })}
+                  />
+                )}
               </button>
             </li>
           );

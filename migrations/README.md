@@ -15,6 +15,28 @@ NNNN_<description>.down.sql   reverses it
 | `0005_cst_knowledge_base` | CST rule corpus: sources and sign-off, categories, rules, examples, triggers | **Written, NOT executed — awaiting review** |
 | `0011_post_dispatch_automation` | Post-dispatch automation: templates, settings, records | Applied 2026-09-21 |
 | `0012_automation_worker_wake` | Wake signal for the always-running automation worker: one function, four triggers | **Written, NOT executed — awaiting review** |
+| `0013_automation_restore_cancel_pair` | Relaxes `ck_automation_items_cancel_pair` so Undo Cancel can keep `cancelled_at` | Applied 2026-09-22 |
+
+## Why `0013` exists
+
+`0011` shipped `ck_automation_items_cancel_pair` as a **biconditional** —
+`cancelled_at` set if and only if `status = 'cancelled'`. That is right for
+Cancel and fatal for Undo Cancel: restoring a record sets `status` back to
+`scheduled` and deliberately leaves `cancelled_at` in place, so the row still
+shows that it was cancelled and put back. PostgreSQL rejected that UPDATE with
+`23514`, and because the restore route only special-cases a missing store, the
+admin page got a bare 500 — "Unable to restore this record".
+
+`0013` changes **only that CHECK**. No column, no table, no row. A cancelled row
+must still record when it was cancelled; a `scheduled`, `sent`, `skipped` or
+`failed` row MAY keep the timestamp as history. `0011.up.sql` carries the same
+relaxed form so a fresh database never needs `0013`; this file is the identical
+change for a database that already ran the original.
+
+Its `down` migration is **destructive to Undo Cancel** and says so: any restored
+row (`scheduled` with `cancelled_at` set) fails the old biconditional, so the
+rollback refuses until those rows are cancelled again or the timestamp cleared.
+The old constraint and Undo Cancel cannot coexist.
 
 ## Why `0012` exists
 `scripts/run-automation-worker.mjs` starts once and waits on the exact

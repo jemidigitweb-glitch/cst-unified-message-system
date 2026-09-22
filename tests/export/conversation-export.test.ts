@@ -44,6 +44,10 @@ function conversation(overrides: Partial<InboxItem> = {}): InboxItem {
     // conversation, and priority is not part of it — see the assertion below
     // that the exported text names no priority at all.
     priority: null,
+    priorityReasons: [],
+    urgent: false,
+    beforeShipmentOutcome: null,
+    slaStartsAt: null,
     ...overrides,
   };
 }

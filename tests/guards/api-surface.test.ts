@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = join(__dirname, "..", "..");
 const API_DIR = join(ROOT, "app", "api");
+const REPO_DIR = join(ROOT, "lib", "repositories");
 
 /** Never allowed on any route. */
 const FORBIDDEN_METHODS = ["PUT", "DELETE", "HEAD", "OPTIONS"];
@@ -41,10 +42,12 @@ const MUTABLE_ROUTES = [
   /[\\/]workflow[\\/]route\.tsx?$/,
   /[\\/]automations[\\/]settings[\\/]route\.tsx?$/,
   /[\\/]automations[\\/][^\\/]+[\\/]cancel[\\/]route\.tsx?$/,
+  /[\\/]automations[\\/][^\\/]+[\\/]restore[\\/]route\.tsx?$/,
 ];
 
 const SETTINGS_ROUTE = join(API_DIR, "automations", "settings", "route.ts");
 const CANCEL_ROUTE = join(API_DIR, "automations", "[itemId]", "cancel", "route.ts");
+const RESTORE_ROUTE = join(API_DIR, "automations", "[itemId]", "restore", "route.ts");
 
 /**
  * The operator-triggered run route, and it must stay absent.
@@ -165,6 +168,59 @@ describe("API surface", () => {
     ]) {
       expect(source, `cancel route must not call ${forbidden}`).not.toContain(forbidden);
     }
+  });
+
+  /**
+   * The restore route, pinned.
+   *
+   * IT EARNS A PLACE ON THIS LIST BECAUSE CANCEL HAS ONE. Cancelling is a single
+   * click that cannot be taken back; an undo is what makes that acceptable, and
+   * leaving it to a hand-written SQL statement would make "undo" harder than
+   * "cancel" -- the wrong way round for a control guarding a mistake. The
+   * exemption is narrow in the same way the cancel one is: this route may move a
+   * record's STATUS and nothing else. It must never acquire the ability to
+   * process, schedule, reschedule or configure anything.
+   */
+  it("keeps the automation restore route to restoring", () => {
+    expect(existsSync(RESTORE_ROUTE)).toBe(true);
+    const source = readFileSync(RESTORE_ROUTE, "utf8");
+
+    expect(source).toMatch(/restoreCancelledItem/);
+    for (const forbidden of [
+      "markItemProcessed",
+      "runPostDispatchAutomation",
+      "processDueItems",
+      "selectDueItems",
+      "insertScheduledItem",
+      "updateAutomationSettings",
+      "renderTemplate",
+      "dispatchEventForShipment",
+      "findDispatchedShipments",
+    ]) {
+      expect(source, `restore route must not call ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  /**
+   * AND ITS WRITER TOUCHES ONE COLUMN. The same promise the settings route makes
+   * about its own writer, made here: `restoreItem` sets `status` and `updated_at`
+   * and names no schedule, no provenance and no cancellation column -- so "do not
+   * recalculate `scheduled_at`" is a property of the statement rather than a
+   * promise in a comment.
+   */
+  it("keeps the restore writer to the status alone", () => {
+    const repository = readFileSync(
+      join(REPO_DIR, "automation-repository.ts"),
+      "utf8",
+    );
+    const restore = /export async function restoreItem[\s\S]*?\n\}/.exec(repository)?.[0];
+    expect(restore).toBeDefined();
+    expect(restore).toMatch(/SET status = 'scheduled'/);
+    expect(restore).not.toMatch(/scheduled_at\s*=/);
+    expect(restore).not.toMatch(/dispatched_at\s*=/);
+    // An UPDATE of the existing row, never a second INSERT of it.
+    expect(restore).toMatch(/UPDATE cst_app\.automation_items/);
+    expect(restore).not.toMatch(/INSERT/);
   });
 
   it("declares no send or transmission route", () => {

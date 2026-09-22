@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getAppPool } from "@/lib/db/pools";
+import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import { parseMarketplaceForFeed } from "@/lib/domain/marketplace-capabilities";
 import { listConversations } from "@/lib/repositories/conversation-repository";
 
@@ -45,12 +45,40 @@ export async function GET(request: Request): Promise<NextResponse> {
   const offset = parseOffset(params.get("offset"));
 
   try {
-    const page = await listConversations(getAppPool(), { marketplace, offset });
+    /*
+     * The SOURCE pool is passed for condition 3 of the before-shipment urgent
+     * rule — whether the matched order has been dispatched. It is READ-ONLY:
+     * the pool pins `default_transaction_read_only=on`, so the server itself
+     * refuses a write rather than relying on this route's discipline.
+     *
+     * Its absence is safe rather than fatal. Without dispatch state nothing is
+     * urgent and the inbox loads exactly as it did before — a missed highlight,
+     * never a promise that a parcel can still be stopped.
+     */
+    const page = await listConversations(getAppPool(), {
+      marketplace,
+      offset,
+      source: getSourcePool(),
+    });
     return NextResponse.json({
       marketplace,
       conversations: page.items,
       hasMore: page.hasMore,
       offset,
+      /*
+       * How many cancellation / stop-dispatch conversations were lifted to the
+       * top of this page, and how far the sweep that found them looked.
+       *
+       * The count is non-zero only on the first page — the urgent block is
+       * served once and then held out of the ordinary stream, so a caller
+       * paging onwards does not meet it again. `urgentScanCapped` says the
+       * sweep hit its cap, which is the difference between "no more urgent
+       * conversations" and "stopped looking"; an interface that cannot tell
+       * those apart will present one as the other.
+       */
+      urgentCount: page.urgentCount,
+      urgentScanned: page.urgentScanned,
+      urgentScanCapped: page.urgentScanCapped,
     });
   } catch (cause) {
     // The underlying error may name schemas, columns or hosts, so it is logged

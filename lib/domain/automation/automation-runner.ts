@@ -18,6 +18,7 @@ import {
   markItemProcessed,
   markItemSkipped,
   refreshRecipientName,
+  restoreItem,
   selectDueItems,
   templateById,
 } from "@/lib/repositories/automation-repository";
@@ -352,4 +353,26 @@ export async function cancelScheduledItem(
   input: { readonly id: string; readonly reason: string | null },
 ): Promise<boolean> {
   return cancelItem(app, input);
+}
+
+/**
+ * An operator undoing a cancellation they made by mistake.
+ *
+ * THE INVERSE OF `cancelScheduledItem`, AND NO MORE THAN THE INVERSE. It moves
+ * `cancelled` back to `scheduled` and nothing else -- see `restoreItem`, which is
+ * where the preservation of `scheduled_at` and every provenance column lives.
+ *
+ * IT DOES NOT PROCESS ANYTHING, AND IT DOES NOT SCHEDULE ANYTHING. There is no
+ * scan, no source read, no template render and no write beyond the status. The
+ * record rejoins the queue it left; the worker or the cron claims it if and when
+ * its original moment has passed. That separation is what keeps this button from
+ * acquiring a send path later: it can only ever make a record ELIGIBLE again, and
+ * eligibility is re-tested from the source at the moment of processing.
+ *
+ * MEANINGFULLY DIFFERENT FROM CANCELLING A RECORD THAT WAS SKIPPED. A `skipped`
+ * or `failed` record has a verdict against it -- the order was cancelled, or the
+ * template no longer matched -- and there is deliberately no way to reverse one.
+ */
+export async function restoreCancelledItem(app: Pool, id: string): Promise<boolean> {
+  return restoreItem(app, { id });
 }

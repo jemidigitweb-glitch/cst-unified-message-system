@@ -114,6 +114,22 @@ const REASON_PRIORITY: Readonly<Record<PriorityReason, MessagePriority>> = {
   case_closed_by_customer: "LOW",
 };
 
+/**
+ * Every reason, as a runtime list.
+ *
+ * DERIVED FROM `REASON_PRIORITY` RATHER THAN RETYPED, so it is exhaustive by
+ * construction: a reason added to the union must be given a level there, and
+ * appears here without anyone remembering to add it. A second hand-written list
+ * would be one more place for a reason to go missing.
+ *
+ * Exported so `inboxItemSchema` can validate the reasons that now cross the
+ * wire to the browser — see `InboxItem.priorityReasons`.
+ */
+export const PRIORITY_REASONS = Object.keys(REASON_PRIORITY) as [
+  PriorityReason,
+  ...PriorityReason[],
+];
+
 export type PriorityReading = {
   /**
    * Null only where nothing was read at all. At message level that is an empty
@@ -255,13 +271,45 @@ const PLATFORM_CASE = new RegExp(
 );
 
 /**
- * A cancellation the customer is ASKING FOR.
+ * A cancellation — or a stop-dispatch — the customer is ASKING FOR.
  *
  * Every alternative carries its own request frame — "cancel MY order", "I want
- * to cancel", "can you cancel" — so the pattern cannot reach "what is your
- * cancellation policy?" or "how do I cancel an order?", which are pre-sales
- * questions about a process rather than an instruction about an order. That is
- * what makes `asserted_or_asked` safe here.
+ * to cancel", "can you cancel", "stop the dispatch", "do not send" — so the
+ * pattern cannot reach "what is your cancellation policy?" or "how do I cancel
+ * an order?", which are pre-sales questions about a process rather than an
+ * instruction about an order. That is what makes `asserted_or_asked` safe here.
+ *
+ * ------------------------------------------------------------------------
+ * STOP-DISPATCH IS THE SAME REQUEST, SAID ABOUT THE PARCEL
+ * ------------------------------------------------------------------------
+ * "Cancel my order" talks about the SALE; "stop dispatch", "do not send" and
+ * "wrong address — stop shipment" talk about the PARCEL. They are one intent
+ * to CST staff: somebody wants this not to go out, and the clock on being able
+ * to honour that is the time until it leaves the building.
+ *
+ * They are alternatives of THIS regex rather than a second concept, and that is
+ * deliberate. A separate `STOP_DISPATCH` pattern with its own `PriorityReason`
+ * would mean two vocabularies to keep in step, two reasons meaning one thing,
+ * and two places for a phrase to be forgotten. One concept, one reason
+ * (`cancellation_requested`), one place to edit.
+ *
+ * THE STOP VERB NEEDS A FULFILMENT NOUN, and the article is optional because
+ * "stop dispatch" is how the request is usually typed. "Stop" alone is not
+ * here: it is an ordinary English verb that would rank "stop sending me
+ * marketing" and "I cannot stop the flickering" as cancellations.
+ *
+ * `do not send` CARRIES ITS OWN NEGATOR, which is why it still reads as
+ * asserted. `claimStatus` looks for a negator BEFORE the match begins, and here
+ * the "not" is inside the match — so "do not send it" is an instruction, while
+ * "I did not ask you to stop the order" puts a negator in front and is denied.
+ * The lookahead keeps it off the communication-preference sentences that share
+ * the wording: "please don't send me any more emails" is not a stop-dispatch.
+ *
+ * THIS STILL ESTABLISHES NO ORDER FACT. Matching "stop dispatch" says the
+ * customer ASKED for the parcel to be held; it says nothing about whether it
+ * has already gone, and nothing here looks. See
+ * `ADDRESS_CHANGE_IS_NOT_ESCALATED` — the dispatch state belongs to the
+ * integration layer that can read it, and this module must not invent it.
  */
 const CANCELLATION_REQUESTED = new RegExp(
   [
@@ -271,8 +319,15 @@ const CANCELLATION_REQUESTED = new RegExp(
     "\\bi\\s*(?:'|’)?\\s*(?:d|would|ll|will|want|need|wish|like)?\\s*(?:like\\s+)?to\\s+cancel\\b",
     "\\bi\\s+(?:want|need|wish)\\s+(?:to\\s+)?cancel\\b",
     "\\b(?:can|could|would|will|may)\\s+(?:you|i|we)\\s+(?:please\\s+)?cancel\\b",
-    "\\bstop\\s+(?:my|the)\\s+(?:order|delivery)\\b",
+    /**
+     * Stop / halt / hold / cancel, aimed at the fulfilment of the order.
+     * Subsumes the narrower `stop (my|the) (order|delivery)` this replaced.
+     * `despatch` is the British spelling the trade actually writes.
+     */
+    "\\b(?:stop|halt|hold|cancel)\\s+(?:my\\s+|the\\s+|this\\s+|our\\s+|that\\s+)?(?:order|purchase|delivery|dispatch|despatch|shipment|shipping|parcel|package|postage)\\b",
+    "\\bdo\\s*n[o']?t\\s+(?:send|ship|dispatch|despatch|post)\\b(?!\\s+(?:me\\s+|us\\s+)?(?:any\\s+)?(?:more\\s+)?(?:marketing|advert\\w*|email|e-mail|newsletter|promotion|spam|text|sms|letter)\\w*)",
     "\\bdo\\s*n[o']?t\\s+(?:want|need)\\s+(?:it|this|them|the\\s+order)\\s+(?:any\\s?more|now)\\b",
+    "\\bno\\s+longer\\s+(?:want|need|require)\\s+(?:it|this|them|the\\s+order|my\\s+order|the\\s+item)\\b",
   ].join("|"),
   "i",
 );

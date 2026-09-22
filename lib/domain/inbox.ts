@@ -8,7 +8,7 @@ import { messageDirectionSchema } from "@/lib/domain/message";
 import { bodyDecodeStatuses } from "@/lib/domain/source-message";
 import { workflowStateSchema } from "@/lib/domain/workflow";
 import { MESSAGE_CATEGORIES, type MessageCategory } from "@/lib/knowledge/message-category";
-import { MESSAGE_PRIORITIES } from "@/lib/knowledge/message-priority";
+import { MESSAGE_PRIORITIES, PRIORITY_REASONS } from "@/lib/knowledge/message-priority";
 
 /**
  * Marketplace-NEUTRAL view contracts for the workspace.
@@ -82,6 +82,66 @@ export const inboxItemSchema = z.object({
    * conversation nobody could read is not one that can wait.
    */
   priority: z.enum(MESSAGE_PRIORITIES).nullable(),
+  /**
+   * WHY the priority is what it is — every reason that applied, most urgent
+   * first, exactly as `explainConversationPriority` returned them.
+   *
+   * THIS USED TO BE THROWN AWAY. The repository called
+   * `classifyConversationPriority`, which is a thin wrapper that keeps the
+   * level and discards the reasons, so the system knew a conversation was a
+   * cancellation and then forgot one line before the browser. A recall, a
+   * chased-up complaint and a cancellation all arrived as an identical red
+   * ribbon. Reading the reading it already computed costs nothing and is what
+   * lets `urgent` below exist without a second classifier.
+   *
+   * Empty for a conversation nothing could rank, which is the same set of
+   * conversations `priority` is null for.
+   */
+  priorityReasons: z.array(z.enum(PRIORITY_REASONS)).default([]),
+  /**
+   * The BEFORE-SHIPMENT urgent flag.
+   *
+   * RAISED BY VERIFIED ORDER STATE, NOT BY ANYTHING THE CUSTOMER WROTE. All
+   * three of these hold: the newest message is an unanswered customer message
+   * in a reply thread, a stored context snapshot resolves the conversation to a
+   * `single_order`, and the source shows that order has not been dispatched.
+   * See `beforeShipmentEligibility`, which is the only place it is decided.
+   *
+   * IT DELIBERATELY NO LONGER READS TEXT. An earlier version raised this from
+   * cancellation wording found anywhere in the thread, which let a promotional
+   * email containing "cancel" reach the top of the inbox and kept a thread red
+   * for months after the parcel had been delivered. Neither is expressible now:
+   * no word in any message can raise this flag.
+   *
+   * IT MEANS "WORK THIS FIRST", AND ONLY THAT. It does not mean the order was
+   * cancelled, that dispatch was stopped, or that anything was done — this
+   * application cannot do any of those things. It means the order is still here
+   * and will not be for long.
+   *
+   * Defaults false so every existing stored payload and every test fixture
+   * written before this field stays valid.
+   */
+  urgent: z.boolean().default(false),
+  /**
+   * Which of the three conditions decided it, for display and for logs.
+   *
+   * Carried rather than recomputed so an interface can say WHY a conversation
+   * is not urgent — "already dispatched" and "no matching order" are different
+   * answers, and an agent looking at a conversation they expected to be flagged
+   * deserves the real one. Null on projections that do not evaluate the rule.
+   */
+  beforeShipmentOutcome: z.string().nullable().default(null),
+  /**
+   * When the response SLA clock starts: the instant the newest customer message
+   * became ours to answer, as an ISO string.
+   *
+   * AN INSTANT, NOT A STORED SOURCE TIMESTAMP. Source timestamps are naive and
+   * their zone is unconfirmed, so this comes from the normalised UTC column
+   * where the ingestion layer set one and from `ingested_at` otherwise — see
+   * `LATEST_INBOUND_INSTANT`. Null where neither exists, which the SLA panel
+   * renders as "arrival time not established" rather than as a countdown.
+   */
+  slaStartsAt: z.string().nullable().default(null),
 });
 
 export type InboxItem = z.infer<typeof inboxItemSchema>;

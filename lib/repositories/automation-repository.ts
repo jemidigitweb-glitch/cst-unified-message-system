@@ -600,6 +600,55 @@ export async function cancelItem(
   return rows.length === 1;
 }
 
+/**
+ * An operator undoing an accidental cancellation.
+ *
+ * THE INVERSE OF `cancelItem`, AND GUARDED THE SAME WAY IT IS. `status =
+ * 'cancelled'` in the WHERE clause is what makes requirement 7 true rather than
+ * merely intended: a `sent`, `skipped`, `failed` or already-`scheduled` record
+ * matches nothing, so this statement cannot resurrect a record that was
+ * processed, cannot shorten a failure, and cannot be replayed to move a record
+ * backwards a second time. `RETURNING id` turns "did it match?" into an answer
+ * the caller has to handle, exactly as `cancelItem` does.
+ *
+ * NOTHING IS RECALCULATED AND NOTHING IS COPIED. This sets `status` and
+ * `updated_at` and no other column, so `scheduled_at`, `dispatched_at`,
+ * `source_order_id`, `source_shipment_id`, `sub_source_id`, `channel`,
+ * `template_id` and `template_version` are all left exactly as the scan wrote
+ * them. Requirement 4 and requirement 5 are the same fact here: there is no
+ * INSERT and no arithmetic, so a restored record is the original record.
+ *
+ * THAT IS ALSO WHY AN OVERDUE RECORD NEEDS NO SPECIAL HANDLING. `scheduled_at`
+ * is untouched, so if it has already passed then `selectDueItems` -- which reads
+ * `status = 'scheduled' AND scheduled_at <= now()` and nothing else -- matches it
+ * on the very next pass. If it is still in the future, that same query does not
+ * match it until the original moment arrives. Requirement 6 falls out of not
+ * changing anything, which is the strongest form it could take.
+ *
+ * `cancelled_at` AND `cancelled_reason` ARE KEPT, deliberately. They are not
+ * cleared. A record that was cancelled and restored did have that happen to it,
+ * and nulling the columns would make the row claim otherwise -- the cancellation
+ * would become invisible, including the reason an operator typed. The page reads
+ * them to show "Restored after cancel" instead of a bare cancellation, so the
+ * history is visible rather than merely storable.
+ *
+ * `updated_at` moves because the row did change. Nothing else does.
+ */
+export async function restoreItem(
+  db: Db,
+  input: { readonly id: string },
+): Promise<boolean> {
+  const { rows } = await db.query({
+    text: `UPDATE cst_app.automation_items
+              SET status = 'scheduled',
+                  updated_at = now()
+            WHERE id = $1::bigint AND status = 'cancelled'
+        RETURNING id`,
+    values: [input.id],
+  });
+  return rows.length === 1;
+}
+
 /** Refreshes the recipient's display name from the source at recheck time. */
 export async function refreshRecipientName(
   db: Db,

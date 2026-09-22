@@ -15,9 +15,24 @@ import type { MessagePriority } from "@/lib/knowledge/message-priority";
  * chip at a glance, which is what keeps the three signals on the row readable
  * as three separate things.
  *
- * NO SORTING, ANYWHERE. This colours a row and filters it. The inbox stays
- * ordered newest-first, because a list that reorders itself by a derived
- * reading is a list where a reviewer cannot find what they saw a moment ago.
+ * THIS COMPONENT SORTS NOTHING, and neither does the list it sits in. It
+ * colours a row; the filter narrows the rows. Ordering is decided server-side
+ * in `listConversations` and arrives already done — the browser renders the
+ * sequence it was given, which is why `inbox-list.tsx` and `workspace.tsx`
+ * still contain no `.sort(` and a guard test still holds them to it.
+ *
+ * WHAT CHANGED, AND WHAT DID NOT. The ordinary stream is still strictly
+ * newest-first, because a list that reshuffles itself by a derived reading is a
+ * list where a reviewer cannot find what they saw a moment ago. The ONE
+ * exception is the cancellation / stop-dispatch block, which the server lifts
+ * to the top of the first page — see `UrgentFlag` and
+ * `lib/domain/before-shipment-urgency.ts`. That is a fixed block above the stream
+ * rather than a re-sort of it: nothing inside the stream moves relative to
+ * anything else, so the property this note was originally protecting survives.
+ *
+ * Three levels of ribbon remain the wrong tool for that job, which is why the
+ * urgent block is marked by a labelled badge instead. Red here means HIGH, and
+ * HIGH is common; the badge says which red it is.
  */
 
 /**

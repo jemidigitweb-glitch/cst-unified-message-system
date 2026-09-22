@@ -315,8 +315,11 @@ CREATE TABLE IF NOT EXISTS cst_app.automation_items (
   CONSTRAINT ck_automation_items_failure_pair
     CHECK ((status = 'failed') = (last_error IS NOT NULL)),
 
+  -- A cancelled row must record when that happened. Other statuses MAY still
+  -- carry `cancelled_at`: Undo Cancel returns the row to `scheduled` without
+  -- erasing the cancellation, so the page can say it was restored.
   CONSTRAINT ck_automation_items_cancel_pair
-    CHECK ((status = 'cancelled') = (cancelled_at IS NOT NULL))
+    CHECK (status <> 'cancelled' OR cancelled_at IS NOT NULL)
 );
 
 COMMENT ON TABLE cst_app.automation_items IS

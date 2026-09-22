@@ -250,6 +250,24 @@ function Outcome({ item }: { item: AutomationItem }) {
       </span>
     );
   }
+  /*
+   * A RESTORED RECORD KEEPS ITS CANCELLATION AND SAYS SO.
+   *
+   * `cancelled_at`/`cancelled_reason` are deliberately not cleared when a record
+   * is restored, so a `scheduled` row carrying them is a record that was once
+   * cancelled and has been put back. Showing them is the difference between an
+   * operator understanding why a record they thought was stopped is about to be
+   * processed, and wondering whether the screen is lying. The scheduled moment
+   * itself is in its own column, unchanged.
+   */
+  if (item.status === "scheduled" && item.cancelledAt !== null) {
+    return (
+      <span className="text-xs">
+        Restored after cancel · {item.cancelledReason ?? "no reason recorded"} ·{" "}
+        {moment(item.cancelledAt)}
+      </span>
+    );
+  }
   if (item.status === "sent") {
     return (
       <span className="text-xs">
@@ -295,8 +313,20 @@ export function AutomationAdmin() {
    * This page reads, and changes settings. That is all it does.
    */
 
+  /**
+   * CANCELLING ASKS FIRST. It used to be a bare one-click link, and a record
+   * cancelled by mistake could not be brought back from this screen at all.
+   * The confirmation and the Undo below are one change, not two: a reversible
+   * action does not need a dialog, and an irreversible one in a dense table does.
+   *
+   * `window.confirm` rather than a bespoke dialog because it blocks, needs no
+   * state, traps focus and is reachable by keyboard for free — and because the
+   * consequence being guarded is small (one record rejoins the queue) rather than
+   * destructive. What matters is that the click is re-decided deliberately.
+   */
   const cancel = useCallback(
     async (id: string) => {
+      if (!window.confirm("Cancel this scheduled automation?")) return;
       setError(null);
       try {
         const response = await fetch(`/api/automations/${id}/cancel`, {
@@ -311,6 +341,31 @@ export function AutomationAdmin() {
         await loadQueue();
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Unable to cancel this record.");
+      }
+    },
+    [loadQueue],
+  );
+
+  /**
+   * UNDO CANCEL. No confirmation, deliberately: this is the repair path, and
+   * putting a dialog in front of the undo would train the reader to click through
+   * dialogs — the opposite of what the dialog above is for.
+   *
+   * It does not process anything. The record goes back to `scheduled` with its
+   * original `scheduled_at`, and the worker picks it up if that moment has passed.
+   */
+  const restore = useCallback(
+    async (id: string) => {
+      setError(null);
+      try {
+        const response = await fetch(`/api/automations/${id}/restore`, { method: "POST" });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(payload?.error ?? "Unable to restore this record.");
+        }
+        await loadQueue();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Unable to restore this record.");
       }
     },
     [loadQueue],
@@ -451,6 +506,18 @@ export function AutomationAdmin() {
                           <Outcome item={item} />
                         </td>
                         <td className="p-2">
+                          {/*
+                            ONE CONTROL PER STATE, AND THEY ARE MUTUALLY
+                            EXCLUSIVE. Cancel only exists on a `scheduled` row
+                            and Undo only on a `cancelled` one, so neither can be
+                            offered where the API would refuse it — the 409s in
+                            the two routes exist for a stale tab, not as the
+                            ordinary path.
+
+                            Nothing is offered on `sent`, `skipped` or `failed`.
+                            Those are outcomes, and there is no button that
+                            overturns one.
+                          */}
                           {item.status === "scheduled" ? (
                             <button
                               type="button"
@@ -458,6 +525,16 @@ export function AutomationAdmin() {
                               onClick={() => void cancel(item.id)}
                             >
                               Cancel
+                            </button>
+                          ) : null}
+                          {item.status === "cancelled" ? (
+                            <button
+                              type="button"
+                              className="text-xs underline"
+                              title="Returns this record to Scheduled with its original scheduled time. Nothing is sent."
+                              onClick={() => void restore(item.id)}
+                            >
+                              Undo Cancel
                             </button>
                           ) : null}
                         </td>

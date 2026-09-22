@@ -53,16 +53,50 @@ function messageRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function fake(responses: unknown[][]) {
-  const calls: { text: string; values?: unknown[] }[] = [];
+/**
+ * The before-shipment sweep is recognised by the one thing only it does: it
+ * joins the verified order behind the conversation. The page query never
+ * mentions `context_snapshots`.
+ *
+ * Matched on the SQL rather than on call order, because order is an
+ * implementation detail and a fake that depends on it breaks every time the
+ * queries are reordered.
+ */
+const isUrgentSweep = (sql: string) => sql.includes("context_snapshots");
+
+/**
+ * `responses` answer the ordinary page query; `urgentResponses` answer the
+ * before-shipment sweep.
+ *
+ * The sweep defaults to empty, so a test that says nothing about urgency gets
+ * an inbox with no urgent conversations in it — which is the case nearly every
+ * test here is about.
+ */
+function fake(responses: unknown[][], urgentResponses: unknown[][] = []) {
+  type Call = { text: string; values?: unknown[] };
+  /**
+   * `calls` is the PAGE query's calls, which is what every assertion in this
+   * file that talks about "the query" means. The sweep is kept separately
+   * rather than mixed in, so an assertion about the inbox statement cannot
+   * accidentally be satisfied by the sweep statement — the two select many of
+   * the same columns, so `calls[0].text` would otherwise pass for the wrong
+   * reason.
+   */
+  const calls: Call[] = [];
+  const sweepCalls: Call[] = [];
   let index = 0;
+  let urgentIndex = 0;
   const client: Queryable = {
     query: async (config) => {
+      if (isUrgentSweep(config.text)) {
+        sweepCalls.push(config);
+        return { rows: urgentResponses[urgentIndex++] ?? [] };
+      }
       calls.push(config);
       return { rows: responses[index++] ?? [] };
     },
   };
-  return { calls, client };
+  return { calls, sweepCalls, client };
 }
 
 describe("inbox listing", () => {
@@ -86,7 +120,10 @@ describe("inbox listing", () => {
     await listConversations(client, { marketplace: "ebay", limit: 5, placement: "reply_inbox" });
     // limit+1: one extra row is requested, never returned, purely to learn
     // whether a next page exists. offset defaults to 0.
-    expect(calls[0]!.values).toEqual(["ebay", "reply_inbox", 6, 0]);
+    // The fifth value is the urgent block's ids, held out of the ordinary
+    // stream so a cancellation cannot appear both at the top and in its date
+    // position. Empty here: this fake reports no urgent conversations.
+    expect(calls[0]!.values).toEqual(["ebay", "reply_inbox", 6, 0, []]);
   });
 
   it("orders the inbox by latest activity first", async () => {
@@ -162,6 +199,13 @@ describe("inbox listing", () => {
       // Additive. This row carries no per-message text, so nothing was
       // established to rank — see the priority tests at the foot of this file.
       priority: null,
+      // Additive alongside it: the reasons the level was built from, and the
+      // cancellation / stop-dispatch flag derived from those reasons. Nothing
+      // was read here, so there are no reasons and the row is not urgent.
+      priorityReasons: [],
+      urgent: false,
+      beforeShipmentOutcome: null,
+      slaStartsAt: null,
     });
   });
 
@@ -329,8 +373,13 @@ describe("No Rule listing", () => {
       lastDirection: "outbound",
       category: "Admin related issues",
       // Additive, and null for the same reason as above: the No Rule query
-      // selects no per-message text either.
+      // selects no per-message text either — so there is nothing to build
+      // reasons from and nothing that could be urgent.
       priority: null,
+      priorityReasons: [],
+      urgent: false,
+      beforeShipmentOutcome: null,
+      slaStartsAt: null,
       caseType: "Damaged item",
       analysedAt: "2026-08-20 09:00:00",
       reason: "no_corpus",

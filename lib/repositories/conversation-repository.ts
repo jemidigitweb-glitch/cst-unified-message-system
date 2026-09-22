@@ -16,12 +16,28 @@ import {
   type MessageCategory,
   UNREADABLE_CONTENT_CATEGORY,
   classifyConversationCategory,
+  classifyMessageCategory,
   classifyMessageCategoryWithFallback,
 } from "@/lib/knowledge/message-category";
 import {
-  type MessagePriority,
-  classifyConversationPriority,
+  type PriorityReading,
+  explainConversationPriority,
+  explainMessagePriority,
 } from "@/lib/knowledge/message-priority";
+import {
+  BEFORE_SHIPMENT_MARKETPLACE,
+  BEFORE_SHIPMENT_RECENCY_HOURS,
+  BEFORE_SHIPPING_CATEGORY,
+  beforeShipmentEligibility,
+} from "@/lib/domain/before-shipment-urgency";
+import { staffClosedTheOrder } from "@/lib/knowledge/staff-resolution";
+import {
+  type OrderKey,
+  type OrderShipmentState,
+  type SourceQueryable,
+  orderKeyOf,
+  shipmentStateForOrders,
+} from "@/lib/repositories/order-shipment-state-repository";
 import { resolveEvidence } from "@/lib/knowledge/rule-evidence";
 
 /**
@@ -128,9 +144,198 @@ SELECT c.id::text                  AS id,
 FROM cst_app.conversations c
 WHERE c.marketplace = $1
   AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
+  -- The urgent conversations are lifted out of the ordinary stream entirely
+  -- and served as a block on the first page. Excluding them here on EVERY
+  -- page is what stops one appearing twice: once at the top and once again
+  -- in its date position four pages later. See listConversations.
+  AND NOT (c.id = ANY($5::bigint[]))
 ORDER BY c.last_source_ts DESC, c.id DESC
 LIMIT $3
 OFFSET $4`;
+
+/**
+ * When the newest customer message became ours to answer, as a real INSTANT.
+ *
+ * `COALESCE(source_ts_utc, ingested_at)`, and both halves are deliberate:
+ *
+ *   source_ts_utc  the customer's own send moment, normalised to UTC by the
+ *                  ingestion layer. The right answer, and preferred whenever it
+ *                  is there. Measured against the live store it is currently
+ *                  populated for 0 of 23,338 inbound messages — the column pair
+ *                  exists and nothing fills it yet — so today it never wins.
+ *   ingested_at    when the message landed here. NOT NULL, defaulted to now(),
+ *                  populated for all 23,338.
+ *
+ * NEITHER IS `source_ts`. That column is naive and its zone is unconfirmed, and
+ * the migrations README forbids casting it until the ingestion owner says so.
+ * An hour of zone error means nothing to a two-day reply target and everything
+ * to a minutes-based one, so a response clock must not start from it.
+ *
+ * THE HONEST CAVEAT, and it is a real one: for conversations backfilled by a
+ * historical sync, `ingested_at` is when that sync ran rather than when the
+ * customer wrote. Their elapsed time is measured from the import. For live
+ * traffic — a sync running continuously — the two are close, and "when we could
+ * first have seen it" is arguably the right start for a clock measuring OUR
+ * response anyway. It is stated here rather than buried so nobody reads an old
+ * conversation's timer as a fact about the customer.
+ */
+const LATEST_INBOUND_INSTANT = `(
+  SELECT COALESCE(cm.source_ts_utc, cm.ingested_at)
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'inbound'
+  ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+  LIMIT 1
+)`;
+
+/**
+ * The customer's NEWEST message, and only that one.
+ *
+ * THE WHOLE POINT IS THAT IT IS ONE MESSAGE. Whether the customer is asking to
+ * change or stop the order is a question about what they are asking NOW.
+ * Reading the thread — which is what `INBOUND_TEXTS` supplies and what priority
+ * is computed from — is how the previous version of this feature kept a
+ * conversation urgent for months after a cancellation had been dealt with.
+ * `LIMIT 1`, newest first, is that rule made structural.
+ */
+const LATEST_INBOUND_TEXT = `(
+  SELECT cm.body_text
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'inbound'
+  ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+  LIMIT 1
+)`;
+
+/**
+ * OUR most recent reply in the thread.
+ *
+ * Read so `staffClosedTheOrder` can ask whether CST already told this customer
+ * the order was dispatched or cancelled. The NEWEST outbound only: an early
+ * "we will dispatch today" does not close a thread that carried on for another
+ * four messages, and the last thing we said is what the customer is responding
+ * to.
+ *
+ * OUTBOUND, AND THAT IS THE POINT. This is the one text column the urgent rule
+ * reads, and it is OUR writing rather than the customer's — see
+ * `lib/knowledge/staff-resolution.ts` for why that distinction is what makes
+ * reading it safe at all.
+ */
+const LATEST_OUTBOUND_TEXT = `(
+  SELECT cm.body_text
+  FROM cst_app.conversation_messages cm
+  WHERE cm.conversation_id = c.id AND cm.direction = 'outbound'
+  ORDER BY cm.source_ts DESC, cm.source_pk::bigint DESC
+  LIMIT 1
+)`;
+
+/**
+ * The before-shipment urgent sweep: one marketplace, ALL of it.
+ *
+ * ------------------------------------------------------------------------
+ * WHY A SECOND QUERY EXISTS AT ALL
+ * ------------------------------------------------------------------------
+ * The page has already been chosen by the time anything is evaluated per row,
+ * so an urgent conversation sitting four pages back could never reach the top
+ * of page 1. This looks at the whole marketplace BEFORE the page is cut, which
+ * is the difference between server-side ordering and a client-side filter over
+ * whatever happened to be loaded.
+ *
+ * ------------------------------------------------------------------------
+ * NOT ONE WORD OF THE MESSAGE IS READ
+ * ------------------------------------------------------------------------
+ * The previous version of this sweep matched cancellation vocabulary with `~*`
+ * and then classified the candidates. It was wrong in the way the rule is now
+ * written to prevent: a promotional email saying "cancel" could reach the top of
+ * the inbox, and a cancellation asked for months ago kept its thread red long
+ * after the parcel was delivered.
+ *
+ * What decides now is stored, verified STATE, and all of it is SQL:
+ *
+ *   condition 1  `inbox_visibility = 'reply_inbox'` and the newest message
+ *                inbound — a customer reply thread nobody has answered.
+ *   condition 2  an INNER JOIN to a `context_snapshots` row resolved to
+ *                `single_order`, which is the resolution the rest of the system
+ *                already treats as verified (`mayUseOrderFacts`).
+ *   condition 3  not expressible here — dispatch state lives in the source —
+ *                so it is applied to these candidates in `listConversations`.
+ *
+ * The join is what bounds this query. Measured against the live store there are
+ * 224 `single_order` snapshots in total across every marketplace, so the
+ * candidate set is small by construction rather than by a cap.
+ *
+ * CAPPED ANYWAY, AND THE CAP IS REPORTED. `urgentScanned`/`urgentScanCapped`
+ * travel back with the page for the same reason `scanned`/`hasMore` do on the
+ * notification feed: a silent cap reads as "we looked everywhere".
+ */
+const URGENT_CANDIDATES = `
+SELECT c.id::text                  AS id,
+       c.marketplace,
+       c.sub_source_id,
+       c.counterparty_ref,
+       c.listing_item_ref,
+       c.workflow_state,
+       c.needs_context,
+       c.inbox_visibility,
+       c.first_source_ts::text     AS first_source_ts,
+       c.last_source_ts::text      AS last_source_ts,
+       c.message_count,
+       c.inbound_count,
+       ${LAST_DIRECTION}           AS last_direction,
+       ${INBOUND_TEXT}             AS inbound_text,
+       ${INBOUND_TEXTS}            AS inbound_texts,
+       -- The verified snapshot order where one exists, and the thread's own
+       -- reference otherwise -- see BeforeShipmentInput.orderNumber. Either way
+       -- the SOURCE decides whether the order is real; this only says what to
+       -- look up.
+       COALESCE(
+         CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
+         c.counterparty_ref
+       )                           AS order_number,
+       ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
+       ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
+       ${LATEST_INBOUND_TEXT}      AS latest_inbound_text,
+       EXISTS (
+         SELECT 1
+         FROM cst_app.conversation_messages cm
+         WHERE cm.conversation_id = c.id AND cm.direction = 'outbound'
+       )                           AS ever_replied
+FROM cst_app.conversations c
+LEFT JOIN cst_app.context_snapshots cs ON cs.conversation_id = c.id
+WHERE c.marketplace = $1
+  AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
+  -- Condition 2, as far as SQL can take it: SOMETHING to look up. Whether the
+  -- order is real is settled against the source, not here.
+  AND COALESCE(
+        CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
+        c.counterparty_ref
+      ) IS NOT NULL
+  -- The ingestion layer's sentinel for a thread it could not key to anything.
+  -- It is not an order number and must never be looked up as one.
+  AND c.counterparty_ref NOT LIKE 'unresolved:%'
+  -- Condition 1: a customer reply thread whose newest message is theirs...
+  AND c.inbox_visibility = 'reply_inbox'
+  AND ${LAST_DIRECTION} = 'inbound'
+  -- ...and, ON $5 ONLY, which nobody has replied to AT ALL. Stricter than the
+  -- line above: that one is also true of a thread we answered and the customer
+  -- came back on, which is a conversation in progress rather than an untouched
+  -- request. Every other marketplace keeps the behaviour it already had.
+  AND (
+    c.marketplace <> $5::text
+    OR NOT EXISTS (
+      SELECT 1
+      FROM cst_app.conversation_messages cm
+      WHERE cm.conversation_id = c.id AND cm.direction = 'outbound'
+    )
+  )
+  -- Whether we already told them it went out or was stopped is decided in
+  -- TypeScript, from the text selected above, because it has to be read through
+  -- claimStatus: "your order has NOT been dispatched yet" is the commonest
+  -- sentence in one of these threads and a SQL LIKE would read it backwards.
+  -- Recent enough to still be live work. Applied here as well as in
+  -- beforeShipmentEligibility so an ancient never-shipped, never-closed
+  -- thread is not even transferred, let alone ranked.
+  AND ${LATEST_INBOUND_INSTANT} >= now() - make_interval(hours => $4::int)
+ORDER BY c.last_source_ts DESC, c.id DESC
+LIMIT $3`;
 
 /**
  * Conversations nobody has answered yet, before the category is read.
@@ -442,7 +647,53 @@ type ConversationRow = {
   /** Absent (not merely null) wherever a query does not select it — `LIST_CONVERSATIONS` is the only one that does. */
   inbound_text?: string | null;
   inbound_texts?: (string | null)[] | null;
+  /**
+   * The verified order behind the conversation, selected only by
+   * `URGENT_CANDIDATES`. Absent on every other projection, which is why the
+   * urgent flag is false everywhere else rather than being recomputed from
+   * whatever a narrower query happened to carry.
+   */
+  order_resolution?: string | null;
+  order_sub_source_id?: number | null;
+  order_number?: string | null;
+  /** A real instant — see `LATEST_INBOUND_INSTANT`. */
+  sla_starts_at?: string | Date | null;
+  /** OUR newest reply, for `staffClosedTheOrder`. See `LATEST_OUTBOUND_TEXT`. */
+  latest_outbound_text?: string | null;
+  /** The customer's newest message, for the order-change intent. One message. */
+  latest_inbound_text?: string | null;
+  /** Whether we have ever replied in this thread. Amazon's extra condition. */
+  ever_replied?: boolean | null;
 };
+
+/**
+ * Is the customer's CURRENT message asking to change or stop the order?
+ *
+ * BOTH READERS ARE THE EXISTING ONES, called on one message. There is no new
+ * vocabulary here and no third classifier:
+ *
+ *   the category classifier's own `Order change, before shipping queries`,
+ *   which is what the notification feed and the inbox filter already match on;
+ *   or
+ *
+ *   `cancellation_requested` from the priority engine, which carries the
+ *   cancellation and stop-dispatch wording — "cancel my order", "stop
+ *   dispatch", "do not send", "stop shipment" — read through `claimStatus`, so
+ *   a policy question and a denial do not count.
+ *
+ * EITHER, because they answer the question from different sides: the phrase
+ * table places an address change or an amendment that carries no cancellation
+ * wording at all, and the priority engine catches a blunt "stop dispatch" that
+ * the phrase table may file elsewhere.
+ *
+ * ONE MESSAGE, NEVER THE THREAD — see `LATEST_INBOUND_TEXT`.
+ */
+function asksToChangeTheOrder(latestInboundText: string | null): boolean {
+  const text = latestInboundText?.trim() ?? "";
+  if (text === "") return false;
+  if (classifyMessageCategory(text) === BEFORE_SHIPPING_CATEGORY) return true;
+  return explainMessagePriority(text).reasons.includes("cancellation_requested");
+}
 
 type NoRuleConversationRow = ConversationRow & {
   case_type: string | null;
@@ -557,7 +808,7 @@ function categoryFor(row: ConversationRow): MessageCategory | null {
  * NO NEW QUERY, NO NEW COLUMN. `INBOUND_TEXTS` is already selected for the
  * category, so this costs one more pass over text the row is already carrying.
  *
- * THE PER-MESSAGE ARRAY OR NOTHING. `classifyConversationPriority` reads each
+ * THE PER-MESSAGE ARRAY OR NOTHING. `explainConversationPriority` reads each
  * customer message on its own — that is what stops two unrelated sentences in
  * two unrelated messages forming a phrase neither contains, and it is what lets
  * a closing "all sorted" drop a thread's urgency. The concatenated
@@ -589,14 +840,28 @@ function categoryFor(row: ConversationRow): MessageCategory | null {
  *      urgency invented for a message nobody can read is a claim about text that
  *      is not there. They keep `UNREADABLE_CONTENT_CATEGORY` and no ribbon.
  */
-function priorityFor(row: ConversationRow): MessagePriority | null {
-  if (CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)) return null;
+/**
+ * WHY THIS RETURNS THE WHOLE READING, not just the level.
+ *
+ * It used to call `classifyConversationPriority`, which is a thin wrapper that
+ * keeps `priority` and discards `reasons`. That threw away the answer to "why
+ * is this red" one line before the browser, so a cancellation, a recall and a
+ * chased-up complaint all arrived as the same ribbon. `explainConversationPriority`
+ * is the function that wrapper already calls — reading its full result costs no
+ * extra work, no extra query and no second classification, and it is what
+ * `urgent` is derived from. See `InboxItem.priorityReasons`.
+ */
+const NOTHING_READ: PriorityReading = { priority: null, reasons: [], closesTheCase: false };
+
+function priorityReadingFor(row: ConversationRow): PriorityReading {
+  if (CATEGORY_SUPPRESSED_MARKETPLACES.has(row.marketplace)) return NOTHING_READ;
   const messages = row.inbound_texts;
-  if (messages === null || messages === undefined) return null;
-  return classifyConversationPriority(messages);
+  if (messages === null || messages === undefined) return NOTHING_READ;
+  return explainConversationPriority(messages);
 }
 
 function toInboxItem(row: ConversationRow): InboxItem {
+  const priorityReading = priorityReadingFor(row);
   return {
     id: row.id,
     marketplace: row.marketplace as InboxItem["marketplace"],
@@ -626,9 +891,41 @@ function toInboxItem(row: ConversationRow): InboxItem {
     // message earned. The concatenated column remains the fallback for any
     // caller or older projection that does not select the array.
     category: categoryFor(row),
-    // Alongside the category, not derived from it. See `priorityFor`.
-    priority: priorityFor(row),
+    // Alongside the category, not derived from it. See `priorityReadingFor`.
+    priority: priorityReading.priority,
+    // Copied rather than aliased: the reading is frozen-by-convention inside
+    // the engine, and the view contract is a plain mutable array on the wire.
+    priorityReasons: [...priorityReading.reasons],
+    /*
+     * URGENCY IS NOT DECIDED HERE, and it cannot be: it needs the dispatch
+     * state of the matched order, which lives in the source and is read in one
+     * batch per page rather than once per row. Every item therefore leaves this
+     * function NOT urgent, and `listConversations` raises the flag on the
+     * candidates that pass all of it — see `applyBeforeShipmentRule`.
+     *
+     * Defaulting to false here rather than to null is what keeps every other
+     * projection honest: the No Rule list and the notification feed select no
+     * order columns, so they report "not urgent" rather than an urgency
+     * invented from whatever they happened to carry.
+     */
+    urgent: false,
+    beforeShipmentOutcome: null,
+    slaStartsAt: instantOf(row.sla_starts_at),
   };
+}
+
+/**
+ * A timestamptz column as an ISO string, or null.
+ *
+ * node-postgres hands back a `Date` for `timestamptz` and a string for text, so
+ * both are accepted and normalised to one wire format. An unparseable value
+ * becomes null rather than an Invalid Date — a broken clock start must read as
+ * "not established", never as 1970.
+ */
+function instantOf(value: string | Date | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /**
@@ -700,7 +997,149 @@ export type ConversationPage = {
    * returned the way a count taken before or after could.
    */
   readonly hasMore: boolean;
+  /**
+   * How many urgent (cancellation / stop-dispatch) conversations were lifted
+   * to the top of the first page. Zero on every later page, because the block
+   * is served once — see `listConversations`.
+   */
+  readonly urgentCount: number;
+  /**
+   * How many candidate rows the urgent sweep actually read, and whether it hit
+   * its cap.
+   *
+   * REPORTED RATHER THAN HIDDEN, for the same reason `scanned`/`hasMore` are on
+   * the notification feed: the sweep is bounded, so a short urgent block is not
+   * by itself evidence that there are no more. An interface that cannot tell
+   * "none found" from "stopped looking" will present one as the other.
+   */
+  readonly urgentScanned: number;
+  readonly urgentScanCapped: boolean;
 };
+
+/**
+ * How many candidate rows the urgent sweep will read before stopping.
+ *
+ * The join to `context_snapshots` already bounds this hard — 224 `single_order`
+ * snapshots exist across every marketplace as measured against the live store —
+ * and the recency window bounds it again. 500 is a backstop against a future in
+ * which resolution coverage grows by orders of magnitude, not a working limit;
+ * if it is ever reached, `urgentScanCapped` says so rather than the list
+ * quietly under-reporting.
+ */
+const URGENT_SCAN_LIMIT = 500;
+
+const MS_PER_HOUR = 3_600_000;
+
+/**
+ * Applies conditions 1 and 3 to the sweep's candidates, and raises the flag.
+ *
+ * THE SWEEP ANSWERED WHAT SQL COULD ANSWER — a reply thread, unanswered, recent,
+ * with a verified single order behind it. Two things are left, and neither
+ * belongs in that query:
+ *
+ *   THE CLOSING SIGNAL, because "your order has NOT been dispatched yet" has to
+ *   be read through `claimStatus` rather than matched, or the commonest sentence
+ *   in a before-shipment thread would close it.
+ *
+ *   THE DISPATCH STATE, because it lives in the source database. It is fetched
+ *   in ONE batched read for every candidate rather than one query per row.
+ *
+ * AN ELIGIBLE CONVERSATION IS ALSO RE-TAGGED. Its category becomes
+ * `BEFORE_SHIPPING_CATEGORY` — the classifier's own value for the case area, so
+ * the inbox filter and the notification feed match it exactly as they already
+ * do. `beforeShipmentOutcome` records that the rule assigned it, so nothing has
+ * to guess later whether the phrase table or this rule named the case.
+ *
+ * A CANDIDATE THAT FAILS keeps everything it arrived with and rejoins the
+ * ordinary stream in its date position, carrying the outcome that explains why.
+ */
+async function applyBeforeShipmentRule(
+  source: SourceQueryable | null,
+  rows: readonly ConversationRow[],
+  now: Date,
+): Promise<InboxItem[]> {
+  const items = rows.map(toInboxItem);
+  if (rows.length === 0) return items;
+
+  /*
+   * NO SOURCE, NO FLAG. Where the source pool is unavailable the dispatch state
+   * is unknown, and an unknown dispatch state must not be read as "not
+   * dispatched" — that is the one error that would promise a window which has
+   * already closed. The inbox still loads; nothing is urgent.
+   */
+  const orderNumberOf = (row: ConversationRow): string | null => {
+    const value = row.order_number;
+    if (value === null || value === undefined) return null;
+    const trimmed = String(value).trim();
+    return trimmed === "" ? null : trimmed;
+  };
+
+  const keys: OrderKey[] = [];
+  for (const row of rows) {
+    const orderNumber = orderNumberOf(row);
+    if (orderNumber !== null) keys.push({ orderNumber });
+  }
+  const shipmentState =
+    source === null || keys.length === 0
+      ? new Map<string, OrderShipmentState>()
+      : await shipmentStateForOrders(source, keys);
+
+  return items.map((item, index) => {
+    const row = rows[index]!;
+    const orderNumber = orderNumberOf(row);
+    const shipment =
+      orderNumber === null ? null : (shipmentState.get(orderKeyOf({ orderNumber })) ?? null);
+
+    const startedAt = item.slaStartsAt === null ? null : new Date(item.slaStartsAt);
+    const outcome = beforeShipmentEligibility({
+      marketplace: item.marketplace,
+      // Read from the row rather than assumed false. The sweep already applies
+      // this on Amazon, so it is belt-and-braces there — and it is the real
+      // answer for every other marketplace, where the rule does not use it.
+      everReplied: row.ever_replied === true,
+      lastDirection: item.lastDirection,
+      inboxPlacement: item.inboxPlacement,
+      platformNotice: isPlatformNotice(item),
+      staffClosedTheOrder: staffClosedTheOrder(row.latest_outbound_text ?? null),
+      orderChangeIntent: asksToChangeTheOrder(row.latest_inbound_text ?? null),
+      ageHours:
+        startedAt === null ? null : (now.getTime() - startedAt.getTime()) / MS_PER_HOUR,
+      orderNumber,
+      shipment: shipment === null ? null : { dispatched: shipment.dispatched },
+    });
+
+    const eligible = outcome === "eligible";
+    /*
+     * THE TAG IS A NARROWER QUESTION THAN THE FLAG. Urgency says the window is
+     * open; the tag names the case area, so it needs the customer to actually
+     * be asking to change or stop the order. A pre-sales question on an
+     * unshipped order is urgent — they are waiting and we can still help — and
+     * is NOT an order change, so it keeps the category the phrase table read.
+     */
+    const retag = eligible && asksToChangeTheOrder(row.latest_inbound_text ?? null);
+    return {
+      ...item,
+      urgent: eligible,
+      beforeShipmentOutcome: outcome,
+      // Re-tagged only when the customer asked for a change. A conversation
+      // this declines keeps whatever the phrase table read, untouched.
+      category: retag ? BEFORE_SHIPPING_CATEGORY : item.category,
+    };
+  });
+}
+
+/**
+ * A marketplace's own platform notice rather than a customer.
+ *
+ * The SAME test the inbox list already applies for display — eBay's policy and
+ * order-update notices land in a single-message thread under the sentinel
+ * counterparty "eBay", and there is no customer on the other end of one. Kept
+ * here as well because a notice must not be able to reach the top of the queue
+ * under a response countdown aimed at a person who does not exist.
+ */
+function isPlatformNotice(item: InboxItem): boolean {
+  return item.marketplace === "ebay" && item.counterpartyRef === "eBay";
+}
 
 /**
  * Lists one marketplace's customer-reply inbox, newest activity first, one
@@ -731,9 +1170,64 @@ export async function listConversations(
      * impossible to find.
      */
     readonly placement?: InboxItem["inboxPlacement"] | null;
+    /**
+     * The read-only SOURCE pool, for condition 3.
+     *
+     * OPTIONAL, AND ITS ABSENCE IS SAFE. Without it the dispatch state cannot be
+     * read, and an unknown dispatch state is never treated as "not dispatched" —
+     * the inbox loads normally and nothing is urgent. That is the right failure
+     * direction: a missed highlight, never a promise that a parcel can still be
+     * stopped.
+     */
+    readonly source?: SourceQueryable | null;
+    /** Injected so the recency window is testable without freezing time. */
+    readonly now?: Date;
   },
 ): Promise<ConversationPage> {
   const limit = clampLimit(options.limit);
+  const offset = clampOffset(options.offset);
+  const now = options.now ?? new Date();
+
+  /**
+   * PHASE 1 — the before-shipment sweep, over the WHOLE marketplace.
+   *
+   * Runs on every page because its result decides what the ordinary stream must
+   * exclude, and that exclusion has to be identical on every page or a
+   * conversation would slip through the seam between two of them.
+   */
+  const urgentRows = await client.query({
+    text: URGENT_CANDIDATES,
+    values: [
+      options.marketplace,
+      options.placement ?? null,
+      URGENT_SCAN_LIMIT,
+      BEFORE_SHIPMENT_RECENCY_HOURS,
+      // Which marketplace carries the extra never-replied restriction. Passed
+      // rather than inlined so the query and the rule cannot disagree about it.
+      BEFORE_SHIPMENT_MARKETPLACE,
+    ],
+  });
+  const urgentScanned = urgentRows.rows.length;
+  const urgentScanCapped = urgentScanned >= URGENT_SCAN_LIMIT;
+
+  /**
+   * The SQL found candidates; this is where the rule is actually applied — the
+   * closing signal read through `claimStatus`, and the dispatch state read from
+   * the source in one batch. A candidate that fails any condition falls out and
+   * rejoins the ordinary stream in its date position.
+   */
+  const urgentItems = (
+    await applyBeforeShipmentRule(options.source ?? null, urgentRows.rows as ConversationRow[], now)
+  ).filter((item) => item.urgent);
+
+  /**
+   * PHASE 2 — the ordinary stream, with the urgent block held out of it.
+   *
+   * Excluding by id keeps `offset` meaningful: the non-urgent list is one
+   * continuous newest-first sequence that a caller pages through normally,
+   * and the urgent block sits above it rather than inside it.
+   */
+  const urgentIds = urgentItems.map((item) => item.id);
   const { rows } = await client.query({
     text: LIST_CONVERSATIONS,
     values: [
@@ -742,12 +1236,32 @@ export async function listConversations(
       // One extra row, never returned, purely to learn whether the next
       // page would be non-empty.
       limit + 1,
-      clampOffset(options.offset),
+      offset,
+      urgentIds,
     ],
   });
   const hasMore = rows.length > limit;
-  const items = (rows as ConversationRow[]).slice(0, limit).map(toInboxItem);
-  return { items, hasMore };
+  const pageItems = (rows as ConversationRow[]).slice(0, limit).map(toInboxItem);
+
+  /**
+   * The urgent block is served ONCE, on the first page.
+   *
+   * WHY NOT ON EVERY PAGE. Repeating it would make the same conversation appear
+   * at the top of page 1, page 2 and page 3 — a reviewer scrolling for older
+   * work would meet the same four red rows over and over, and the list would
+   * stop being a sequence. Once, at the top, then the ordinary stream.
+   *
+   * WHY NOT INTERLEAVED BY DATE. That is what the old behaviour effectively
+   * was, and it is the defect this feature exists to fix.
+   */
+  const isFirstPage = offset === 0;
+  return {
+    items: isFirstPage ? [...urgentItems, ...pageItems] : pageItems,
+    hasMore,
+    urgentCount: isFirstPage ? urgentItems.length : 0,
+    urgentScanned,
+    urgentScanCapped,
+  };
 }
 
 /**

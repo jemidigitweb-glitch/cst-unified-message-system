@@ -370,6 +370,23 @@ describe("the notification row", () => {
       lastDirection: "inbound",
       category: ORDER_CHANGE_CATEGORY,
       priority: "HIGH",
+      // This fixture's customer text IS a cancellation, so the notification row
+      // carries the same URGENT flag the inbox row does — one classifier, read
+      // in both places, rather than two answers about one conversation.
+      priorityReasons: ["cancellation_requested", "action_required"],
+      /*
+       * NOT URGENT HERE, AND THAT IS CORRECT. The text says "Please cancel my
+       * order", and under the old text-driven rule that alone raised the flag.
+       * Urgency is now a fact about the ORDER — verified, unshipped, recent —
+       * and this query selects no order columns at all, so it reports what it
+       * actually knows rather than an urgency inferred from wording.
+       *
+       * The inbox list is where the rule is evaluated, because that is where
+       * the dispatch state is read. See `applyBeforeShipmentRule`.
+       */
+      urgent: false,
+      beforeShipmentOutcome: null,
+      slaStartsAt: null,
       latestCustomerMessageAt: "2026-08-02 10:00:00",
       latestCustomerMessagePreview: "Please cancel my order.",
       hasDraft: false,

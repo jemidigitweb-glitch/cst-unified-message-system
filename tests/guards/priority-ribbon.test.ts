@@ -70,6 +70,10 @@ function item(overrides: Partial<InboxItem> = {}): InboxItem {
     lastDirection: "inbound",
     category: null,
     priority: null,
+    priorityReasons: [],
+    urgent: false,
+    beforeShipmentOutcome: null,
+    slaStartsAt: null,
     ...overrides,
   };
 }
