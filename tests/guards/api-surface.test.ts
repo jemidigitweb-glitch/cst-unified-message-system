@@ -36,6 +36,14 @@ const FORBIDDEN_METHODS = ["PUT", "DELETE", "HEAD", "OPTIONS"];
  * It writes `cst_app.automation_settings` and nothing else. "the automation
  * settings route writes only configuration" below pins that, so widening this
  * list did not widen what the route can do.
+ *
+ * THE TWO FOLLOW-UP ENTRIES ARE THE SECOND EXEMPTION, and narrower still. A
+ * follow-up reminder is internal CST state — "this conversation needs coming
+ * back to at this time" — with no recipient, channel, template or body, so
+ * neither route can reach a customer however it is called. One creates a row on
+ * a conversation; the other moves one row from `scheduled` to `completed`.
+ * "the follow-up routes touch reminders and nothing else" below pins that,
+ * exactly as the settings and cancel entries are pinned.
  */
 const MUTABLE_ROUTES = [
   /[\\/]draft[\\/]route\.tsx?$/,
@@ -43,7 +51,23 @@ const MUTABLE_ROUTES = [
   /[\\/]automations[\\/]settings[\\/]route\.tsx?$/,
   /[\\/]automations[\\/][^\\/]+[\\/]cancel[\\/]route\.tsx?$/,
   /[\\/]automations[\\/][^\\/]+[\\/]restore[\\/]route\.tsx?$/,
+  /[\\/]conversations[\\/][^\\/]+[\\/]follow-up[\\/]route\.tsx?$/,
+  /[\\/]follow-up-reminders[\\/][^\\/]+[\\/]route\.tsx?$/,
 ];
+
+const FOLLOW_UP_CREATE_ROUTE = join(
+  API_DIR,
+  "conversations",
+  "[conversationId]",
+  "follow-up",
+  "route.ts",
+);
+const FOLLOW_UP_COMPLETE_ROUTE = join(
+  API_DIR,
+  "follow-up-reminders",
+  "[reminderId]",
+  "route.ts",
+);
 
 const SETTINGS_ROUTE = join(API_DIR, "automations", "settings", "route.ts");
 const CANCEL_ROUTE = join(API_DIR, "automations", "[itemId]", "cancel", "route.ts");
@@ -221,6 +245,87 @@ describe("API surface", () => {
     // An UPDATE of the existing row, never a second INSERT of it.
     expect(restore).toMatch(/UPDATE cst_app\.automation_items/);
     expect(restore).not.toMatch(/INSERT/);
+  });
+
+  /**
+   * The follow-up routes, pinned — the price of their place on MUTABLE_ROUTES.
+   *
+   * They may create a reminder and complete one. They must never acquire a way
+   * to reach a customer, touch a draft, move a workflow state, or write any
+   * table but their own — which is what keeps "a reminder is internal CST
+   * state" a property of the code rather than a claim in a comment.
+   */
+  it("keeps the follow-up routes to reminders and nothing else", () => {
+    expect(existsSync(FOLLOW_UP_CREATE_ROUTE)).toBe(true);
+    expect(existsSync(FOLLOW_UP_COMPLETE_ROUTE)).toBe(true);
+
+    const create = readFileSync(FOLLOW_UP_CREATE_ROUTE, "utf8");
+    const complete = readFileSync(FOLLOW_UP_COMPLETE_ROUTE, "utf8");
+
+    expect(create).toMatch(/createReminder/);
+    expect(complete).toMatch(/completeReminder/);
+
+    for (const source of [create, complete]) {
+      for (const forbidden of [
+        "saveRevision",
+        "saveAutomationRevision",
+        "advanceWorkflowState",
+        "insertScheduledItem",
+        "markItemProcessed",
+        "runPostDispatchAutomation",
+        "processDueItems",
+        "updateAutomationSettings",
+        "renderTemplate",
+        "getSourcePool",
+        "getKnowledgePool",
+      ]) {
+        expect(source, `follow-up route must not call ${forbidden}`).not.toContain(forbidden);
+      }
+    }
+  });
+
+  /**
+   * AND THEIR WRITER TOUCHES ONE TABLE. The same promise the restore writer
+   * makes, made here: every statement in the reminder repository that writes
+   * names `cst_app.follow_up_reminders`, and completion is an UPDATE guarded on
+   * the status rather than a second INSERT — so "completing twice cannot
+   * duplicate a reminder or move its timestamp" is a property of the statement.
+   */
+  it("keeps the reminder writer to its own table", () => {
+    const raw = readFileSync(join(REPO_DIR, "follow-up-reminder-repository.ts"), "utf8");
+    /*
+     * Comments stripped before the name check, because the header names the
+     * tables this module must NOT touch — prose saying "not that one" is the
+     * opposite of the thing being guarded against, and would otherwise fail it.
+     */
+    const repository = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+
+    for (const other of [
+      "cst_app.internal_notes",
+      "cst_app.automation_items",
+      "cst_app.automation_settings",
+      "cst_app.draft_replies",
+      "cst_app.draft_revisions",
+      "cst_app.app_users",
+      "cst_app.audit_log",
+      "order_management",
+      "customer_service",
+    ]) {
+      expect(repository, `reminder repository must not name ${other}`).not.toContain(other);
+    }
+
+    // The only writing statements, and both name the one table.
+    const writes = repository.match(/\b(INSERT INTO|UPDATE|DELETE FROM)\s+\S+/g) ?? [];
+    expect(writes).toEqual([
+      "INSERT INTO cst_app.follow_up_reminders",
+      "UPDATE cst_app.follow_up_reminders",
+    ]);
+
+    const complete = /const COMPLETE_REMINDER = `[\s\S]*?`;/.exec(repository)?.[0];
+    expect(complete).toBeDefined();
+    expect(complete).toMatch(/SET status = 'completed'/);
+    expect(complete).toMatch(/WHERE id = \$1::bigint AND status = 'scheduled'/);
+    expect(complete).not.toMatch(/INSERT/);
   });
 
   it("declares no send or transmission route", () => {

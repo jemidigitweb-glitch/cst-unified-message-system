@@ -9,6 +9,7 @@ import {
   customerNoteChannelTabs,
   customerNotesForChannel,
 } from "@/lib/domain/customer-note";
+import type { FollowUpFeed, FollowUpTab } from "@/lib/domain/follow-up-view";
 import {
   type AwaitingResponseFeed,
   ORDER_CHANGE_NOTIFICATION_TITLE,
@@ -18,7 +19,29 @@ import {
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 
+import { FollowUpList, type ConversationLabel } from "./follow-up-list";
 import { PRIORITY_RIBBON_CLASS, priorityDescription } from "./priority-ribbon";
+
+/** Each mode's heading and strapline. One panel, three contents. */
+const FOLLOW_UP_PANEL_TITLE = "Follow-ups";
+const FOLLOW_UP_PANEL_STRAPLINE = "Shared across CST · all marketplaces · nothing is sent";
+
+/**
+ * The follow-up mode's whole input. Held by the workspace, like the rest of
+ * this screen's state; this panel decides nothing and stores nothing.
+ */
+export type FollowUpPanel = {
+  readonly feed: FollowUpFeed | null;
+  readonly error: string | null;
+  readonly tab: FollowUpTab;
+  readonly onSelectTab: (tab: FollowUpTab) => void;
+  readonly labels: Readonly<Record<string, ConversationLabel>>;
+  readonly failures: Readonly<Record<string, string>>;
+  readonly completing: string | null;
+  readonly now: Date;
+  readonly onOpenConversation: (reminderId: string, conversationId: string) => void;
+  readonly onComplete: (reminderId: string) => void;
+};
 
 /**
  * How far the work has got — which is NOT how far the customer has got.
@@ -229,12 +252,18 @@ function CustomerNoteList({
 /**
  * WHICH LIST THIS PANEL IS SHOWING.
  *
- * ONE PANEL, TWO CONTENTS. The bell and the notes button open the same
- * container, the same width, the same header shape, the same scroll area and
- * the same backdrop — only the title, the strapline and the rows differ. A
- * second drawer would have to re-decide all of those, and would then drift.
+ * ONE PANEL, THREE CONTENTS. The bell, the notes button and the follow-up
+ * button open the same container, the same width, the same header shape, the
+ * same scroll area and the same backdrop — only the title, the strapline and
+ * the rows differ. A second drawer would have to re-decide all of those, and
+ * would then drift.
+ *
+ * `follow_up` was added rather than given its own dashboard because the
+ * architecture already carried the branch: one `mode`, one container, one
+ * `onSelect` that crosses marketplaces. A separate screen would have
+ * duplicated all of it for a list of the same shape.
  */
-export type NotificationPanelMode = "notifications" | "notes";
+export type NotificationPanelMode = "notifications" | "notes" | "follow_up";
 
 export function NotificationDrawer({
   mode,
@@ -246,11 +275,20 @@ export function NotificationDrawer({
   onSelectNoteChannel,
   noteFailures,
   onSelectNote,
+  followUp,
   open,
   onClose,
   onSelect,
 }: {
   mode: NotificationPanelMode;
+  /**
+   * Everything the follow-up mode needs, in one object.
+   *
+   * GROUPED RATHER THAN SPREAD across eight more props, because this panel
+   * already takes eleven and the follow-up list holds none of its own state —
+   * the workspace owns it, like every other piece of state on this screen.
+   */
+  followUp: FollowUpPanel;
   feed: AwaitingResponseFeed | null;
   error: string | null;
   /** Customer notes, or null while unknown. Fetched by the workspace, not here. */
@@ -285,7 +323,12 @@ export function NotificationDrawer({
 
   const items = feed?.conversations ?? [];
   const showingNotes = mode === "notes";
-  const title = showingNotes ? CUSTOMER_NOTES_TITLE : ORDER_CHANGE_NOTIFICATION_TITLE;
+  const showingFollowUp = mode === "follow_up";
+  const title = showingFollowUp
+    ? FOLLOW_UP_PANEL_TITLE
+    : showingNotes
+      ? CUSTOMER_NOTES_TITLE
+      : ORDER_CHANGE_NOTIFICATION_TITLE;
 
   return (
     <>
@@ -305,9 +348,11 @@ export function NotificationDrawer({
                 the tab behind the drawer, which is the one thing a reviewer
                 would otherwise assume. */}
             <p className="text-[11px] opacity-70">
-              {showingNotes
-                ? "Written by the buyer on their order · last month, all marketplaces"
-                : "All marketplaces · no reply sent yet"}
+              {showingFollowUp
+                ? FOLLOW_UP_PANEL_STRAPLINE
+                : showingNotes
+                  ? "Written by the buyer on their order · last month, all marketplaces"
+                  : "All marketplaces · no reply sent yet"}
             </p>
           </div>
           <button
@@ -319,7 +364,20 @@ export function NotificationDrawer({
           </button>
         </div>
 
-        {showingNotes ? (
+        {showingFollowUp ? (
+          <FollowUpList
+            feed={followUp.feed}
+            error={followUp.error}
+            tab={followUp.tab}
+            onSelectTab={followUp.onSelectTab}
+            labels={followUp.labels}
+            failures={followUp.failures}
+            completing={followUp.completing}
+            now={followUp.now}
+            onOpenConversation={followUp.onOpenConversation}
+            onComplete={followUp.onComplete}
+          />
+        ) : showingNotes ? (
           <CustomerNoteList
             notes={notes}
             error={notesError}

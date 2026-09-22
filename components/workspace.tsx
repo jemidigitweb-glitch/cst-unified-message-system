@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type {
   AwaitingResponseFeed,
@@ -16,6 +16,12 @@ import {
   type CustomerNoteChannelFilter,
   type CustomerNoteFeed,
 } from "@/lib/domain/customer-note";
+import {
+  type ConversationSearchFeed,
+  isSearchable,
+  normalizeSearchQuery,
+} from "@/lib/domain/conversation-search";
+import type { FollowUpFeed, FollowUpTab } from "@/lib/domain/follow-up-view";
 import type { Marketplace } from "@/lib/domain/marketplace";
 import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import type { UnresolvedFeed } from "@/lib/domain/unresolved-messages";
@@ -25,8 +31,11 @@ import { DraftEvidencePanel } from "./draft-evidence-panel";
 import { ConversationView } from "./conversation-view";
 import { HamburgerIcon } from "./icons";
 import { CustomerNotesButton } from "./customer-notes-button";
+import type { ConversationLabel } from "./follow-up-list";
+import { FollowUpPanelButton } from "./follow-up-panel-button";
 import { NotificationBell } from "./notification-bell";
 import { NotificationDrawer, type NotificationPanelMode } from "./notification-drawer";
+import { SearchResults } from "./search-results";
 import {
   ALL_CATEGORIES,
   ALL_PRIORITIES,
@@ -212,6 +221,60 @@ export function Workspace() {
     "notifications",
   );
   /**
+   * SHARED FOLLOW-UP REMINDERS, and everything the panel needs to show them.
+   *
+   * Held here like every other piece of this screen's state. The list is a
+   * plain read of `/api/follow-up-reminders`: nothing in this workspace makes a
+   * reminder come due, and nothing needs to — `scheduled` becomes overdue by
+   * being read against the clock, never by anything being written.
+   */
+  const [followUpFeed, setFollowUpFeed] = useState<FollowUpFeed | null>(null);
+  const [followUpError, setFollowUpError] = useState<string | null>(null);
+  const [followUpTab, setFollowUpTab] = useState<FollowUpTab>("scheduled");
+  /** Why one row would not open or complete, keyed by reminder id. */
+  const [followUpFailures, setFollowUpFailures] = useState<Record<string, string>>({});
+  /** Which reminder is mid-completion, so only its own button says so. */
+  const [completingReminder, setCompletingReminder] = useState<string | null>(null);
+  /**
+   * How many follow-ups are still owed, for the header badge.
+   *
+   * Tracked separately from `followUpFeed` because the feed shows whichever tab
+   * is selected: reading the badge off it would drop the count to zero the
+   * moment somebody looked at the Completed list.
+   */
+  const [scheduledFollowUps, setScheduledFollowUps] = useState<number | null>(null);
+  /**
+   * The moment the follow-up rows are measured against.
+   *
+   * ONE CLOCK FOR THE WHOLE LIST, so two rows cannot disagree about how overdue
+   * something is. It is re-read every time the list is loaded — opening the
+   * panel, switching tab, after a create, after a completion — which is every
+   * moment a reviewer is actually looking at fresh figures.
+   *
+   * DELIBERATELY NOT A TICKING INTERVAL. `tests/guards/notification-bell.test.ts`
+   * forbids a timer anywhere in this workspace, because one here would put the
+   * notification feed — and the classifier behind it — on a schedule nobody
+   * asked for. A clock tick would not fetch anything, but the guard is a
+   * standing promise about this file rather than about one feature, and
+   * weakening it for a cosmetic refresh is the wrong trade. The honest cost:
+   * a panel left open for an hour shows "due in" figures an hour old until it
+   * is reopened or a tab is switched.
+   */
+  const [followUpNow, setFollowUpNow] = useState(() => new Date());
+  /**
+   * THE COMMON SEARCH: one box for a name, a handle, an order number, a
+   * conversation id or a message id.
+   *
+   * `searchTerm` is what is typed; `searchFeed` is what came back. They are
+   * separate because the box must stay responsive while a request is in
+   * flight — tying the input to the results would make typing wait on the
+   * network.
+   */
+  const [searchTerm, setSearchTerm] = useState("");
+  const [searchFeed, setSearchFeed] = useState<ConversationSearchFeed | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+  /**
    * Buyer notes on orders — `note_type = 'buyer'` at the source, never `team`.
    *
    * FETCHED WHEN THE NOTES LIST IS FIRST OPENED, not up front. Unlike the bell's
@@ -260,7 +323,12 @@ export function Workspace() {
    * "inbox" and only swaps which list feeds the left column — selecting a
    * conversation from either one opens the same detail pane the same way.
    */
-  const [view, setView] = useState<"inbox" | "status" | "no_rule">("inbox");
+  /**
+   * `search` is a fourth view for the same reason `no_rule` is a third: it
+   * replaces what the left column lists and changes nothing else. The
+   * conversation opens into the same pane, through the same `select`.
+   */
+  const [view, setView] = useState<"inbox" | "status" | "no_rule" | "search">("inbox");
   /**
    * Bumped when a draft is generated.
    *
@@ -698,6 +766,258 @@ export function Workspace() {
   }, [customerNotes]);
 
   /**
+   * Loads one tab of the shared follow-up list.
+   *
+   * ONLY EVER A KNOWN STATUS. The endpoint falls back to `scheduled` when given
+   * something it does not recognise, which is forgiving of a hand-typed URL and
+   * would be a silent wrong answer here — so the tab keys are the API's own
+   * values and nothing else is ever sent.
+   *
+   * The scheduled count is refreshed alongside, because the badge must not go
+   * stale while somebody reads the Completed tab.
+   */
+  const loadFollowUps = useCallback(async (tab: FollowUpTab) => {
+    setFollowUpError(null);
+    try {
+      const response = await fetch(`/api/follow-up-reminders?status=${tab}`);
+      if (!response.ok) throw new Error("request failed");
+      const data = (await response.json()) as FollowUpFeed;
+      setFollowUpFeed(data);
+      // Not read inside a render or an effect body: the clock is taken at the
+      // moment the answer lands, so the rows are measured against it.
+      setFollowUpNow(new Date());
+      if (tab === "scheduled") setScheduledFollowUps(data.reminders.length);
+    } catch {
+      setFollowUpError("Unable to load follow-ups.");
+    }
+  }, []);
+
+  /**
+   * Refreshes both the visible tab and the badge.
+   *
+   * Used after a create and after a completion — the two moments when what is
+   * owed actually changes. A completion moves a row from one tab to the other,
+   * so the count has to be re-read even when the Completed tab is showing.
+   */
+  const refreshFollowUps = useCallback(async () => {
+    await loadFollowUps(followUpTab);
+    if (followUpTab !== "scheduled") {
+      try {
+        const response = await fetch("/api/follow-up-reminders?status=scheduled");
+        if (!response.ok) throw new Error("request failed");
+        const data = (await response.json()) as FollowUpFeed;
+        setScheduledFollowUps(data.reminders.length);
+      } catch {
+        // The badge is a convenience; a failure here must not blank the list
+        // the reviewer is reading.
+      }
+    }
+  }, [followUpTab, loadFollowUps]);
+
+  /**
+   * The badge's count, fetched once on mount — the same treatment the bell and
+   * the notes button already get, and for the same reason: a badge has to be on
+   * screen before anybody clicks, which is the whole point of it.
+   *
+   * Written out rather than calling `loadFollowUps`, to match the two effects
+   * above it exactly: that helper clears the error synchronously before its
+   * first `await`, and a `setState` in an effect body is what
+   * `react-hooks/set-state-in-effect` exists to catch.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/follow-up-reminders?status=scheduled");
+        if (!response.ok) throw new Error("request failed");
+        const data = (await response.json()) as FollowUpFeed;
+        if (!cancelled) {
+          setFollowUpFeed(data);
+          setFollowUpNow(new Date());
+          setScheduledFollowUps(data.reminders.length);
+          setFollowUpError(null);
+        }
+      } catch {
+        if (!cancelled) setFollowUpError("Unable to load follow-ups.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Runs the search and shows the results IN THE CONVERSATION LIST.
+   *
+   * A VIEW, NOT A DRAWER. Search is how an agent finds the thread they are
+   * about to work on, so it belongs where the threads are — the left column,
+   * beside No Rule and the inbox, with the conversation opening into the same
+   * pane it always does. A drawer would put the results over the work instead
+   * of in front of it, and close the moment something was picked.
+   *
+   * ON SUBMIT, NOT ON EVERY KEYSTROKE. The name path leaves this application
+   * and reads the shared source database; firing it per character would put a
+   * production database behind somebody's typing speed. A short query returns
+   * an empty result from the route rather than an error, so pressing Enter
+   * early is harmless.
+   */
+  const runSearch = useCallback(async (raw: string) => {
+    const query = normalizeSearchQuery(raw);
+    setView("search");
+    setMobilePanel("list");
+    if (!isSearchable(query)) {
+      setSearchFeed(null);
+      setSearchError(null);
+      return;
+    }
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const response = await fetch(`/api/conversations/search?q=${encodeURIComponent(query)}`);
+      if (!response.ok) throw new Error("request failed");
+      setSearchFeed((await response.json()) as ConversationSearchFeed);
+    } catch {
+      setSearchError("Unable to search just now.");
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  /** The follow-up button: the same panel, the third list, the mirrored behaviour. */
+  const toggleFollowUps = useCallback(() => {
+    void loadFollowUps(followUpTab);
+    if (notificationsOpen && notificationPanelMode !== "follow_up") {
+      setNotificationPanelMode("follow_up");
+      return;
+    }
+    setNotificationPanelMode("follow_up");
+    setNotificationsOpen((isOpen) => !isOpen);
+  }, [notificationsOpen, notificationPanelMode, loadFollowUps, followUpTab]);
+
+  const selectFollowUpTab = useCallback(
+    (tab: FollowUpTab) => {
+      setFollowUpTab(tab);
+      setFollowUpFeed(null);
+      void loadFollowUps(tab);
+    },
+    [loadFollowUps],
+  );
+
+  /**
+   * Opens the conversation a reminder belongs to. NAVIGATION, AND NOTHING ELSE.
+   *
+   * It does not complete the reminder, generate a draft, advance the workflow
+   * or touch the customer in any way — a reviewer who opens a thread to read it
+   * and decides it is not done yet must find the reminder exactly as it was.
+   *
+   * THE MARKETPLACE IS RESOLVED BY THE SERVER, not guessed. The reminder
+   * carries a conversation id and no marketplace, and the detail route answers
+   * without one — so this asks it which tab the conversation lives in and then
+   * opens it by the one existing path, exactly as a customer note is opened.
+   * A refusal leaves the panel open and writes the reason beside that row.
+   */
+  const openFollowUpConversation = useCallback(
+    async (reminderId: string, conversationId: string) => {
+      setFollowUpFailures((was) => {
+        const next = { ...was };
+        delete next[reminderId];
+        return next;
+      });
+
+      let from: Marketplace;
+      try {
+        const response = await fetch(`/api/conversations/${conversationId}`);
+        if (!response.ok) throw new Error("request failed");
+        const detail = (await response.json()) as ConversationDetail;
+        from = detail.conversation.marketplace;
+      } catch {
+        setFollowUpFailures((was) => ({
+          ...was,
+          [reminderId]: "Unable to open this conversation just now.",
+        }));
+        return;
+      }
+
+      if (from !== marketplace) switchMarketplace(from);
+      setNotificationsOpen(false);
+      await select(conversationId, from);
+    },
+    [marketplace, switchMarketplace, select],
+  );
+
+  /**
+   * Marks one reminder completed. ONLY FROM THE BUTTON.
+   *
+   * Nothing else in this workspace calls it: opening the conversation does not,
+   * generating a draft does not, and the due time passing does not. Completion
+   * is a deliberate statement by a person that the customer has been dealt with
+   * — by hand, elsewhere — and this records that and nothing more.
+   *
+   * A 409 means somebody else already completed it. That is not an error worth
+   * alarming anybody about, so the list is refreshed and the row says what
+   * happened rather than the panel throwing.
+   */
+  const completeFollowUp = useCallback(
+    async (reminderId: string) => {
+      setCompletingReminder(reminderId);
+      setFollowUpFailures((was) => {
+        const next = { ...was };
+        delete next[reminderId];
+        return next;
+      });
+      try {
+        const response = await fetch(`/api/follow-up-reminders/${reminderId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (response.status === 409) {
+          setFollowUpFailures((was) => ({
+            ...was,
+            [reminderId]: "Already completed by someone else. The list has been refreshed.",
+          }));
+          await refreshFollowUps();
+          return;
+        }
+        if (!response.ok) throw new Error("request failed");
+        await refreshFollowUps();
+      } catch {
+        setFollowUpFailures((was) => ({
+          ...was,
+          [reminderId]: "Unable to complete this follow-up just now.",
+        }));
+      } finally {
+        setCompletingReminder(null);
+      }
+    },
+    [refreshFollowUps],
+  );
+
+  /**
+   * Names for the reminder rows, from conversations ALREADY LOADED.
+   *
+   * BEST EFFORT, NEVER INVENTED. The follow-up API returns a conversation id
+   * and no customer identity, so a row can only be named when that conversation
+   * happens to be on this screen already — the current marketplace's inbox page
+   * or the global notification feed. Anything else is shown as its conversation
+   * number rather than as a guessed customer or order.
+   *
+   * NO EXTRA REQUEST IS MADE FOR THIS. Decorating a list is not a reason to ask
+   * the database a hundred more questions.
+   */
+  const followUpLabels = useMemo(() => {
+    const labels: Record<string, ConversationLabel> = {};
+    for (const item of inbox ?? []) {
+      labels[item.id] = { counterpartyRef: item.counterpartyRef, marketplace: item.marketplace };
+    }
+    for (const item of orderChange?.conversations ?? []) {
+      labels[item.id] = { counterpartyRef: item.counterpartyRef, marketplace: item.marketplace };
+    }
+    return labels;
+  }, [inbox, orderChange]);
+
+  /**
    * The bell: the notification list, in the shared panel.
    *
    * Open in notifications mode when closed; SWITCH to notifications when the
@@ -706,7 +1026,9 @@ export function Workspace() {
    * and it is unchanged.
    */
   const toggleNotifications = useCallback(() => {
-    if (notificationsOpen && notificationPanelMode === "notes") {
+    // `!==` rather than a list of the other modes, so a fourth one cannot make
+    // this quietly toggle the panel shut instead of switching to it.
+    if (notificationsOpen && notificationPanelMode !== "notifications") {
       setNotificationPanelMode("notifications");
       return;
     }
@@ -716,7 +1038,7 @@ export function Workspace() {
 
   /** The note button: the same panel, the other list, the mirrored behaviour. */
   const toggleCustomerNotes = useCallback(() => {
-    if (notificationsOpen && notificationPanelMode === "notifications") {
+    if (notificationsOpen && notificationPanelMode !== "notes") {
       setNotificationPanelMode("notes");
       void loadCustomerNotes();
       return;
@@ -816,6 +1138,46 @@ export function Workspace() {
             * own list, so exactly one of the two ever looks active.
             */}
           <div className="flex shrink-0 items-center gap-2">
+            {/*
+              * THE COMMON SEARCH, beside the three panel controls because its
+              * results open in the same panel they do.
+              *
+              * A form, so Enter submits without a keydown handler and the
+              * control is reachable by keyboard alone. It searches on SUBMIT:
+              * the customer-name path reads the shared source database, and
+              * putting a production database behind somebody's typing speed is
+              * not a trade this screen should make silently.
+              */}
+            <form
+              role="search"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runSearch(searchTerm);
+              }}
+              className="hidden items-center sm:flex"
+            >
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => {
+                  setSearchTerm(event.target.value);
+                  /*
+                   * Emptying the box is how you leave the results, which is
+                   * the behaviour the control already implies — a search field
+                   * with nothing in it showing a list of matches would be a
+                   * screen nobody could explain. It fetches nothing.
+                   */
+                  if (event.target.value.trim() === "") {
+                    setSearchFeed(null);
+                    setSearchError(null);
+                    setView((current) => (current === "search" ? "inbox" : current));
+                  }
+                }}
+                placeholder="Name, order, ID…"
+                aria-label="Search conversations by customer name, marketplace handle, order number, conversation ID or message ID"
+                className="w-44 rounded-full border border-black/10 bg-transparent px-3 py-1.5 text-sm transition-colors focus:border-black/25 dark:border-white/15 dark:focus:border-white/30"
+              />
+            </form>
             <NotificationBell
               count={orderChange === null ? null : orderChange.conversations.length}
               open={notificationsOpen && notificationPanelMode === "notifications"}
@@ -825,6 +1187,13 @@ export function Workspace() {
               count={customerNotes === null ? null : customerNotes.notes.length}
               open={notificationsOpen && notificationPanelMode === "notes"}
               onToggle={toggleCustomerNotes}
+            />
+            {/* The third control on the same panel. Counts only what is still
+                owed — see FollowUpPanelButton. */}
+            <FollowUpPanelButton
+              count={scheduledFollowUps}
+              open={notificationsOpen && notificationPanelMode === "follow_up"}
+              onToggle={toggleFollowUps}
             />
           </div>
         </div>
@@ -1038,6 +1407,22 @@ export function Workspace() {
         onSelectNote={(noteId) => {
           void openCustomerNote(noteId);
         }}
+        followUp={{
+          feed: followUpFeed,
+          error: followUpError,
+          tab: followUpTab,
+          onSelectTab: selectFollowUpTab,
+          labels: followUpLabels,
+          failures: followUpFailures,
+          completing: completingReminder,
+          now: followUpNow,
+          onOpenConversation: (reminderId, conversationId) => {
+            void openFollowUpConversation(reminderId, conversationId);
+          },
+          onComplete: (reminderId) => {
+            void completeFollowUp(reminderId);
+          },
+        }}
         open={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
         onSelect={(id, from) => {
@@ -1136,7 +1521,7 @@ export function Workspace() {
               is a drawer rather than a permanent column. */}
           <div className="flex shrink-0 items-center justify-between border-b border-black/10 px-4 py-2 xl:hidden dark:border-white/15">
             <span className="text-xs font-medium opacity-70">
-              {view === "no_rule" ? "No Rule list" : "Conversations"}
+              {view === "search" ? "Search results" : view === "no_rule" ? "No Rule list" : "Conversations"}
             </span>
             <button
               type="button"
@@ -1152,7 +1537,24 @@ export function Workspace() {
           <div className="shrink-0 border-b border-black/10 xl:hidden dark:border-white/15">
             <MarketplaceTabs selected={marketplace} onSelect={selectMarketplace} />
           </div>
-          {view === "no_rule" ? (
+          {view === "search" ? (
+            /*
+             * SEARCH REPLACES THE LIST, exactly as No Rule does. A result is
+             * a conversation like any other: clicking one switches to the
+             * marketplace it belongs to and opens it through the same
+             * `select`, so the thread, context panel and draft panel are
+             * reached the way they always are.
+             */
+            <SearchResults
+              feed={searchFeed}
+              error={searchError}
+              searching={searching}
+              onSelect={(id, from) => {
+                if (from !== marketplace) switchMarketplace(from);
+                void select(id, from);
+              }}
+            />
+          ) : view === "no_rule" ? (
             /*
              * The No Rule tab replaces the inbox list with a differently
              * filtered one, nothing more: same row shape, same `onSelect`,
@@ -1246,6 +1648,12 @@ export function Workspace() {
               /* Set only when this conversation was opened from a customer
                  note, and cleared by every other way of opening one. */
               note={activeNote}
+              /* Re-reads what is owed after a reminder is stored, so the badge
+                 and the panel agree with the database. Passing it is also what
+                 puts the Set follow-up control on this view. */
+              onFollowUpCreated={() => {
+                void refreshFollowUps();
+              }}
             />
           )}
         </main>

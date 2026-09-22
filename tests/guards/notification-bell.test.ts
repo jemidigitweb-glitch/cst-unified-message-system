@@ -50,8 +50,18 @@ describe("the Order Change tab is gone", () => {
   it("removed the workspace view entirely", () => {
     expect(workspace).not.toContain("order_change");
     expect(workspace).not.toContain("OrderChangeList");
-    // The view union is back to the three it had before.
-    expect(workspace).toContain('useState<"inbox" | "status" | "no_rule">("inbox")');
+    /*
+     * THE POINT IS THAT `order_change` IS GONE, not that the union never grows.
+     * This pinned the exact three-member union, which also forbade adding any
+     * unrelated view — `search` is one, and failing for that reason would be
+     * the guard catching the wrong thing. The three originals must still be
+     * there, and the removed one must still not be.
+     */
+    const union = /useState<([^>]*)>\("inbox"\)/.exec(workspace)?.[1] ?? "";
+    for (const kept of ['"inbox"', '"status"', '"no_rule"']) {
+      expect(union).toContain(kept);
+    }
+    expect(union).not.toContain("order_change");
   });
 
   it("removed the component that backed it", () => {

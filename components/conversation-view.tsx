@@ -14,6 +14,7 @@ import type { CustomerNote } from "@/lib/domain/customer-note";
 import type { WorkflowState } from "@/lib/domain/workflow";
 
 import { DraftPanel } from "./draft-panel";
+import { FollowUpButton } from "./follow-up-button";
 import { PanelIcon } from "./icons";
 
 /** Floor on the draft panel's height: short enough to never be pointless, tall enough that a drag can't hide the action buttons under it. */
@@ -50,6 +51,7 @@ export function ConversationView({
   onToggleDetails,
   selectedOrderNumber,
   note,
+  onFollowUpCreated,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
@@ -83,6 +85,15 @@ export function ConversationView({
    */
   detailsOpen?: boolean;
   onToggleDetails?: () => void;
+  /**
+   * Fired after a follow-up reminder is stored for this conversation, so the
+   * shared panel and its badge can re-read what is owed.
+   *
+   * OPTIONAL, AND ITS ABSENCE HIDES THE CONTROL. A caller with no conversation
+   * row behind it — the unresolved-message view — must not offer to set a
+   * reminder that has nothing to belong to.
+   */
+  onFollowUpCreated?: () => void;
   /**
    * The customer note this conversation was opened from, when it was.
    *
@@ -223,17 +234,37 @@ export function ConversationView({
             wired it up (there is no details panel for an unresolved
             message). Shown at every width — the panel is toggleable on
             desktop too, not only below `xl`. */}
-        {onToggleDetails && !detailsOpen && (
-          <button
-            type="button"
-            onClick={onToggleDetails}
-            aria-label="Show conversation details"
-            aria-expanded={false}
-            className="shrink-0 rounded-full border border-black/15 p-2 dark:border-white/20"
-          >
-            <PanelIcon />
-          </button>
-        )}
+        <div className="flex shrink-0 items-start gap-2">
+          {/*
+            * SET FOLLOW-UP, on the conversation it applies to.
+            *
+            * Here rather than in the app header because a reminder is about
+            * THIS thread — the same reasoning that puts the details toggle
+            * beside it. Rendered only where the caller wired it up, which is
+            * the resolved-conversation view: an unresolved message has no
+            * conversation row for a reminder's foreign key to point at.
+            *
+            * It records a note to CST and nothing else. No draft, no workflow
+            * change, no message — see FollowUpButton.
+            */}
+          {onFollowUpCreated !== undefined && (
+            <FollowUpButton
+              conversationId={conversation.id}
+              onCreated={onFollowUpCreated}
+            />
+          )}
+          {onToggleDetails && !detailsOpen && (
+            <button
+              type="button"
+              onClick={onToggleDetails}
+              aria-label="Show conversation details"
+              aria-expanded={false}
+              className="shrink-0 rounded-full border border-black/15 p-2 dark:border-white/20"
+            >
+              <PanelIcon />
+            </button>
+          )}
+        </div>
       </div>
 
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
