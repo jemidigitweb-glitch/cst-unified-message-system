@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { BEFORE_SHIPMENT_RECENCY_HOURS } from "@/lib/domain/before-shipment-urgency";
 import { ORDER_CHANGE_CATEGORY, UNAVAILABLE_BODY_TEXT } from "@/lib/domain/inbox";
 import { CONVERSATION_MARKETPLACES } from "@/lib/domain/marketplace-capabilities";
 import { classifyConversationCategory } from "@/lib/knowledge/message-category";
@@ -9,6 +10,7 @@ import {
   type Queryable,
   listAwaitingResponseByCategory,
 } from "@/lib/repositories/conversation-repository";
+import type { SourceQueryable } from "@/lib/repositories/order-shipment-state-repository";
 
 /**
  * The order-change notification read layer.
@@ -31,9 +33,18 @@ import {
  * Every row below is synthetic. No customer text, address or reference appears.
  */
 
+/**
+ * The clock every fixture below is measured against.
+ *
+ * Injected rather than real, because the feed now applies
+ * `BEFORE_SHIPMENT_RECENCY_HOURS` and a suite whose fixtures aged past the window
+ * would start failing on a date rather than on a change.
+ */
+const NOW = new Date("2026-08-02T12:00:00Z");
+
 /** A candidate row: the inbox projection plus the newest customer message. */
 function awaitingRow(overrides: Record<string, unknown> = {}) {
-  return {
+  const row = {
     id: "1",
     marketplace: "ebay",
     sub_source_id: 7,
@@ -64,8 +75,77 @@ function awaitingRow(overrides: Record<string, unknown> = {}) {
      * would be silently dropped, which is what this default prevents.
      */
     rank_in_marketplace: 1,
+    /* ---- The before-shipment rule's inputs, as the query now selects them ---- *
+     *
+     * The feed no longer takes "the classifier said order change" as sufficient:
+     * the heading claims the order has not shipped, so the rule checks it. These
+     * defaults describe the case that SHOULD appear — a recent unanswered message
+     * on a real order that has not gone out.
+     */
+    order_number: "ORDER-1",
+    /** Two hours before `NOW`: inside the window, and nowhere near its edge. */
+    sla_starts_at: "2026-08-02T10:00:00Z",
+    /** Nothing said yet, so nothing has closed the thread. */
+    latest_outbound_text: null,
+    ever_replied: false,
     ...overrides,
   };
+  return {
+    ...row,
+    /**
+     * The rule reads the customer's NEWEST message, and the fixture keeps that in
+     * step with whichever text the test actually set.
+     *
+     * WHY IT FOLLOWS `inbound_texts` TOO. The category comes from the thread and
+     * the order-change intent from the newest message, so a test that changes only
+     * the thread text used to leave a cancellation sitting in `latest_inbound_text`
+     * — and the rule would then re-tag a delivery query as an order change,
+     * failing the test for a reason that had nothing to do with the code. Both
+     * readings now move together unless a test drives them apart on purpose.
+     */
+    latest_inbound_text:
+      "latest_inbound_text" in overrides
+        ? overrides.latest_inbound_text
+        : "latest_inbound_body" in overrides
+          ? overrides.latest_inbound_body
+          : Array.isArray(row.inbound_texts)
+            ? (row.inbound_texts.at(-1) ?? null)
+            : null,
+  };
+}
+
+/**
+ * The source database's answer about dispatch state.
+ *
+ * DEFAULTS TO "the order exists and has not gone", because that is the case the
+ * feed is about. An empty list means the source has never heard of the order,
+ * which the rule reads as `no_matching_order` rather than as an open window.
+ */
+function sourceFake(
+  orders: readonly {
+    order_number: string;
+    /** Set to make the order DISPATCHED. Only this counts. */
+    shipped_time?: string | null;
+    /** A printed label. Deliberately NOT dispatch — see eBay 45862. */
+    has_completed_shipment?: boolean;
+  }[] = [{ order_number: "ORDER-1" }],
+) {
+  const calls: { text: string; values?: readonly unknown[] }[] = [];
+  const source: SourceQueryable = {
+    query: async (config) => {
+      calls.push(config);
+      return {
+        rows: orders.map((order) => ({
+          sub_source_id: 7,
+          order_number: order.order_number,
+          order_status: "Inprogress",
+          shipped_time: order.shipped_time ?? null,
+          has_completed_shipment: order.has_completed_shipment ?? false,
+        })),
+      };
+    },
+  };
+  return { sourceCalls: calls, source };
 }
 
 function fake(responses: unknown[][]) {
@@ -80,28 +160,179 @@ function fake(responses: unknown[][]) {
   return { calls, client };
 }
 
-const listOrderChange = (rows: unknown[], limit?: number) => {
+const listOrderChange = (
+  rows: unknown[],
+  limit?: number,
+  orders?: Parameters<typeof sourceFake>[0],
+) => {
   const { calls, client } = fake([rows]);
+  const { source, sourceCalls } = sourceFake(orders);
   return listAwaitingResponseByCategory(client, {
     marketplaces: ["ebay"],
     category: ORDER_CHANGE_CATEGORY,
     limit,
-  }).then((page) => ({ page, calls }));
+    source,
+    now: NOW,
+  }).then((page) => ({ page, calls, sourceCalls }));
 };
 
 /** The global feed: every conversation-backed marketplace, as the route asks for it. */
 const listGlobal = (rows: unknown[], limit?: number) => {
   const { calls, client } = fake([rows]);
+  const { source } = sourceFake();
   return listAwaitingResponseByCategory(client, {
     marketplaces: CONVERSATION_MARKETPLACES,
     category: ORDER_CHANGE_CATEGORY,
     limit,
+    source,
+    now: NOW,
   }).then((page) => ({ page, calls }));
 };
 
 /* ------------------------------------------------------------------------- *
  * THE CATEGORY CONDITION — behavioural, against the real classifier
  * ------------------------------------------------------------------------- */
+
+/* ------------------------------------------------------------------------- *
+ * "BEFORE SHIPPING" IS A FACT ABOUT THE ORDER, NOT A HEADING
+ *
+ * THE BUG THIS SECTION EXISTS FOR, from live data. Shopify conversation 46268:
+ * Serena asked on the 19th to add a product to order LED65289; the order was
+ * dispatched on the 20th at 09:11; CST replied on the 21st telling her so; she
+ * wrote back that afternoon still believing it had not shipped. Every message
+ * classifies as an order change, and the feed asked nothing else — so the thread
+ * sat in a panel headed "Order Change Before Shipping Queries" a full day after
+ * the parcel left, and the one thing the heading asserts was the one thing
+ * nobody had checked.
+ * ------------------------------------------------------------------------- */
+
+describe("the dispatch gate", () => {
+  /** The eligible case, stated first so every exclusion below is a real contrast. */
+  it("lists an order-change query on an order that has not gone out", async () => {
+    const { page } = await listOrderChange([awaitingRow()]);
+    expect(page.items.map((item) => item.id)).toEqual(["1"]);
+    expect(page.items[0]!.urgent).toBe(true);
+    expect(page.items[0]!.beforeShipmentOutcome).toBe("eligible");
+    expect(page.dispatchStateRead).toBe(true);
+  });
+
+  /**
+   * CONVERSATION 46268, as a property. The wording still classifies as an order
+   * change — that is not in dispute and is exactly why the category filter alone
+   * could never have caught it.
+   */
+  it("excludes a conversation whose order has already been dispatched", async () => {
+    const { page } = await listOrderChange([awaitingRow()], undefined, [
+      { order_number: "ORDER-1", shipped_time: "2026-08-01 09:11:18" },
+    ]);
+    expect(page.items).toEqual([]);
+    // Read, and it said the window is shut. Not a failure to look.
+    expect(page.dispatchStateRead).toBe(true);
+    expect(page.scanned).toBe(1);
+  });
+
+  /**
+   * eBay CONVERSATION 45862, the other direction, and the reason this is not
+   * simply "any evidence of dispatch". Its order had a Completed shipment row with
+   * a tracking number and a label written that morning, while `shipped_time` was
+   * still null and the order still `Inprogress` — and the parcel had not gone. CST
+   * confirmed it. Measured over the 3,634 orders of the
+   * last seven days carrying both timestamps, `shipped_time` follows the label by
+   * a median of 78 minutes, so a label is more than an hour early as a proxy for
+   * departure. It must not silence the flag.
+   */
+  it("keeps a conversation whose order is only labelled, not shipped", async () => {
+    const { page } = await listOrderChange([awaitingRow()], undefined, [
+      { order_number: "ORDER-1", shipped_time: null, has_completed_shipment: true },
+    ]);
+    expect(page.items.map((item) => item.id)).toEqual(["1"]);
+    expect(page.items[0]!.beforeShipmentOutcome).toBe("eligible");
+  });
+
+  /**
+   * An order the source has never heard of is NOT an undispatched one. A reference
+   * is a claim; the row in the source is the verification.
+   */
+  it("excludes a conversation whose order the source cannot find", async () => {
+    const { page } = await listOrderChange([awaitingRow()], undefined, []);
+    expect(page.items).toEqual([]);
+  });
+
+  /**
+   * Older than `BEFORE_SHIPMENT_RECENCY_HOURS`, which CST set to 48. Bounded in
+   * SQL as well, so this asserts the parameter is actually sent — a window applied
+   * only in TypeScript would let stale rows consume the per-marketplace budget
+   * that live ones are competing for.
+   */
+  it("bounds the candidates by the recency window, in the query", async () => {
+    const { calls } = await listOrderChange([awaitingRow()]);
+    expect(calls[0]!.values![2]).toBe(BEFORE_SHIPMENT_RECENCY_HOURS);
+    expect(BEFORE_SHIPMENT_RECENCY_HOURS).toBe(48);
+    expect(calls[0]!.text).toContain("make_interval(hours => $3::int)");
+  });
+
+  /** And again in TypeScript, from the same instant the query measures. */
+  it("excludes a customer message older than the window", async () => {
+    const { page } = await listOrderChange([
+      // 49 hours before NOW — one hour past the edge.
+      awaitingRow({ sla_starts_at: "2026-07-31T11:00:00Z" }),
+    ]);
+    expect(page.items).toEqual([]);
+  });
+
+  /**
+   * CST ALREADY TOLD HER. The other half of 46268: our own reply said the order
+   * had been dispatched, so a customer writing back is not an open before-shipment
+   * case however the source reads. Our wording, never the customer's.
+   */
+  it("excludes a thread CST has already closed by saying it went out", async () => {
+    const { page } = await listOrderChange([
+      awaitingRow({
+        latest_outbound_text:
+          "We're sorry, but the order has already been dispatched, so we are unable to add another product.",
+      }),
+    ]);
+    expect(page.items).toEqual([]);
+  });
+
+  /**
+   * NO SOURCE, NO FEED — and it says so rather than reporting an empty queue. An
+   * unknown dispatch state must never be read as "not dispatched": that is the one
+   * error that puts a shipped order under a before-shipping heading.
+   */
+  it("returns nothing and admits it when the dispatch state cannot be read", async () => {
+    const { calls, client } = fake([[awaitingRow()]]);
+    const page = await listAwaitingResponseByCategory(client, {
+      marketplaces: ["ebay"],
+      category: ORDER_CHANGE_CATEGORY,
+      source: null,
+      now: NOW,
+    });
+    expect(page.items).toEqual([]);
+    expect(page.dispatchStateRead).toBe(false);
+    // Not even queried: the answer cannot depend on rows it must then discard.
+    expect(calls).toHaveLength(0);
+  });
+
+  /**
+   * EVERY OTHER CASE AREA IS UNGATED, and deliberately: a delivery complaint is
+   * unanswered work whatever the parcel has done since, and gating it on dispatch
+   * would empty that feed of precisely the cases that only exist after dispatch.
+   */
+  it("applies no dispatch gate to another case area", async () => {
+    const { calls, client } = fake([[awaitingRow({ inbound_texts: ["Where is my parcel?"] })]]);
+    const page = await listAwaitingResponseByCategory(client, {
+      marketplaces: ["ebay"],
+      category: "Delivery queries",
+      // No source, and it does not matter — nothing here needs one.
+      now: NOW,
+    });
+    expect(page.items.map((item) => item.id)).toEqual(["1"]);
+    expect(page.dispatchStateRead).toBe(true);
+    // No recency window either: $3 is NULL, so an old complaint still counts.
+    expect(calls[0]!.values![2]).toBeNull();
+  });
+});
 
 describe("category matching", () => {
   it("watches the classifier's own vocabulary, not a hand-typed string", () => {
@@ -375,18 +606,21 @@ describe("the notification row", () => {
       // in both places, rather than two answers about one conversation.
       priorityReasons: ["cancellation_requested", "action_required"],
       /*
-       * NOT URGENT HERE, AND THAT IS CORRECT. The text says "Please cancel my
-       * order", and under the old text-driven rule that alone raised the flag.
-       * Urgency is now a fact about the ORDER — verified, unshipped, recent —
-       * and this query selects no order columns at all, so it reports what it
-       * actually knows rather than an urgency inferred from wording.
+       * URGENT, AND EARNED RATHER THAN READ OFF THE WORDING. This feed now runs
+       * the before-shipment rule, so the flag here comes from the same three
+       * conditions the inbox applies: an unanswered customer message, a real order
+       * the source knows, and no dispatch against it. The fixture's source says
+       * ORDER-1 exists with no `shipped_time`, which is what makes it eligible —
+       * take that away (see the dispatch-gate section) and the row leaves the list
+       * entirely rather than merely losing its badge.
        *
-       * The inbox list is where the rule is evaluated, because that is where
-       * the dispatch state is read. See `applyBeforeShipmentRule`.
+       * It is NOT urgent because the text says "cancel". That is what the old
+       * text-driven rule did, and a promotional email containing the word was
+       * enough to trip it.
        */
-      urgent: false,
-      beforeShipmentOutcome: null,
-      slaStartsAt: null,
+      urgent: true,
+      beforeShipmentOutcome: "eligible",
+      slaStartsAt: "2026-08-02T10:00:00.000Z",
       latestCustomerMessageAt: "2026-08-02 10:00:00",
       latestCustomerMessagePreview: "Please cancel my order.",
       hasDraft: false,
@@ -581,7 +815,19 @@ describe("the feed spans marketplaces", () => {
       category: ORDER_CHANGE_CATEGORY,
     });
     expect(calls).toHaveLength(0);
-    expect(page).toEqual({ items: [], scanned: 0, hasMore: false, marketplaces: [] });
+    expect(page).toEqual({
+      items: [],
+      scanned: 0,
+      hasMore: false,
+      marketplaces: [],
+      /*
+       * FALSE, because no source was passed and this IS the gated area. It reads
+       * "the dispatch state was not established", which is true here for a second
+       * reason as well — nothing was read at all. The drawer must not turn either
+       * into "nobody is waiting".
+       */
+      dispatchStateRead: false,
+    });
   });
 
   it("issues exactly one query per request", async () => {
@@ -631,10 +877,21 @@ describe("read-only guarantee", () => {
       "draft_revision_sources",
       "conversation_rule_analysis",
       "ai_usage_log",
-      "context_snapshots",
       "audit_log",
     ]) {
       expect(sql).not.toContain(untouched);
     }
+    /*
+     * `context_snapshots` WAS ON THAT LIST AND HAS BEEN TAKEN OFF IT DELIBERATELY.
+     * The feed has to know WHICH ORDER a conversation is about before it can ask
+     * whether that order has shipped, and the resolved snapshot is where the system
+     * already records that — the same `single_order` resolution the inbox's urgent
+     * sweep reads. It is a LEFT JOIN for two columns: a conversation without a
+     * snapshot falls back to its own reference and is never dropped.
+     *
+     * Still read-only, which is what this section is actually about.
+     */
+    expect(sql).toContain("LEFT JOIN cst_app.context_snapshots");
+    expect(sql).toContain("cs.resolution = 'single_order'");
   });
 });

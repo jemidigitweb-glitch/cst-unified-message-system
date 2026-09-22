@@ -33,20 +33,34 @@ import "server-only";
  * One array answers them all.
  *
  * ------------------------------------------------------------------------
- * WHAT COUNTS AS DISPATCHED, AND WHY IT LEANS THAT WAY
+ * ONE SIGNAL COUNTS AS DISPATCHED: `order_info.shipped_time`
  * ------------------------------------------------------------------------
- * `order_info.shipped_time` is the dispatch moment — the same column the
- * post-dispatch automation treats as authoritative, chosen there over
- * `shipment.shipment_created_at` because the latter is when the LABEL was made
- * and runs ahead of the parcel leaving. A completed, uncancelled shipment row
- * counts too.
+ * The same column the post-dispatch automation treats as authoritative. It is the
+ * moment the parcel left, and it is the only thing `dispatched` is read from.
  *
- * EITHER is enough, and that asymmetry is deliberate. This gate decides whether
- * to tell a CST agent "you can still stop this". Reading a dispatched order as
- * undispatched makes the interface promise a window that has already closed;
- * reading an undispatched one as dispatched merely fails to flag it. The first
- * is a false promise about a parcel, the second is a missed highlight, so any
- * evidence of dispatch settles it.
+ * A COMPLETED SHIPMENT ROW IS A PRINTED LABEL, NOT A DEPARTURE, and this used to
+ * count as dispatch as well — `shipped_time IS NOT NULL OR has_completed_shipment`.
+ * That was wrong in practice and CST said so. eBay conversation 45862 is the case
+ * that settled it: its order had a Completed shipment row with a tracking number
+ * and a label written that morning, `shipped_time` still null, order status still
+ * `Inprogress` — and the parcel had not gone. The OR suppressed the urgent flag on
+ * an order CST could still have stopped, which is the exact opposite of what this
+ * gate is for.
+ *
+ * MEASURED, NOT ASSUMED. Over the 3,634 orders of the last seven days that have
+ * both timestamps, `shipped_time` follows the label by a MEDIAN OF 78 MINUTES
+ * (mean 76, p90 146; 12 orders have it earlier). So the label reliably runs more
+ * than an hour ahead of the parcel leaving, and treating the two as one closed the
+ * window more than an hour early on every order that passed through the stage.
+ * 536 orders of the last 4,875 are sitting in it at any given time.
+ *
+ * THE FAILURE DIRECTION IS STILL DELIBERATE, it has just been corrected. Reading a
+ * dispatched order as undispatched promises a window that has closed; reading an
+ * undispatched one as dispatched hides a conversation CST could still act on. Both
+ * are real, and which one is worse depends on what the signal actually means — a
+ * label means the warehouse intends to send it, not that it has. `labelled` is
+ * therefore still read and still returned, so an interface can say "label already
+ * printed" beside an urgent conversation instead of the fact being thrown away.
  *
  * AN ORDER THAT DOES NOT MATCH IS NOT "NOT SHIPPED". It comes back absent, and
  * the caller must treat an absence as "no verified order" rather than as an
@@ -64,8 +78,20 @@ export type OrderKey = { readonly orderNumber: string };
 export type OrderShipmentState = {
   readonly subSourceId: number;
   readonly orderNumber: string;
-  /** Whether the source shows any evidence this order has been dispatched. */
+  /**
+   * Whether the parcel has LEFT — `shipped_time` is present, and nothing else is
+   * consulted. See the header for why a Completed shipment row is not this.
+   */
   readonly dispatched: boolean;
+  /**
+   * Whether a shipping label exists: a completed, uncancelled shipment row.
+   *
+   * NOT DISPATCH, and kept separate for exactly that reason. It means the
+   * warehouse intends to send this — usually about 78 minutes before it does — so
+   * it is worth SAYING beside an urgent conversation and must never be what
+   * silences one.
+   */
+  readonly labelled: boolean;
   /**
    * The recorded dispatch moment, verbatim and NAIVE — the source stores
    * `timestamp without time zone` and nothing here casts it. Null for an order
@@ -136,8 +162,10 @@ export async function shipmentStateForOrders(
     state.set(orderKeyOf({ orderNumber }), {
       subSourceId,
       orderNumber,
-      // Either signal settles it — see the header.
-      dispatched: dispatchedAt !== null || row.has_completed_shipment === true,
+      // `shipped_time` ALONE. A printed label is reported separately and settles
+      // nothing — see the header, and eBay 45862 for what the OR used to hide.
+      dispatched: dispatchedAt !== null,
+      labelled: row.has_completed_shipment === true,
       dispatchedAt,
       orderStatus: row.order_status,
     });

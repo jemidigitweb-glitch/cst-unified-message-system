@@ -418,6 +418,39 @@ LIMIT $3`;
  * ordering a triage list is read in. A notification about the oldest unanswered
  * eBay message is not more urgent than a newer Amazon one, so the OUTPUT is not
  * grouped by marketplace even though the bound is.
+ *
+ * ------------------------------------------------------------------------
+ * $3: THE RECENCY WINDOW, AND WHY IT IS A PARAMETER RATHER THAN A CONSTANT
+ * ------------------------------------------------------------------------
+ * NULL means "every age", which is what every case area except one wants: a
+ * delivery complaint from last month is still unanswered and still a complaint.
+ * The before-shipping feed passes `BEFORE_SHIPMENT_RECENCY_HOURS`, because there
+ * the age is part of the definition of the case area rather than a nicety.
+ *
+ * IT IS APPLIED IN THE CTE, BEFORE `row_number()`, and that placement is the
+ * whole value of doing it in SQL at all. The per-marketplace window is the scarce
+ * resource here — Shopify alone has thousands of unanswered conversations — so
+ * filtering after the ranking would spend the budget on rows that are then thrown
+ * away, and the one live Amazon order-change query would again fall outside a
+ * window full of stale Shopify threads. Filtering first means the window holds
+ * candidates that can still match.
+ *
+ * `LATEST_INBOUND_INSTANT`, NOT `latest.source_ts`. The naive column is right for
+ * ORDERING (it is what every other view sorts by, and a zone error does not
+ * reorder a list) and wrong for MEASURING AN ELAPSED TIME against `now()`, which
+ * is exactly the distinction the constant's own comment draws. The rule applies
+ * the same window again in TypeScript from the same expression, so a row that
+ * slipped through could not be flagged anyway — this only stops it being carried.
+ *
+ * ------------------------------------------------------------------------
+ * THE FOUR EXTRA PROJECTIONS ARE THE BEFORE-SHIPMENT RULE'S INPUTS
+ * ------------------------------------------------------------------------
+ * `order_number`, `sla_starts_at`, `latest_outbound_text`, `latest_inbound_text`
+ * and `ever_replied` — the same set `URGENT_CANDIDATES` selects, by the same
+ * expressions, because the notification feed now answers the same question the
+ * inbox's urgent flag does and must not answer it from a different projection.
+ * They are read in the OUTER query, so they cost only the rows that survived the
+ * window, exactly like `has_draft` above them.
  */
 const LIST_AWAITING_RESPONSE = `
 WITH unanswered AS (
@@ -450,6 +483,11 @@ WITH unanswered AS (
         AND o.direction = 'outbound'
         AND (o.source_ts, o.source_pk::bigint) > (latest.source_ts, latest.source_pk)
     )
+    -- Recent enough to still be this case area's work. NULL disables it. See $3.
+    AND (
+      $3::int IS NULL
+      OR ${LATEST_INBOUND_INSTANT} >= now() - make_interval(hours => $3::int)
+    )
 )
 SELECT c.id::text                  AS id,
        c.marketplace,
@@ -478,9 +516,34 @@ SELECT c.id::text                  AS id,
          FROM cst_app.draft_replies d
          WHERE d.conversation_id = c.id
        )                           AS has_draft,
+       -- The before-shipment rule's inputs. Same expressions as
+       -- URGENT_CANDIDATES, evaluated only for rows that survived the window.
+       --
+       -- The 'unresolved:' sentinel is the ingestion layer's marker for a thread
+       -- it could not key to anything. URGENT_CANDIDATES excludes it with a WHERE
+       -- clause; this feed must not drop the conversation from the list, so it
+       -- nulls the KEY instead -- the rule then reads no_matching_order, which is
+       -- the truth, and no sentinel is ever sent to the source as an order number.
+       CASE
+         WHEN c.counterparty_ref LIKE 'unresolved:%'
+           THEN CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END
+         ELSE COALESCE(
+           CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
+           c.counterparty_ref
+         )
+       END                         AS order_number,
+       ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
+       ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
+       ${LATEST_INBOUND_TEXT}      AS latest_inbound_text,
+       EXISTS (
+         SELECT 1
+         FROM cst_app.conversation_messages cm
+         WHERE cm.conversation_id = c.id AND cm.direction = 'outbound'
+       )                           AS ever_replied,
        u.rank_in_marketplace
 FROM unanswered u
 JOIN cst_app.conversations c ON c.id = u.id
+LEFT JOIN cst_app.context_snapshots cs ON cs.conversation_id = c.id
 WHERE u.rank_in_marketplace <= $2
 ORDER BY u.latest_ts DESC, c.id DESC`;
 
@@ -722,6 +785,18 @@ type AwaitingResponseRow = ConversationRow & {
   rank_in_marketplace: number | string;
 };
 
+/**
+ * How the before-shipment gate treats a case area.
+ *
+ * `off` is every area but one: a delivery complaint is unanswered work whatever
+ * the parcel has done since, and gating it on dispatch state would empty the feed
+ * of precisely the cases that only exist after dispatch.
+ *
+ * `before_shipment` is the order-change area, where "before shipping" is a claim
+ * about the ORDER and not just a heading. See `applyBeforeShipmentRule`.
+ */
+type AwaitingResponseGate = "off" | "before_shipment";
+
 /** The `no_citation` query's row: same shape, minus the case type it doesn't have yet. */
 type UngroundedDraftRow = ConversationRow & {
   revision_id: string;
@@ -935,10 +1010,21 @@ function instantOf(value: string | Date | null | undefined): string | null {
  * priority on a notification row are the SAME readings the inbox shows for the
  * same conversation — there is one classifier call site and this is not a
  * second one.
+ *
+ * `base` EXISTS SO THE RULE'S VERDICT CAN BE PASSED IN. The before-shipping feed
+ * has already run `applyBeforeShipmentRule` over these rows — which needs an await
+ * and a batched source read, neither of which belongs in a row mapper — and that
+ * produces an item whose `urgent`, `beforeShipmentOutcome` and possibly `category`
+ * differ from the bare projection. Accepting it here is what stops the verdict
+ * being recomputed, or worse, silently overwritten by a second `toInboxItem` call.
+ * Defaulted, so every other caller is unchanged.
  */
-function toAwaitingResponseItem(row: AwaitingResponseRow): AwaitingResponseConversationItem {
+function toAwaitingResponseItem(
+  row: AwaitingResponseRow,
+  base: InboxItem = toInboxItem(row),
+): AwaitingResponseConversationItem {
   return {
-    ...toInboxItem(row),
+    ...base,
     latestCustomerMessageAt: row.latest_inbound_ts,
     // Truncated here rather than in the browser: the row displays a preview, so
     // a preview is what crosses the boundary. An undecodable body renders as
@@ -1413,6 +1499,20 @@ export type AwaitingResponsePage = {
    * saying something untrue.
    */
   readonly marketplaces: readonly Marketplace[];
+  /**
+   * Whether the dispatch state was actually read, on a feed that depends on it.
+   *
+   * TRUE on every feed that does not gate on dispatch — nothing was needed, so
+   * nothing is missing. On the before-shipping feed it is false when the source
+   * pool was unavailable, and then `items` is EMPTY rather than ungated: an
+   * unknown dispatch state must never be read as "not dispatched", because that is
+   * the one error that puts a shipped order under a "before shipping" heading.
+   *
+   * Reported rather than swallowed so the drawer can say "dispatch state
+   * unavailable" instead of "no order-change queries" — different facts, and only
+   * one of them means nobody is waiting.
+   */
+  readonly dispatchStateRead: boolean;
 };
 
 /**
@@ -1456,6 +1556,35 @@ export type AwaitingResponsePage = {
  * the unanswered conversations, not to the matches, and the caller is told how
  * many were scanned and which marketplaces were actually read. A silent cap here
  * would read as "there are none".
+ *
+ * ------------------------------------------------------------------------
+ * THE BEFORE-SHIPPING AREA IS GATED ON THE ORDER, NOT JUST ON THE WORDING
+ * ------------------------------------------------------------------------
+ * WHAT WENT WRONG. This feed used to be the phrase table and nothing else:
+ * unanswered, plus `classifyConversationCategory` saying order change. Shopify
+ * conversation 46268 is what that produces. Serena asked to add a product to
+ * LED65289 on the 19th; the order was dispatched on the 20th at 09:11; CST replied
+ * on the 21st saying so; she wrote back the same afternoon still believing it had
+ * not shipped. Every one of those messages classifies as an order change, so the
+ * thread sat in a panel headed "Order Change Before Shipping Queries" a full day
+ * after the parcel left — and the one thing the heading asserts was the one thing
+ * nobody had checked.
+ *
+ * The inbox's urgent flag had checked it all along. `applyBeforeShipmentRule` reads
+ * the dispatch state from the source and would have returned `already_dispatched`
+ * for this very conversation. The two features simply disagreed, because only one
+ * of them asked.
+ *
+ * SO THE GATE IS THE SAME FUNCTION, NOT A SECOND OPINION. When the requested area
+ * is `BEFORE_SHIPPING_CATEGORY` this calls `applyBeforeShipmentRule` — the one
+ * place the conditions live — and keeps only what it flagged. A conversation the
+ * phrase table calls an order change but the rule refuses now drops out, which is
+ * the whole fix: the category says what the customer ASKED, and `urgent` says the
+ * window is still OPEN. This feed needs both, because its heading claims both.
+ *
+ * EVERY OTHER AREA IS UNTOUCHED, and deliberately: a delivery complaint is
+ * unanswered work whatever the parcel has done since, and gating it on dispatch
+ * state would empty the feed of exactly the cases that only exist after dispatch.
  */
 export async function listAwaitingResponseByCategory(
   client: Queryable,
@@ -1474,15 +1603,46 @@ export async function listAwaitingResponseByCategory(
     readonly category: MessageCategory;
     /** How many unanswered conversations to read and classify. Bounded as everywhere else. */
     readonly limit?: number;
+    /**
+     * The source pool, for the dispatch read.
+     *
+     * REQUIRED IN PRACTICE FOR THE BEFORE-SHIPPING AREA and ignored for every
+     * other one. Without it the dispatch state is unknown, and an unknown dispatch
+     * state is never read as "not dispatched": the feed comes back EMPTY with
+     * `dispatchStateRead: false` rather than listing shipped orders under a
+     * before-shipping heading. A missed notification, never a false one.
+     */
+    readonly source?: SourceQueryable | null;
+    /** Injected so the recency window is testable without freezing time. */
+    readonly now?: Date;
   },
 ): Promise<AwaitingResponsePage> {
   const marketplaces = options.marketplaces.filter(
     (marketplace) => !CATEGORY_SUPPRESSED_MARKETPLACES.has(marketplace),
   );
+  /**
+   * Which questions this area has to answer beyond "is it unanswered".
+   *
+   * Derived from the requested category rather than passed in, so a caller cannot
+   * ask for the before-shipping feed and opt out of the condition that defines it.
+   */
+  const gate: AwaitingResponseGate =
+    options.category === BEFORE_SHIPPING_CATEGORY ? "before_shipment" : "off";
+  const source = options.source ?? null;
+  const dispatchStateRead = gate === "off" || source !== null;
+
   // Nothing classifiable was asked for. Answer without a round trip rather than
   // issuing a query whose result cannot contain a match.
   if (marketplaces.length === 0) {
-    return { items: [], scanned: 0, hasMore: false, marketplaces };
+    return { items: [], scanned: 0, hasMore: false, marketplaces, dispatchStateRead };
+  }
+  /*
+   * No source, no before-shipping feed. Answering here rather than querying and
+   * discarding keeps the honest answer cheap, and `dispatchStateRead` is already
+   * false so the caller can tell this apart from an empty queue.
+   */
+  if (gate === "before_shipment" && source === null) {
+    return { items: [], scanned: 0, hasMore: false, marketplaces, dispatchStateRead };
   }
 
   const limit = clampLimit(options.limit);
@@ -1491,7 +1651,14 @@ export async function listAwaitingResponseByCategory(
     // One extra row PER MARKETPLACE, never returned and never classified,
     // purely to learn whether that marketplace has an older unanswered
     // conversation past its own window.
-    values: [[...marketplaces], limit + 1],
+    //
+    // $3: the recency window, and only where the area is defined by it. NULL
+    // everywhere else — see LIST_AWAITING_RESPONSE.
+    values: [
+      [...marketplaces],
+      limit + 1,
+      gate === "before_shipment" ? BEFORE_SHIPMENT_RECENCY_HOURS : null,
+    ],
   });
 
   /**
@@ -1507,11 +1674,33 @@ export async function listAwaitingResponseByCategory(
   );
   const hasMore = withinWindow.length < rows.length;
 
-  const items = withinWindow
-    .map(toAwaitingResponseItem)
-    .filter((item) => item.category === options.category);
+  /**
+   * The rule runs ONCE over the whole page, which is why this is not inside the
+   * map: it takes a single batched dispatch read for every candidate rather than a
+   * query per row. Its verdict is handed to `toAwaitingResponseItem` so nothing
+   * recomputes or overwrites it.
+   */
+  const bases =
+    gate === "before_shipment"
+      ? await applyBeforeShipmentRule(source, withinWindow, options.now ?? new Date())
+      : withinWindow.map(toInboxItem);
 
-  return { items, scanned: withinWindow.length, hasMore, marketplaces };
+  const items = withinWindow
+    .map((row, index) => toAwaitingResponseItem(row, bases[index]!))
+    // The area still has to match. On the before-shipping feed the rule may have
+    // re-tagged a conversation INTO it, exactly as the inbox does.
+    .filter((item) => item.category === options.category)
+    /*
+     * AND, WHERE THE AREA CLAIMS IT, THE WINDOW HAS TO BE OPEN.
+     *
+     * This is not redundant with the category filter above, and conversation 46268
+     * is why: the phrase table calls it an order change on its own, so it passes
+     * that filter while the rule has already refused it as `already_dispatched`.
+     * `urgent` is the rule's verdict, and here it is a condition of membership.
+     */
+    .filter((item) => gate === "off" || item.urgent);
+
+  return { items, scanned: withinWindow.length, hasMore, marketplaces, dispatchStateRead };
 }
 
 /** A conversation id as it arrives from a URL, before it is trusted. */

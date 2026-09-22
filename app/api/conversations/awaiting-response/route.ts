@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getAppPool } from "@/lib/db/pools";
+import { getAppPool, getSourcePool } from "@/lib/db/pools";
 import { ORDER_CHANGE_CATEGORY } from "@/lib/domain/inbox";
 import { CONVERSATION_MARKETPLACES } from "@/lib/domain/marketplace-capabilities";
 import { listAwaitingResponseByCategory } from "@/lib/repositories/conversation-repository";
@@ -38,6 +38,14 @@ import { isDraftStoreMissing } from "@/lib/repositories/draft-repository";
  * argument because it is general; this route does not, because the feature is
  * the order-change notification and a caller-supplied category would be a
  * second, unrequested query surface.
+ *
+ * TWO POOLS, BECAUSE THE HEADING IS A CLAIM ABOUT AN ORDER. "Before shipping" is
+ * not a wording; it is a dispatch state, and dispatch state lives in the source
+ * database. The app pool finds the unanswered conversations and the source pool
+ * settles whether each order has actually left — one batched read per request, in
+ * `applyBeforeShipmentRule`. Without it this feed used to list orders that shipped
+ * days earlier: Shopify 46268 was still here a day after dispatch, and after CST
+ * had already told the customer so.
  */
 export const dynamic = "force-dynamic";
 
@@ -46,6 +54,7 @@ export async function GET(): Promise<NextResponse> {
     const page = await listAwaitingResponseByCategory(getAppPool(), {
       marketplaces: CONVERSATION_MARKETPLACES,
       category: ORDER_CHANGE_CATEGORY,
+      source: getSourcePool(),
     });
     return NextResponse.json({
       category: ORDER_CHANGE_CATEGORY,
@@ -57,6 +66,9 @@ export async function GET(): Promise<NextResponse> {
       scanned: page.scanned,
       hasMore: page.hasMore,
       marketplaces: page.marketplaces,
+      // False means the dispatch state could not be read, so the list is empty
+      // for a reason that is NOT "nobody is waiting". See `AwaitingResponsePage`.
+      dispatchStateRead: page.dispatchStateRead,
     });
   } catch (cause) {
     /**
@@ -75,6 +87,9 @@ export async function GET(): Promise<NextResponse> {
         hasMore: false,
         marketplaces: [],
         storeReady: false,
+        // Nothing was read at all, so the dispatch gate never ran either. Saying
+        // true here would claim a completeness this response does not have.
+        dispatchStateRead: false,
       });
     }
     // The underlying error may name schemas, columns or hosts, so it is logged

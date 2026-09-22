@@ -311,10 +311,16 @@ function row(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** A sweep candidate: a conversation row plus its verified order. */
+/**
+ * A sweep candidate: a conversation row plus its verified order.
+ *
+ * The order number is SYNTHETIC and shaped like eBay's only in that it is a
+ * string. A real one used to sit here; `no-customer-data.test.ts` is right that it
+ * should not, and nothing in this file depends on the format.
+ */
 function candidate(overrides: Record<string, unknown> = {}) {
   return row({
-    order_number: "19-15083-17449",
+    order_number: "ORDER-SWEEP-1",
     sla_starts_at: new Date("2026-09-22T08:00:00Z"),
     latest_outbound_text: null,
     ever_replied: false,

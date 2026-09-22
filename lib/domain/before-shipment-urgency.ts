@@ -63,23 +63,37 @@ export const BEFORE_SHIPPING_CATEGORY: MessageCategory = ORDER_CHANGE_CATEGORY;
 /**
  * How far back a before-shipping query still counts as live work.
  *
- * EVERY ONE OF THE LAST 72 HOURS, not just today. An order placed on Friday and
- * queried on Friday evening is still unshipped on Monday morning, and a window
- * of 24 hours would have dropped it over the weekend — which is exactly when
- * the queue is least watched and the customer has waited longest.
+ * 48 HOURS, SET BY CST. This was 72 on the reasoning that an order placed on a
+ * Friday evening is still unshipped on Monday morning, so a shorter window would
+ * drop it across the weekend. CST asked for 48 instead, defining the case area as
+ * "customer message within 48 hours AND not dispatched", and that is their call to
+ * make: they are the ones reading the queue. The weekend case is not imaginary —
+ * a Friday-evening query chased on Monday IS past 48 hours from the FIRST message
+ * — but the window is measured from the NEWEST customer message, so a customer who
+ * writes again on Monday restarts it, and a customer who does not is one nobody
+ * replied to for two days, which the response SLA is the right instrument for.
  *
- * 72 IS THE OUTER BOUND, AND IT IS THE ONLY NUMBER HERE. Shortening it to 48 or
- * 24 is this one constant. It is deliberately not an SLA and must not be read
- * as one: this decides what is still WORTH SHOWING, while the response SLA
- * decides how fast it must be answered. They are different questions, and the
- * SLA's duration is still unapproved — see `RESPONSE_SLA_MINUTES`.
+ * IT IS THE ONLY NUMBER HERE, and both readers take it from this constant: the
+ * inbox's urgent flag and the order-change notification feed. Changing it changes
+ * both together, which is the point — a panel and a flag that disagreed about what
+ * "before shipping" means would be two features wearing one name.
  *
- * Condition 3 already bounds this far more tightly than any window does: an
+ * DELIBERATELY NOT AN SLA. This decides what is still WORTH SHOWING; the response
+ * SLA decides how fast it must be answered. Different questions, and the SLA's
+ * duration is still unapproved — see `RESPONSE_SLA_MINUTES`.
+ *
+ * MEASURED FROM `LATEST_INBOUND_INSTANT`, which is `ingested_at` until the
+ * ingestion layer fills `source_ts_utc` (0 of 23,363 inbound messages today). For
+ * a backfilled conversation that is when the import ran, not when the customer
+ * wrote — so this window is "48 hours since we could first have seen it", and on
+ * historical data it is more generous than it looks.
+ *
+ * The dispatch condition bounds this far more tightly than any window does: an
  * order that has shipped drops out whatever its age. The window exists for the
- * other direction — a thread nobody ever shipped and nobody ever closed must
- * not sit at the top of the inbox forever.
+ * other direction — a thread nobody ever shipped and nobody ever closed must not
+ * sit at the top of the inbox forever.
  */
-export const BEFORE_SHIPMENT_RECENCY_HOURS = 72;
+export const BEFORE_SHIPMENT_RECENCY_HOURS = 48;
 
 /**
  * The marketplace that carries the extra "never replied" restriction.
