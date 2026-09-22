@@ -16,6 +16,53 @@ NNNN_<description>.down.sql   reverses it
 | `0011_post_dispatch_automation` | Post-dispatch automation: templates, settings, records | Applied 2026-09-21 |
 | `0012_automation_worker_wake` | Wake signal for the always-running automation worker: one function, four triggers | **Written, NOT executed — awaiting review** |
 | `0013_automation_restore_cancel_pair` | Relaxes `ck_automation_items_cancel_pair` so Undo Cancel can keep `cancelled_at` | Applied 2026-09-22 |
+| `0014_follow_up_reminders` | Shared CST follow-up reminders: one row per promise made in a conversation | Applied 2026-09-22 |
+
+## Why `0014` exists
+
+**Applied 2026-09-22** to the application database only — `varmen_db`, schema
+`cst_app` — creating `cst_app.follow_up_reminders` and its two indexes. The
+`cst_app` base-table count went from 26 to 27; nothing else in the schema was
+added, altered or removed, `cst_app.internal_notes` was byte-identical before and
+after, and **no source-database object was read or written**. No row was
+inserted: the table was deployed empty, and the constraint behaviour was proved
+beforehand in a rolled-back transaction rather than against live data.
+
+When CST tells a customer "we will update you within 48 hours", that promise is
+recorded nowhere. It is not derivable either: no message text may be scanned for
+it — the before-shipment rule exists because reading wording to decide priority
+was wrong in three separate ways — and the response SLA measures how fast we
+answer a message, not a commitment somebody made inside one. A promise is a
+decision a person took, so it is stored as one.
+
+**Shared, not owned.** There is deliberately no `assigned_user_id`,
+`created_by_user_id` or `completed_by_user_id`. This application has no
+authentication, no session and no current user: `cst_app.app_users` holds zero
+rows, and `draft_revisions.created_by_user_id` is null on all 434 revisions
+because no caller has ever had a user to supply. An ownership column added now
+could only be filled with NULL, and a nullable owner that is always null teaches
+readers to ignore the field. Ownership is a later migration, once identity
+exists.
+
+**Three states stored, four shown.** `upcoming`, `due soon` and `overdue` are the
+same `scheduled` row read against a clock; only `completed` is a fact about the
+reminder. Persisting the derived three would create rows that are wrong between
+the moment they come due and the moment something remembers to update them —
+exactly the bug a derived reading cannot have. `ix_follow_up_reminders_due` is
+the partial index that makes the derived reading cheap, the same shape as
+`ix_automation_items_due`.
+
+`ck_follow_up_reminders_completed_pair` is a **one-way implication** and `0013`
+is why: completed implies a timestamp, a timestamp does not imply completed, so
+reopening a completed reminder cannot hit the `23514` that Undo Cancel did.
+
+**It reminds a person; it cannot contact a customer.** No template, no body, no
+recipient, no channel, no marketplace, no scheduled send, and no status meaning
+"sent". `note` is CST's own words to CST.
+
+`cst_app.internal_notes` — which exists in the live database with no migration in
+this repository and no runtime reader — is **not touched** by either direction.
+Adopting or removing it is its own decision, not a side effect of this one.
 
 ## Why `0013` exists
 
