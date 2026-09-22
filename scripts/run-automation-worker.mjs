@@ -30,7 +30,7 @@
  *   1. LISTEN/NOTIFY. Every statement that can change the answer — the insert,
  *      the status changes, a settings update, a cancellation — performs
  *      `pg_notify('cst_automation_wake', reason)` ONCE, added by
- *      `migrations/0012_automation_worker_wake.up.sql`. The notification is sent
+ *      `migrations/0015_automation_worker_wake.up.sql`. The notification is sent
  *      inside the writer's transaction, so it arrives only if that transaction
  *      commits: a rolled-back insert wakes nobody, which is correct. This is the
  *      exact wake-up, and it costs the writer one function call.

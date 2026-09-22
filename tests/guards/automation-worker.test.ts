@@ -29,7 +29,7 @@ const WORKER = readFileSync(WORKER_PATH, "utf8");
 const HOOKS = readFileSync(join(ROOT, "scripts", "alias-hooks.mjs"), "utf8");
 const REGISTER = readFileSync(join(ROOT, "scripts", "register-automation-worker.ps1"), "utf8");
 const MIGRATION = readFileSync(
-  join(ROOT, "migrations", "0012_automation_worker_wake.up.sql"),
+  join(ROOT, "migrations", "0015_automation_worker_wake.up.sql"),
   "utf8",
 );
 

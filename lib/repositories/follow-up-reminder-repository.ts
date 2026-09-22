@@ -9,10 +9,15 @@ import {
  * Shared follow-up reminder storage, in the application database only.
  *
  * WRITES ONLY TO cst_app.follow_up_reminders. Nothing here touches the
- * read-only source database, another project's schema, `cst_app.internal_notes`,
- * `cst_app.automation_items`, or anything the draft workflow owns. The only two
- * statements that write are `INSERT_REMINDER` and `COMPLETE_REMINDER`, and both
- * name that one table.
+ * read-only source database, another project's schema, the automation's own
+ * tables, the staff notes table, or anything the draft workflow owns. The only
+ * two statements that write are `INSERT_REMINDER` and `COMPLETE_REMINDER`, and
+ * both name that one table.
+ *
+ * Those neighbours are described rather than named on purpose:
+ * `tests/guards/internal-note-visibility.test.ts` allows the staff-notes table
+ * to be mentioned only in the three files that own it, and a comment saying
+ * "not this one" is indistinguishable from a query to a text search.
  *
  * NOTHING HERE CAN CONTACT A CUSTOMER. There is no transport, no template, no
  * recipient and no marketplace call — creating or completing a reminder changes

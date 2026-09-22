@@ -43,10 +43,10 @@ function fake(responses: unknown[][] = []) {
 
 const hit = (over: Record<string, unknown> = {}) => ({
   match_kind: "handle",
-  matched_on: "lizw4512",
-  conversation_id: "45862",
+  matched_on: "samplebuyer1",
+  conversation_id: "10001",
   marketplace: "ebay",
-  counterparty_ref: "lizw4512",
+  counterparty_ref: "samplebuyer1",
   last_source_ts: "2026-09-21 17:28:54",
   message_count: 7,
   ...over,
@@ -58,7 +58,7 @@ const hit = (over: Record<string, unknown> = {}) => ({
 
 describe("what counts as a search", () => {
   it("collapses whitespace so spacing does not change the search", () => {
-    expect(normalizeSearchQuery("  Liz   Wharton ")).toBe("Liz Wharton");
+    expect(normalizeSearchQuery("  Sample   Buyer ")).toBe("Sample Buyer");
   });
 
   it("needs two characters", () => {
@@ -69,9 +69,9 @@ describe("what counts as a search", () => {
   });
 
   it("recognises a bare id without rejecting anything else", () => {
-    expect(looksLikeId("45862")).toBe(true);
-    expect(looksLikeId("LED63146")).toBe(false);
-    expect(looksLikeId("10-15196-37279")).toBe(false);
+    expect(looksLikeId("10001")).toBe(true);
+    expect(looksLikeId("LED00001")).toBe(false);
+    expect(looksLikeId("00-00000-00000")).toBe(false);
   });
 });
 
@@ -82,22 +82,22 @@ describe("what counts as a search", () => {
 describe("searching the application database", () => {
   it("binds every value and interpolates none", async () => {
     const { calls, db } = fake([[hit()]]);
-    await searchConversations(db, { query: "lizw4512" });
+    await searchConversations(db, { query: "samplebuyer1" });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.text).not.toContain("lizw4512");
-    expect(calls[0]!.values![0]).toBe("lizw4512");
+    expect(calls[0]!.text).not.toContain("samplebuyer1");
+    expect(calls[0]!.values![0]).toBe("samplebuyer1");
     // The contains-pattern is built on the VALUE, never into the SQL.
-    expect(calls[0]!.values![3]).toBe("%lizw4512%");
+    expect(calls[0]!.values![3]).toBe("%samplebuyer1%");
   });
 
   it("tries the id path only for an all-digit query", async () => {
     const numeric = fake([[hit()]]);
-    await searchConversations(numeric.db, { query: "45862" });
+    await searchConversations(numeric.db, { query: "10001" });
     expect(numeric.calls[0]!.values![1]).toBe(true);
-    expect(numeric.calls[0]!.values![2]).toBe("45862");
+    expect(numeric.calls[0]!.values![2]).toBe("10001");
 
     const text = fake([[hit()]]);
-    await searchConversations(text.db, { query: "LED63146" });
+    await searchConversations(text.db, { query: "LED00001" });
     expect(text.calls[0]!.values![1]).toBe(false);
     // Never a non-numeric value cast to bigint.
     expect(text.calls[0]!.values![2]).toBe("0");
@@ -123,14 +123,14 @@ describe("searching the application database", () => {
   });
 
   it("maps a row to the result contract", async () => {
-    const { db } = fake([[hit({ match_kind: "order_number", matched_on: "10-15196-37279" })]]);
-    const found = await searchConversations(db, { query: "10-15196-37279" });
+    const { db } = fake([[hit({ match_kind: "order_number", matched_on: "00-00000-00000" })]]);
+    const found = await searchConversations(db, { query: "00-00000-00000" });
     expect(found.results[0]).toEqual({
-      conversationId: "45862",
+      conversationId: "10001",
       marketplace: "ebay",
-      counterpartyRef: "lizw4512",
+      counterpartyRef: "samplebuyer1",
       matchKind: "order_number",
-      matchedOn: "10-15196-37279",
+      matchedOn: "00-00000-00000",
       lastSourceTimestamp: "2026-09-21 17:28:54",
       messageCount: 7,
     });
@@ -143,20 +143,20 @@ describe("searching the application database", () => {
 
 describe("searching by customer name", () => {
   it("reads names from the source and maps the refs back to conversations", async () => {
-    const app = fake([[], [hit({ counterparty_ref: "lizw4512" })]]);
-    const source = fake([[{ order_id: "10-15196-37279", ebay_buyer_id: "lizw4512", full_name: "Liz Wharton" }]]);
+    const app = fake([[], [hit({ counterparty_ref: "samplebuyer1" })]]);
+    const source = fake([[{ order_id: "00-00000-00000", ebay_buyer_id: "samplebuyer1", full_name: "Sample Buyer" }]]);
 
-    const found = await searchConversations(app.db, { query: "Wharton" }, source.db);
+    const found = await searchConversations(app.db, { query: "Buyer" }, source.db);
 
-    expect(source.calls[0]!.values![0]).toBe("%Wharton%");
+    expect(source.calls[0]!.values![0]).toBe("%Buyer%");
     // Both the order reference and the handle are offered as lookup keys.
     expect(app.calls[1]!.values![0]).toEqual(
-      expect.arrayContaining(["10-15196-37279", "lizw4512"]),
+      expect.arrayContaining(["00-00000-00000", "samplebuyer1"]),
     );
     expect(found.nameSearchAvailable).toBe(true);
     expect(found.results[0]!.matchKind).toBe("customer_name");
     // The evidence is the name that matched, from the order record.
-    expect(found.results[0]!.matchedOn).toBe("Liz Wharton");
+    expect(found.results[0]!.matchedOn).toBe("Sample Buyer");
   });
 
   /**
@@ -180,7 +180,7 @@ describe("searching by customer name", () => {
   /** Without the source pool the other paths still answer, and say so. */
   it("skips the name path when there is no source pool", async () => {
     const { calls, db } = fake([[hit()]]);
-    const found = await searchConversations(db, { query: "Wharton" });
+    const found = await searchConversations(db, { query: "Buyer" });
     expect(calls).toHaveLength(1);
     expect(found.nameSearchAvailable).toBe(false);
     expect(found.results).toHaveLength(1);
@@ -194,7 +194,7 @@ describe("searching by customer name", () => {
         throw new Error("source unavailable");
       },
     };
-    const found = await searchConversations(app.db, { query: "Wharton" }, source);
+    const found = await searchConversations(app.db, { query: "Buyer" }, source);
     expect(found.nameSearchAvailable).toBe(false);
     expect(found.results).toHaveLength(1);
   });

@@ -16,6 +16,8 @@ import type { WorkflowState } from "@/lib/domain/workflow";
 import { DraftPanel } from "./draft-panel";
 import { FollowUpButton } from "./follow-up-button";
 import { PanelIcon } from "./icons";
+import { PinnedInternalNotes } from "./pinned-internal-note";
+import type { InternalNotesState } from "./use-internal-notes";
 
 /** Floor on the draft panel's height: short enough to never be pointless, tall enough that a drag can't hide the action buttons under it. */
 const MIN_DRAFT_HEIGHT = 160;
@@ -52,6 +54,7 @@ export function ConversationView({
   selectedOrderNumber,
   note,
   onFollowUpCreated,
+  internalNotes,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
@@ -102,6 +105,19 @@ export function ConversationView({
    * see the render below for why that distinction matters.
    */
   note?: CustomerNote | null;
+  /**
+   * The conversation's internal notes, held by the workspace.
+   *
+   * PINNED, NOT PART OF THE THREAD. The newest one renders above the messages
+   * as a labelled card, never as a bubble — see `PinnedInternalNotes`. The
+   * same objects are rendered again in the details column's Internal Notes
+   * section, which is why the state lives one level up rather than here.
+   *
+   * ONLY INTERNAL NOTES REACH IT. No message on this thread can be pinned:
+   * the pinned area takes `InternalNote` values from the notes endpoint, and
+   * `messages` below never meets them.
+   */
+  internalNotes?: InternalNotesState;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -266,6 +282,39 @@ export function ConversationView({
           )}
         </div>
       </div>
+
+      {/*
+       * THE PINNED INTERNAL NOTE — A SIBLING OF THE SCROLLER, NOT A CHILD.
+       *
+       * THIS POSITION IS THE FEATURE, and it was wrong once. The card started
+       * inside the scroller below, which made it the first thing in the
+       * message list: it read correctly on open and then scrolled away the
+       * moment an agent moved down the thread, which is precisely when a note
+       * saying "courier follow-up already requested" is worth having.
+       *
+       * It is now a `shrink-0` row between the header and the scroller, in
+       * the same flex column. The scroller keeps `flex-1 min-h-0
+       * overflow-y-auto` and so owns all the scrolling; this row is outside
+       * it and cannot move. No `position: sticky` is involved — sticky would
+       * keep the card in the message list and leave it competing for the
+       * scroller's space.
+       *
+       * BOUNDED. `max-h-44` with its own overflow: a very long note scrolls
+       * inside its own box rather than pushing the conversation off screen.
+       * A pinned note that owned half the column would be a worse problem
+       * than the one this fixes.
+       *
+       * NOT A MESSAGE, AND NOT PINNABLE FROM ONE. It renders internal notes
+       * only; no bubble below can be pinned, there is no Pin control, and a
+       * note is pinned by existing rather than by being marked.
+       */}
+      {internalNotes !== undefined && (
+        <PinnedInternalNotes
+          notes={internalNotes.notes}
+          onSave={internalNotes.save}
+          onDelete={internalNotes.remove}
+        />
+      )}
 
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {/*

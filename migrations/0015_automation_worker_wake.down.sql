@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0012_automation_worker_wake.down.sql
+-- 0015_automation_worker_wake.down.sql
 --
 -- Reverses 0012. NON-DESTRUCTIVE: it drops four triggers and one function. No
 -- table is dropped, no row is deleted, no data is touched, and the worker simply

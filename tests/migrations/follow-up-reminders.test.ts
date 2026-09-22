@@ -54,14 +54,24 @@ describe("the migration pair", () => {
   });
 
   /**
-   * NUMBERING. 0014 must be the next number and must be the only 0014, or two
-   * migrations would claim one position in the sequence.
+   * NUMBERING, AND THIS CAUGHT A REAL COLLISION.
+   *
+   * It first asserted only that 0014 was unique and the highest. Two branches
+   * then both shipped a `0012` — `0012_internal_notes` and the automation
+   * worker's wake migration — and nothing failed, because neither was 0014.
+   * The number is what ORDERS migrations, so a duplicate is not a tidiness
+   * problem: a database that ran one `0012` cannot say which. The unapplied one
+   * was renumbered to 0015, and this now guards every number rather than one.
    */
-  it("takes the next free sequence number, uncontested", () => {
+  it("gives every migration its own sequence number", () => {
     const ups = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".up.sql"));
-    const numbers = ups.map((f) => Number(f.slice(0, 4)));
+    const numbers = ups.map((f) => f.slice(0, 4));
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+
+  it("is the only 0014", () => {
+    const ups = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".up.sql"));
     expect(ups.filter((f) => f.startsWith("0014_"))).toHaveLength(1);
-    expect(Math.max(...numbers)).toBe(14);
   });
 
   it("wraps each direction in a single transaction", () => {

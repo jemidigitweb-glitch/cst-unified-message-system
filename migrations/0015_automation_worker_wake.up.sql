@@ -27,7 +27,7 @@
 --
 -- THIS IS LATENCY, NOT CORRECTNESS. The worker also re-reads the soonest moment
 -- on its own interval (15 seconds by default) and claims nothing early because
--- of it, so an unwakeable case — 0012 not applied, a direct SQL edit, a dropped
+-- of it, so an unwakeable case — 0015 not applied, a direct SQL edit, a dropped
 -- listener connection — degrades the delay, never the outcome. Correctness comes
 -- from `FOR UPDATE SKIP LOCKED` on the claim in `selectDueItems`, which is
 -- untouched by this migration. Nothing here can cause a duplicate processing.
@@ -61,7 +61,7 @@
 -- TARGET: the APPLICATION database (varmen_db), schema cst_app ONLY.
 -- SAFETY: creates objects in cst_app and nowhere else. References no other
 --   schema, no source table, no other project's data. Uses no ALTER and no
---   TRUNCATE. Reversed by 0012_automation_worker_wake.down.sql.
+--   TRUNCATE. Reversed by 0015_automation_worker_wake.down.sql.
 -- -----------------------------------------------------------------------------
 
 BEGIN;

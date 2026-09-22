@@ -14,9 +14,26 @@ NNNN_<description>.down.sql   reverses it
 | `0002_unresolved_marketplace_messages` | Storage for source messages whose direction, identity and grouping are unverified | **Written, NOT executed — awaiting review** |
 | `0005_cst_knowledge_base` | CST rule corpus: sources and sign-off, categories, rules, examples, triggers | **Written, NOT executed — awaiting review** |
 | `0011_post_dispatch_automation` | Post-dispatch automation: templates, settings, records | Applied 2026-09-21 |
-| `0012_automation_worker_wake` | Wake signal for the always-running automation worker: one function, four triggers | **Written, NOT executed — awaiting review** |
+| `0012_internal_notes` | Internal notes: CST staff notes about a conversation | Applied 2026-09-22 |
 | `0013_automation_restore_cancel_pair` | Relaxes `ck_automation_items_cancel_pair` so Undo Cancel can keep `cancelled_at` | Applied 2026-09-22 |
 | `0014_follow_up_reminders` | Shared CST follow-up reminders: one row per promise made in a conversation | Applied 2026-09-22 |
+| `0015_automation_worker_wake` | Wake signal for the always-running automation worker: one function, four triggers | **Written, NOT executed — awaiting review** |
+
+## Why the worker wake migration is `0015` and not `0012`
+
+It was written as `0012` on a branch while `0012_internal_notes` was being
+written as `0012` on another, and both reached this file. Two migrations cannot
+share a sequence number: the number is what orders them, and a database that ran
+one `0012` has no way to say which.
+
+The **unapplied** one moved. `0012_internal_notes` is applied to `varmen_db`;
+renumbering an applied migration would leave every database that ran it claiming
+a number this repository no longer has. The wake migration had not been executed
+anywhere, so renaming it costs nothing and breaks nothing.
+
+`tests/migrations/follow-up-reminders.test.ts` now asserts that **no two
+migrations share a number**, so the next collision fails a test rather than
+reaching a reviewer.
 
 ## Why `0014` exists
 
@@ -60,9 +77,11 @@ reopening a completed reminder cannot hit the `23514` that Undo Cancel did.
 recipient, no channel, no marketplace, no scheduled send, and no status meaning
 "sent". `note` is CST's own words to CST.
 
-`cst_app.internal_notes` — which exists in the live database with no migration in
-this repository and no runtime reader — is **not touched** by either direction.
-Adopting or removing it is its own decision, not a side effect of this one.
+`cst_app.internal_notes` is **not touched** by either direction. It was written
+in parallel on another branch as `0012_internal_notes`, so while 0014 was being
+written the table existed in `varmen_db` with no migration on this branch to
+explain it; it has one, and a feature behind it. Leaving it alone was the right
+call for the wrong reason, and the reason is corrected here.
 
 ## Why `0013` exists
 
@@ -85,7 +104,7 @@ row (`scheduled` with `cancelled_at` set) fails the old biconditional, so the
 rollback refuses until those rows are cancelled again or the timestamp cleared.
 The old constraint and Undo Cancel cannot coexist.
 
-## Why `0012` exists
+## Why `0015` exists
 `scripts/run-automation-worker.mjs` starts once and waits on the exact
 `scheduled_at` of the next due record instead of polling every fifteen minutes.
 It cannot see a row appear, so the writer tells it: every statement that can
@@ -101,15 +120,45 @@ statement-level transition table `new_rows` to announce only rows that arrived
 
 **This is latency, not correctness.** The worker also re-reads the soonest moment
 on its own interval (15s by default) and claims nothing early because of it, so an
-unwakeable case — 0012 not applied, a direct SQL edit, a dropped listener
+unwakeable case — 0015 not applied, a direct SQL edit, a dropped listener
 connection — degrades the delay, never the outcome. Correctness comes from
 `FOR UPDATE SKIP LOCKED` in `selectDueItems`, untouched by this migration.
 
 It adds **no column, no table and no row**, and alters no existing constraint.
 The honest caveat: five triggers and one function are new objects against tables
 that already exist, which is a real change to the database even though the schema
-of the data is unchanged. `0012.down.sql` drops them with `RESTRICT` and is
+of the data is unchanged. `0015.down.sql` drops them with `RESTRICT` and is
 non-destructive — the worker falls back to its interval.
+
+## Why `0012` exists
+
+A CST agent needs somewhere to record where a case stands — a courier update, an
+instruction from a supervisor, a fault in a listing, what happened last time
+this customer wrote in. There was nowhere for that to live.
+`conversation_messages` is the customer thread, and a row there IS a message
+exchanged with a customer; `audit_log` records state changes from a closed
+action list, not prose; `draft_revisions` describes a reply. A note about the
+case is none of the three.
+
+**These notes are staff-only, and the schema is where that is stated.**
+`internal_notes.visibility` is `NOT NULL` and constrained to the single value
+`'internal'`. A customer-visible note would require altering
+`ck_internal_notes_visibility` on purpose — it cannot be reached by an insert
+that simply omits the column, and it cannot be forgotten. Same device as
+`automation_items.test_mode` in `0011`.
+
+`author_user_id` is **nullable and always written NULL today**. This application
+still has no interactive sign-in, so there is no agent identity to stamp on a
+note — the same reason `draft_revisions.created_by_user_id` and
+`context_snapshots.confirmed_by_user_id` are null. The column is already here,
+so nothing needs backfilling with a guess when sign-in arrives.
+
+`source_order_id` is a plain column with no foreign key, because the order lives
+in the read-only source database this schema must not couple itself to — the
+rule `0011` states for `automation_items.source_order_id`.
+
+Create and view only. Edit and delete are a later phase; `updated_at` exists so
+that phase needs no migration of its own.
 
 ## Why `0011` exists
 

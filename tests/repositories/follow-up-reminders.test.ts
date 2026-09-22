@@ -57,7 +57,7 @@ function fake(responses: unknown[][] = []) {
 function row(overrides: Record<string, unknown> = {}) {
   return {
     id: "7",
-    conversation_id: "45862",
+    conversation_id: "10001",
     promised_due_at: new Date("2026-09-24T09:00:00Z"),
     note: "Customer chasing the replacement shade",
     status: "scheduled",
@@ -76,7 +76,7 @@ describe("creating a reminder", () => {
   it("writes one row and returns what the database stored", async () => {
     const { calls, db } = fake([[row()]]);
     const reminder = await createReminder(db, {
-      conversationId: "45862",
+      conversationId: "10001",
       promisedDueAt: "2026-09-24T09:00:00.000Z",
       note: "Customer chasing the replacement shade",
     });
@@ -89,21 +89,21 @@ describe("creating a reminder", () => {
 
   /** The reminder belongs to the conversation the caller named. */
   it("links the reminder to the requested conversation", async () => {
-    const { calls, db } = fake([[row({ conversation_id: "45862" })]]);
+    const { calls, db } = fake([[row({ conversation_id: "10001" })]]);
     const reminder = await createReminder(db, {
-      conversationId: "45862",
+      conversationId: "10001",
       promisedDueAt: "2026-09-24T09:00:00.000Z",
     });
 
-    expect(calls[0]!.values![0]).toBe("45862");
+    expect(calls[0]!.values![0]).toBe("10001");
     expect(calls[0]!.text).toContain("$1::bigint");
-    expect(reminder.conversationId).toBe("45862");
+    expect(reminder.conversationId).toBe("10001");
   });
 
   it("preserves the promised time exactly", async () => {
     const { calls, db } = fake([[row({ promised_due_at: new Date("2026-09-24T09:00:00Z") })]]);
     const reminder = await createReminder(db, {
-      conversationId: "45862",
+      conversationId: "10001",
       promisedDueAt: "2026-09-24T09:00:00.000Z",
     });
 
@@ -114,7 +114,7 @@ describe("creating a reminder", () => {
   it("stores an absent note as NULL rather than an empty string", async () => {
     const { calls, db } = fake([[row({ note: null })]]);
     const reminder = await createReminder(db, {
-      conversationId: "45862",
+      conversationId: "10001",
       promisedDueAt: "2026-09-24T09:00:00.000Z",
     });
 
@@ -125,7 +125,7 @@ describe("creating a reminder", () => {
   it("carries a note through when one is given", async () => {
     const { calls, db } = fake([[row({ note: "Ring them about the dome cone" })]]);
     const reminder = await createReminder(db, {
-      conversationId: "45862",
+      conversationId: "10001",
       promisedDueAt: "2026-09-24T09:00:00.000Z",
       note: "Ring them about the dome cone",
     });
@@ -137,12 +137,12 @@ describe("creating a reminder", () => {
   it("parameterises every value it writes", async () => {
     const { calls, db } = fake([[row()]]);
     await createReminder(db, {
-      conversationId: "45862",
+      conversationId: "10001",
       promisedDueAt: "2026-09-24T09:00:00.000Z",
       note: "note",
     });
     // No value is interpolated into the statement text.
-    expect(calls[0]!.text).not.toContain("45862");
+    expect(calls[0]!.text).not.toContain("10001");
     expect(calls[0]!.text).not.toContain("2026-09-24");
     expect(calls[0]!.values).toHaveLength(3);
   });
@@ -282,10 +282,10 @@ describe("the shared list", () => {
 describe("one conversation's reminders", () => {
   it("returns only that conversation's rows, newest promise first", async () => {
     const { calls, db } = fake([[row({ id: "9" }), row({ id: "4" })]]);
-    const reminders = await getConversationReminders(db, "45862");
+    const reminders = await getConversationReminders(db, "10001");
 
     expect(calls[0]!.text).toContain("WHERE conversation_id = $1::bigint");
-    expect(calls[0]!.values).toEqual(["45862"]);
+    expect(calls[0]!.values).toEqual(["10001"]);
     expect(calls[0]!.text).toContain("ORDER BY promised_due_at DESC, id DESC");
     expect(reminders.map((r) => r.id)).toEqual(["9", "4"]);
   });
@@ -293,7 +293,7 @@ describe("one conversation's reminders", () => {
   /** A thread shows what was promised AND what was done. */
   it("does not filter by status", async () => {
     const { calls, db } = fake([[]]);
-    await getConversationReminders(db, "45862");
+    await getConversationReminders(db, "10001");
     expect(calls[0]!.text).not.toContain("status =");
   });
 });

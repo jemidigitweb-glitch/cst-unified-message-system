@@ -48,6 +48,7 @@ import { PriorityFilterControl } from "./priority-filter";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
+import { useInternalNotes } from "./use-internal-notes";
 import { UnresolvedMessageView } from "./unresolved-message-view";
 import { UsagePanel } from "./usage-panel";
 
@@ -360,6 +361,25 @@ export function Workspace() {
   useEffect(() => {
     setSelectedOrderNumber(null);
   }, [selectedId]);
+  /**
+   * The open conversation's internal notes, held HERE and rendered twice.
+   *
+   * The newest note is pinned under the conversation header in the message
+   * column, and every note is managed in the Internal Notes section of the
+   * details column. Those are siblings, so two copies of this state would be
+   * two lists that
+   * disagree the moment one of them is edited — the same reason
+   * `selectedOrderNumber` above is held here rather than in either panel.
+   *
+   * Keyed by the conversation id, so switching conversations refetches and
+   * one case's notes can never hang over another's.
+   *
+   * NOTES ONLY. This reaches the internal-notes endpoints and nothing else;
+   * no conversation message can enter the list it returns.
+   */
+  const internalNotes = useInternalNotes(
+    selectedKind === "conversation" ? selectedId : null,
+  );
   /**
    * Whether the marketplace-and-conversations drawer is open, below desktop
    * width (anything under `xl`, 1280px — a small laptop as much as a phone).
@@ -1654,6 +1674,10 @@ export function Workspace() {
               onFollowUpCreated={() => {
                 void refreshFollowUps();
               }}
+              /* The same list the Internal Notes section in the details
+                 column renders; the newest of them is pinned above the
+                 thread. */
+              internalNotes={internalNotes}
             />
           )}
         </main>
@@ -1706,6 +1730,8 @@ export function Workspace() {
                 messages={detail?.messages ?? []}
                 selectedOrderNumber={selectedOrderNumber}
                 onSelectOrder={setSelectedOrderNumber}
+                /* The same list the pinned card above the thread renders. */
+                internalNotes={internalNotes}
               />
               {/* After the context, because both answer "can I trust this
                   draft?" -- one from the conversation's side, one from the

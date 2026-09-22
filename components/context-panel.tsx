@@ -57,7 +57,9 @@ import {
 } from "@/lib/domain/shipment-tracking-display";
 import type { TrackingResult } from "@/lib/tracking/provider";
 
+import { InternalNotesSection } from "./internal-notes-panel";
 import { StatusBadge } from "./status-badge";
+import type { InternalNotesState } from "./use-internal-notes";
 
 /**
  * Context summary.
@@ -1110,9 +1112,19 @@ export function ContextPanel({
   messages,
   selectedOrderNumber,
   onSelectOrder,
+  internalNotes,
 }: {
   conversation: InboxItem | null;
   capability: MarketplaceCapability;
+  /**
+   * The conversation's internal notes, held by the workspace.
+   *
+   * Passed rather than fetched here because the same notes are rendered
+   * pinned under the conversation header, in the sibling column. Two copies
+   * of this state would be two lists that drift apart on the first edit —
+   * the same reason `selectedOrderNumber` above travels this way.
+   */
+  internalNotes: InternalNotesState;
   /**
    * The thread, already loaded by the view above — read ONLY to surface what
    * the customer reported about the product and which images they attached.
@@ -1175,6 +1187,25 @@ export function ContextPanel({
 
   return (
     <div className="flex flex-col gap-5 p-5">
+      {/*
+        INTERNAL NOTES, the first section of this column.
+
+        The position is the point. Everything below — listing, order, what the
+        customer reported — is read FROM the customer and their purchase. A
+        note is the opposite: it is what CST recorded about the case, so it
+        leads rather than trails, and it carries its own tint and heading so
+        the boundary between the two kinds of information is visible before
+        anything is read.
+
+        It draws its own frame, unlike the plain sections beneath it, which is
+        why it is not wrapped in one here.
+
+        Keyed by conversation, like every other self-fetching section here, so
+        switching conversations cannot leave one case's notes on another's
+        panel for the render between selection and load.
+      */}
+      <InternalNotesSection notes={internalNotes} />
+
       <section className="flex flex-col gap-2">
         <SectionHeading>Human action needed</SectionHeading>
         <StatusBadge state={conversation.workflowState} />
@@ -1184,6 +1215,7 @@ export function ContextPanel({
           <Row label="Latest" value={`${last.date} ${last.time}`} />
         </dl>
       </section>
+
 
       {/*
         TWO CONCEPTS, TWO SECTIONS, IN THE ORDER A REVIEWER NEEDS THEM.
