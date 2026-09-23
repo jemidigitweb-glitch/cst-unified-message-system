@@ -10,6 +10,7 @@ import {
   type AutomationTemplate,
 } from "@/lib/domain/automation/automation-types";
 
+import { AutomationDispatchDetailDrawer } from "./automation-dispatch-detail-drawer";
 import { StatusBadge, inZone, moment } from "./automation-status-badge";
 
 /**
@@ -283,6 +284,15 @@ export function AutomationAdmin() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState<AutomationItemStatus | "">("");
   const [error, setError] = useState<string | null>(null);
+  /*
+   * Which record's dispatch details are open, or null for none.
+   *
+   * The ROW is held rather than its id, so the panel can show the record's own
+   * stored values — order number, shipment, dispatch time, template — while the
+   * source read is still in flight. Holding an id would mean an empty panel until
+   * the round trip finished.
+   */
+  const [detailItem, setDetailItem] = useState<AutomationItem | null>(null);
 
   const loadQueue = useCallback(async () => {
     try {
@@ -475,7 +485,26 @@ export function AutomationAdmin() {
                     {queue.items.map((item) => (
                       <tr key={item.id} className="border-b border-black/5 dark:border-white/10">
                         <td className="p-2">{item.recipientName ?? "Not recorded"}</td>
-                        <td className="p-2 font-mono">{item.orderNumber ?? item.orderId}</td>
+                        {/*
+                          THE ONLY CHANGE TO THIS TABLE. The order number was
+                          already printed here; it is now the control that opens
+                          the record's dispatch details. A button rather than a
+                          link because nothing is navigated to — and it carries
+                          the record's own id, not the order number, so the panel
+                          resolves THIS record's shipment rather than the order's
+                          first one.
+                        */}
+                        <td className="p-2 font-mono">
+                          <button
+                            type="button"
+                            data-testid={`order-link-${item.id}`}
+                            className="underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                            title="Show the dispatch details behind this record"
+                            onClick={() => setDetailItem(item)}
+                          >
+                            {item.orderNumber ?? item.orderId}
+                          </button>
+                        </td>
                         <td className="p-2 font-mono">{item.shipmentId}</td>
                         <td className="p-2">{item.channel}</td>
                         <td className="p-2 font-mono text-xs">{item.dispatchedAt}</td>
@@ -573,6 +602,18 @@ export function AutomationAdmin() {
             </div>
           </section>
         </>
+      )}
+
+      {/* Opened by the order number, closed by the backdrop, Escape or Close. */}
+      {detailItem === null ? null : (
+        <AutomationDispatchDetailDrawer
+          // Keyed on the record, so opening a different order number remounts
+          // the panel rather than leaving the previous record's source read on
+          // screen while the new one loads.
+          key={detailItem.id}
+          item={detailItem}
+          onClose={() => setDetailItem(null)}
+        />
       )}
     </main>
   );
