@@ -11,6 +11,8 @@ import {
   BEFORE_SHIPPING_CATEGORY,
   type BeforeShipmentInput,
   beforeShipmentEligibility,
+  isBeforeShipmentUrgent,
+  urgentOrderIsVerified,
 } from "@/lib/domain/before-shipment-urgency";
 import { ORDER_CHANGE_CATEGORY } from "@/lib/domain/inbox";
 import {
@@ -98,11 +100,18 @@ describe("a customer message on a linked, unshipped order is urgent", () => {
 });
 
 describe("the rule does not fire", () => {
-  /** REQUIRED CASE: no matching order. */
-  it("when no order number could be established", () => {
+  /**
+   * REQUIRED CASE: no matching order, AND the customer is not asking us to
+   * change or stop one.
+   *
+   * `orderChangeIntent: false` is what makes this "no matching order" rather
+   * than `order_state_unverified` — see the pair of tests below, which cover
+   * the same absence when the customer IS asking us to stop the order.
+   */
+  it("when no order number could be established and nothing was asked of us", () => {
     for (const orderNumber of [null, "", "   "]) {
       expect(
-        beforeShipmentEligibility(eligible({ orderNumber })),
+        beforeShipmentEligibility(eligible({ orderNumber, orderChangeIntent: false })),
         JSON.stringify(orderNumber),
       ).toBe("no_matching_order");
     }
@@ -113,8 +122,81 @@ describe("the rule does not fire", () => {
    * deliberately not "not dispatched". An absence is not a window: reading it
    * as one would promise that a parcel nobody can find can still be stopped.
    */
-  it("when the source has no record of the matched order", () => {
-    expect(beforeShipmentEligibility(eligible({ shipment: null }))).toBe("no_matching_order");
+  it("when the source has no record of the matched order and nothing was asked of us", () => {
+    expect(
+      beforeShipmentEligibility(eligible({ shipment: null, orderChangeIntent: false })),
+    ).toBe("no_matching_order");
+  });
+
+  /**
+   * ------------------------------------------------------------------------
+   * THE ORDER WE CANNOT SEE YET
+   * ------------------------------------------------------------------------
+   * Found live on 2026-09-23: eBay conversation 48230 (`david_tuck_ward`) asked
+   * us to switch carrier or cancel two items that had not shipped, and was not
+   * flagged. Both of its orders existed and were undispatched; CST simply could
+   * not tell they were his, because `customers.customer_info.ebay_buyer_id` is
+   * the only link and it is populated on 0% of eBay orders under 6 hours old,
+   * 14% by 12 hours, and 100% only after 12-24. eBay dispatches at a median of
+   * 12.6 hours, so the rule was blind for most of the window it protects.
+   */
+  it("fires when there is no order key at all and the customer asked us to stop it", () => {
+    for (const orderNumber of [null, "", "   "]) {
+      expect(
+        beforeShipmentEligibility(eligible({ orderNumber, orderChangeIntent: true })),
+        JSON.stringify(orderNumber),
+      ).toBe("order_state_unverified");
+    }
+  });
+
+  /**
+   * THE NARROW SCOPE IS THE POINT. "No key to look up" is the identity race;
+   * "looked it up and got nothing back" is ambiguous — it is also what a source
+   * outage looks like, because the caller passes an empty map when the pool is
+   * absent. Only the first escalates.
+   */
+  it("does NOT fire when a real order key simply failed to resolve", () => {
+    expect(
+      beforeShipmentEligibility(
+        eligible({ orderNumber: "LED65289", shipment: null, orderChangeIntent: true }),
+      ),
+    ).toBe("no_matching_order");
+  });
+
+  it("treats an unverified order as urgent, but not as a verified one", () => {
+    const input = eligible({ orderNumber: null, orderChangeIntent: true });
+    expect(isBeforeShipmentUrgent(input)).toBe(true);
+    expect(urgentOrderIsVerified(beforeShipmentEligibility(input))).toBe(false);
+    expect(urgentOrderIsVerified("eligible")).toBe(true);
+  });
+
+  /**
+   * THE OLD KEYWORD BUG MUST STAY DEAD. A dispatched order has a FINDABLE
+   * order, so it can never reach the unverified branch however urgently the
+   * customer words it — "please cancel" on a parcel delivered a fortnight ago
+   * is a return, not a cancellation.
+   */
+  it("never resurrects a dispatched order, whatever the customer asked", () => {
+    expect(
+      beforeShipmentEligibility(
+        eligible({ shipment: { dispatched: true }, orderChangeIntent: true }),
+      ),
+    ).toBe("already_dispatched");
+  });
+
+  /** And the other three guarantees of condition 1 still bind first. */
+  it.each([
+    ["a platform notice", { platformNotice: true }, "not_a_customer_conversation"],
+    ["a filtered placement", { inboxPlacement: "filtered" as const }, "not_a_customer_conversation"],
+    ["our own message last", { lastDirection: "outbound" as const }, "no_customer_action_needed"],
+    ["an unknown arrival time", { ageHours: null }, "too_old"],
+    ["a message older than the window", { ageHours: 49 }, "too_old"],
+  ])("still refuses %s even with no order and a cancellation", (_label, override, expected) => {
+    expect(
+      beforeShipmentEligibility(
+        eligible({ orderNumber: null, orderChangeIntent: true, ...override }),
+      ),
+    ).toBe(expected);
   });
 
   /** REQUIRED CASE: already dispatched. */

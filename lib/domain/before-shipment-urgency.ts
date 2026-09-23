@@ -290,11 +290,8 @@ export function beforeShipmentEligibility(
 
   /* ---- 2. A real matching customer order ---- */
   const nothingToLookUp = input.orderNumber === null || input.orderNumber.trim() === "";
-  // Looked up, and the source has no record of it. An absence is not a window:
-  // a reference is a claim, and the row in the source is the verification.
-  const orderNotFound = nothingToLookUp || input.shipment === null;
 
-  if (orderNotFound) {
+  if (nothingToLookUp) {
     /*
      * ------------------------------------------------------------------------
      * WE CANNOT SEE THE ORDER, AND THE CUSTOMER IS ASKING US TO STOP IT
@@ -342,13 +339,32 @@ export function beforeShipmentEligibility(
      * IT IS A SEPARATE OUTCOME, NOT `eligible`, so the interface can say the
      * order has not been identified rather than implying we checked and found
      * it. An agent opening this needs to know the order is unconfirmed.
+     *
+     * ------------------------------------------------------------------------
+     * ONLY WHEN THERE WAS NOTHING TO LOOK UP — NOT WHEN A LOOKUP FAILED
+     * ------------------------------------------------------------------------
+     * This branch is reached only when `orderNumber` is absent, which is the
+     * identity race above: no key exists yet, so no lookup was even attempted
+     * and the source's availability is irrelevant.
+     *
+     * A conversation that HAS an order key and whose `shipment` came back null
+     * falls through to `no_matching_order` below, unchanged. That case is
+     * ambiguous in a way this one is not — it is both "the source has no such
+     * order" and "the source could not be reached", because
+     * `applyBeforeShipmentRule` passes an empty map when the pool is absent.
+     * Treating it as urgent would mean a source outage lighting up the inbox,
+     * and would also read a genuine "no such order" as a reason to escalate.
      */
     if (input.orderChangeIntent) return "order_state_unverified";
     return "no_matching_order";
   }
 
+  // Looked up, and the source has no record of it. An absence is not a window:
+  // a reference is a claim, and the row in the source is the verification.
+  if (input.shipment === null) return "no_matching_order";
+
   /* ---- 3. Not yet dispatched ---- */
-  if (input.shipment!.dispatched) return "already_dispatched";
+  if (input.shipment.dispatched) return "already_dispatched";
 
   return "eligible";
 }

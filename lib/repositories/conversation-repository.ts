@@ -208,17 +208,19 @@ const USERNAME_KEYED_MARKETPLACE = "ebay";
  * The verified snapshot order wherever one exists. The thread's own reference
  * as a fallback — EXCEPT on eBay, where that reference is a buyer username.
  *
- * Writing the marketplace as a literal inside the SQL rather than binding it
- * keeps this a pure expression usable in two statements with different
- * parameter numbering; it is a constant from this module, never caller input,
- * and `tests/guards/...` pins that it is compared against
- * `USERNAME_KEYED_MARKETPLACE`.
+ * TAKES ITS PLACEHOLDER rather than inlining the marketplace, because the two
+ * statements that use it number their parameters differently and because
+ * `awaiting-response.test.ts` rightly forbids a marketplace literal in this
+ * SQL. The value bound is always `USERNAME_KEYED_MARKETPLACE` from this module;
+ * nothing a caller supplies reaches it.
  */
-const EBAY_ORDER_REF_EXPRESSION = `COALESCE(
+function orderRefExpression(marketplaceParam: string): string {
+  return `COALESCE(
          CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
-         CASE WHEN c.marketplace <> '${USERNAME_KEYED_MARKETPLACE}'
+         CASE WHEN c.marketplace <> ${marketplaceParam}::text
               THEN c.counterparty_ref END
        )`;
+}
 
 /**
  * WHICH half of the COALESCE above actually answered.
@@ -351,7 +353,7 @@ SELECT c.id::text                  AS id,
        -- plainly non-numeric usernames. Every one was a guaranteed-miss round
        -- trip to the source that then reported no_matching_order as though the
        -- order had been checked and found absent.
-       ${EBAY_ORDER_REF_EXPRESSION}  AS order_number,
+       ${orderRefExpression("$6")}  AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
        ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
        ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
@@ -601,7 +603,7 @@ SELECT c.id::text                  AS id,
        CASE
          WHEN c.counterparty_ref LIKE 'unresolved:%'
            THEN CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END
-         ELSE ${EBAY_ORDER_REF_EXPRESSION}
+         ELSE ${orderRefExpression("$4")}
        END                         AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
        ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
@@ -1394,6 +1396,9 @@ export async function listConversations(
       // Which marketplace carries the extra never-replied restriction. Passed
       // rather than inlined so the query and the rule cannot disagree about it.
       BEFORE_SHIPMENT_MARKETPLACE,
+      // $6: the marketplace whose counterparty_ref is a buyer username rather
+      // than an order number, so the fallback is skipped there.
+      USERNAME_KEYED_MARKETPLACE,
     ],
   });
   const urgentScanned = urgentRows.rows.length;
@@ -1761,6 +1766,9 @@ export async function listAwaitingResponseByCategory(
       [...marketplaces],
       limit + 1,
       gate === "before_shipment" ? BEFORE_SHIPMENT_RECENCY_HOURS : null,
+      // $4: the marketplace whose counterparty_ref is a buyer username rather
+      // than an order number, so the fallback is skipped there.
+      USERNAME_KEYED_MARKETPLACE,
     ],
   });
 
