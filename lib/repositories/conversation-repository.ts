@@ -29,6 +29,7 @@ import {
   BEFORE_SHIPMENT_RECENCY_HOURS,
   BEFORE_SHIPPING_CATEGORY,
   beforeShipmentEligibility,
+  isBeforeShipmentUrgent,
 } from "@/lib/domain/before-shipment-urgency";
 import { staffClosedTheOrder } from "@/lib/knowledge/staff-resolution";
 import {
@@ -188,6 +189,40 @@ const LATEST_INBOUND_INSTANT = `(
 )`;
 
 /**
+ * The marketplace whose `counterparty_ref` is a PERSON, not an order.
+ *
+ * Every other marketplace keys its threads by the order number — Shopify
+ * conversation 46268 is keyed `LED65289`, which is `orders.order_id` in the
+ * source — so the thread's own reference is a usable order key there. eBay
+ * keys by the buyer's username (`david_tuck_ward`), which is not an order
+ * number and never resolves to one.
+ *
+ * A VALUE, not a string repeated in two SQL statements that could drift apart,
+ * for the same reason as `BEFORE_SHIPMENT_MARKETPLACE`.
+ */
+const USERNAME_KEYED_MARKETPLACE = "ebay";
+
+/**
+ * What to look up as this conversation's order number.
+ *
+ * The verified snapshot order wherever one exists. The thread's own reference
+ * as a fallback — EXCEPT on eBay, where that reference is a buyer username.
+ *
+ * TAKES ITS PLACEHOLDER rather than inlining the marketplace, because the two
+ * statements that use it number their parameters differently and because
+ * `awaiting-response.test.ts` rightly forbids a marketplace literal in this
+ * SQL. The value bound is always `USERNAME_KEYED_MARKETPLACE` from this module;
+ * nothing a caller supplies reaches it.
+ */
+function orderRefExpression(marketplaceParam: string): string {
+  return `COALESCE(
+         CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
+         CASE WHEN c.marketplace <> ${marketplaceParam}::text
+              THEN c.counterparty_ref END
+       )`;
+}
+
+/**
  * WHICH half of the COALESCE above actually answered.
  *
  * The same subquery, the same ordering, the same one row — so it can never
@@ -308,10 +343,17 @@ SELECT c.id::text                  AS id,
        -- reference otherwise -- see BeforeShipmentInput.orderNumber. Either way
        -- the SOURCE decides whether the order is real; this only says what to
        -- look up.
-       COALESCE(
-         CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
-         c.counterparty_ref
-       )                           AS order_number,
+       --
+       -- EXCEPT ON eBAY, WHERE counterparty_ref IS A BUYER USERNAME.
+       -- The fallback is sound on Shopify, Amazon, B&Q and Temu because those
+       -- threads are KEYED BY the order number. eBay threads are keyed by the
+       -- buyer -- a username, not an order -- so looking one up as an order
+       -- number cannot ever match. Measured 2026-09-23: 1,231 of 1,282 eBay
+       -- reply-inbox conversations took this fallback and 1,202 of those were
+       -- plainly non-numeric usernames. Every one was a guaranteed-miss round
+       -- trip to the source that then reported no_matching_order as though the
+       -- order had been checked and found absent.
+       ${orderRefExpression("$6")}  AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
        ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
        ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
@@ -325,12 +367,23 @@ FROM cst_app.conversations c
 LEFT JOIN cst_app.context_snapshots cs ON cs.conversation_id = c.id
 WHERE c.marketplace = $1
   AND ($2::text IS NULL OR c.inbox_visibility = $2::text)
-  -- Condition 2, as far as SQL can take it: SOMETHING to look up. Whether the
-  -- order is real is settled against the source, not here.
-  AND COALESCE(
-        CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
-        c.counterparty_ref
-      ) IS NOT NULL
+  -- CONDITION 2 IS NO LONGER A FILTER HERE, and removing it is the fix for a
+  -- conversation that could never be flagged.
+  --
+  -- It used to require SOMETHING to look up, which on eBay was satisfied by the
+  -- buyer username above -- so the query admitted eBay rows for the wrong
+  -- reason and beforeShipmentEligibility then rejected all of them. With the
+  -- username fallback correctly removed, that predicate would instead EXCLUDE
+  -- every eBay conversation without a single_order snapshot (1,231 of 1,282),
+  -- which is the whole population this rule needs to see.
+  --
+  -- The order is still required -- by beforeShipmentEligibility, which is the
+  -- only place conditions 2 and 3 are decided, and which now distinguishes "the
+  -- order has gone" from "we cannot see the order yet". A row that fails there
+  -- keeps everything it arrived with and rejoins the ordinary stream.
+  --
+  -- The window below, not this predicate, is what bounds the candidate set.
+  --
   -- The ingestion layer's sentinel for a thread it could not key to anything.
   -- It is not an order number and must never be looked up as one.
   AND c.counterparty_ref NOT LIKE 'unresolved:%'
@@ -539,21 +592,18 @@ SELECT c.id::text                  AS id,
          FROM cst_app.draft_replies d
          WHERE d.conversation_id = c.id
        )                           AS has_draft,
-       -- The before-shipment rule's inputs. Same expressions as
+       -- The before-shipment rule's inputs. Same expression as
        -- URGENT_CANDIDATES, evaluated only for rows that survived the window.
        --
        -- The 'unresolved:' sentinel is the ingestion layer's marker for a thread
        -- it could not key to anything. URGENT_CANDIDATES excludes it with a WHERE
        -- clause; this feed must not drop the conversation from the list, so it
-       -- nulls the KEY instead -- the rule then reads no_matching_order, which is
-       -- the truth, and no sentinel is ever sent to the source as an order number.
+       -- nulls the KEY instead -- the rule then reads no order, which is the
+       -- truth, and no sentinel is ever sent to the source as an order number.
        CASE
          WHEN c.counterparty_ref LIKE 'unresolved:%'
            THEN CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END
-         ELSE COALESCE(
-           CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END,
-           c.counterparty_ref
-         )
+         ELSE ${orderRefExpression("$4")}
        END                         AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
        ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
@@ -1231,7 +1281,25 @@ async function applyBeforeShipmentRule(
       shipment: shipment === null ? null : { dispatched: shipment.dispatched },
     });
 
-    const eligible = outcome === "eligible";
+    /*
+     * ASK THE RULE, NEVER COMPARE THE STRING. This was `outcome === "eligible"`,
+     * which silently ignored `order_state_unverified` — the rule computed the
+     * new outcome, the row carried it, and the flag stayed off. Two places
+     * deciding what "urgent" means is exactly how they disagree.
+     */
+    const urgent = isBeforeShipmentUrgent({
+      marketplace: item.marketplace,
+      everReplied: row.ever_replied === true,
+      lastDirection: item.lastDirection,
+      inboxPlacement: item.inboxPlacement,
+      platformNotice: isPlatformNotice(item),
+      staffClosedTheOrder: staffClosedTheOrder(row.latest_outbound_text ?? null),
+      orderChangeIntent: asksToChangeTheOrder(row.latest_inbound_text ?? null),
+      ageHours:
+        startedAt === null ? null : (now.getTime() - startedAt.getTime()) / MS_PER_HOUR,
+      orderNumber,
+      shipment: shipment === null ? null : { dispatched: shipment.dispatched },
+    });
     /*
      * THE TAG IS A NARROWER QUESTION THAN THE FLAG. Urgency says the window is
      * open; the tag names the case area, so it needs the customer to actually
@@ -1239,10 +1307,10 @@ async function applyBeforeShipmentRule(
      * unshipped order is urgent — they are waiting and we can still help — and
      * is NOT an order change, so it keeps the category the phrase table read.
      */
-    const retag = eligible && asksToChangeTheOrder(row.latest_inbound_text ?? null);
+    const retag = urgent && asksToChangeTheOrder(row.latest_inbound_text ?? null);
     return {
       ...item,
-      urgent: eligible,
+      urgent,
       beforeShipmentOutcome: outcome,
       // Re-tagged only when the customer asked for a change. A conversation
       // this declines keeps whatever the phrase table read, untouched.
@@ -1328,6 +1396,9 @@ export async function listConversations(
       // Which marketplace carries the extra never-replied restriction. Passed
       // rather than inlined so the query and the rule cannot disagree about it.
       BEFORE_SHIPMENT_MARKETPLACE,
+      // $6: the marketplace whose counterparty_ref is a buyer username rather
+      // than an order number, so the fallback is skipped there.
+      USERNAME_KEYED_MARKETPLACE,
     ],
   });
   const urgentScanned = urgentRows.rows.length;
@@ -1695,6 +1766,9 @@ export async function listAwaitingResponseByCategory(
       [...marketplaces],
       limit + 1,
       gate === "before_shipment" ? BEFORE_SHIPMENT_RECENCY_HOURS : null,
+      // $4: the marketplace whose counterparty_ref is a buyer username rather
+      // than an order number, so the fallback is skipped there.
+      USERNAME_KEYED_MARKETPLACE,
     ],
   });
 

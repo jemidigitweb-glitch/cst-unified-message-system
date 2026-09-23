@@ -1395,6 +1395,29 @@ export function Workspace() {
             >
               Dispatch Automation
             </Link>
+            {/*
+             * The same treatment as Dispatch Automation, and for the same
+             * reason: Customer Service Insights is a separate screen with its
+             * own filters, not a panel this page can swap in.
+             *
+             * IT IS ONLY EVER RENDERED IN DEVELOPMENT. The page and its API
+             * both answer 404 in a deployed environment — it reports named
+             * staff activity and this application has no authentication — so a
+             * link in production would advertise an address that refuses to
+             * open. When a session exists, this condition and the two gates
+             * behind it go together.
+             */}
+            {process.env.NODE_ENV !== "production" ? (
+              <Link
+                href="/performance"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Customer Service Insights: agent and marketplace KPIs. Development only — opens its own page in a new tab."
+                className={`-mb-px shrink-0 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-sm opacity-70 transition-colors hover:border-black/20 hover:opacity-100 dark:hover:border-white/25 ${SECTION_HEADING_CLASS}`}
+              >
+                Customer Service Insights
+              </Link>
+            ) : null}
           </div>
         </div>
       </header>

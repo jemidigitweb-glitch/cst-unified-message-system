@@ -11,6 +11,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "import:cst-rules": "node scripts/import-cst-rules.mjs",
+    "import:agent-directory": "node --import ./scripts/register-hooks.mjs scripts/import-agent-directory.mjs",
+    "import:agent-activity": "node --import ./scripts/register-hooks.mjs scripts/import-agent-activity.mjs",
+    "import:message-media": "node --import ./scripts/register-hooks.mjs scripts/import-message-media.mjs",
+    "import:sla-policy": "node --import ./scripts/register-hooks.mjs scripts/import-sla-policy.mjs",
+    "sync:mysql": "node --import ./scripts/register-hooks.mjs scripts/sync-mysql-datasets.mjs",
     "knowledge:sync": "node scripts/sync-knowledge-vector-store.mjs",
     "backfill:attachments": "node scripts/backfill-attachments.mjs",
     "sync:messages": "node --import ./scripts/register-hooks.mjs scripts/sync-messages.mjs",
@@ -23,6 +28,7 @@
     "test:coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=text"
   },
   "dependencies": {
+    "mysql2": "^3.24.4",
     "next": "16.3.1",
     "pg": "^8.23.0",
     "react": "19.2.8",

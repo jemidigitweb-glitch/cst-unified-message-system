@@ -60,6 +60,41 @@ export function appDbConfig(): DbConfig & { schema: string } {
 }
 
 /**
+ * The staff directory, in MariaDB. STRICTLY READ-ONLY.
+ *
+ * NOT `readDb`, and the difference is only naming. That helper expects
+ * `<PREFIX>_NAME` and `<PREFIX>_USER`; the approved variables for this source
+ * are `DB_ORDER_DATABASE` and `DB_ORDER_USERNAME`. Renaming somebody else's
+ * configuration to fit a local helper is how a working deployment breaks on the
+ * next restart, so the helper is not reused and the variables are read as they
+ * are.
+ *
+ * Read-only is enforced by the GRANTS on this account, not by a session flag:
+ * MariaDB 10.4 has no `transaction_read_only`, and the account holds
+ * `USAGE ON *.*` plus `SELECT` on 26 named tables and nothing else. See
+ * `assertOrderSourceReadOnly`, which verifies that at runtime rather than
+ * trusting this comment.
+ *
+ * Optional. Returns undefined when unconfigured so a caller reports that
+ * plainly instead of failing at connect time with a credential error.
+ */
+export type MySqlConfig = DbConfig;
+
+let orderCache: MySqlConfig | undefined;
+
+export function orderDbConfig(): MySqlConfig | undefined {
+  if (!process.env.DB_ORDER_HOST) return undefined;
+  orderCache ??= dbSchema.parse({
+    host: process.env.DB_ORDER_HOST,
+    port: process.env.DB_ORDER_PORT ?? 3306,
+    database: process.env.DB_ORDER_DATABASE,
+    user: process.env.DB_ORDER_USERNAME,
+    password: process.env.DB_ORDER_PASSWORD ?? "",
+  });
+  return orderCache;
+}
+
+/**
  * CST rule snapshot. Read-only, and optional until the knowledge-authority
  * review completes — callers must handle `undefined`.
  */
@@ -206,6 +241,7 @@ export function resetConfigCacheForTests(): void {
   sourceCache = undefined;
   appCache = undefined;
   knowledgeCache = undefined;
+  orderCache = undefined;
 }
 
 export const ROYAL_MAIL_CLIENT_ID_VAR = "ROYAL_MAIL_CLIENT_ID";
