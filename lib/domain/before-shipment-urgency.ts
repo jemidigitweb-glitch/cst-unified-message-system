@@ -115,6 +115,12 @@ export type BeforeShipmentOutcome =
   | "already_replied"
   /** Every condition held. */
   | "eligible"
+  /**
+   * The customer is asking to stop or change the order and we CANNOT SEE the
+   * order at all. Urgent, and the one outcome that says so without claiming
+   * the order is real — see `orderStateUnverifiedIsUrgent`.
+   */
+  | "order_state_unverified"
   /** The newest message is ours, so the customer is not waiting on us. */
   | "no_customer_action_needed"
   /** Not a customer reply thread — a platform notice or a filtered placement. */
@@ -283,23 +289,99 @@ export function beforeShipmentEligibility(
   }
 
   /* ---- 2. A real matching customer order ---- */
-  // Nothing to look up at all.
-  if (input.orderNumber === null || input.orderNumber.trim() === "") {
-    return "no_matching_order";
-  }
+  const nothingToLookUp = input.orderNumber === null || input.orderNumber.trim() === "";
   // Looked up, and the source has no record of it. An absence is not a window:
   // a reference is a claim, and the row in the source is the verification.
-  if (input.shipment === null) return "no_matching_order";
+  const orderNotFound = nothingToLookUp || input.shipment === null;
+
+  if (orderNotFound) {
+    /*
+     * ------------------------------------------------------------------------
+     * WE CANNOT SEE THE ORDER, AND THE CUSTOMER IS ASKING US TO STOP IT
+     * ------------------------------------------------------------------------
+     * Returning `no_matching_order` here was silently burying the most
+     * time-critical message in the inbox, and the cause is a RACE rather than
+     * a missing feature.
+     *
+     * On eBay the only link between a conversation and an order is
+     * `customers.customer_info.ebay_buyer_id` — the one column in the entire
+     * source that carries a buyer username. Measured 2026-09-23 it is populated
+     * on 0% of eBay orders under 6 hours old, 14% by 12 hours, and 100% only
+     * after 12-24 hours. eBay orders dispatch at a median of 12.6 hours, and
+     * 1,203 of 2,577 (47%) ship inside 12 hours.
+     *
+     * So for roughly the first half-day of an order's life CST cannot identify
+     * whose it is — and that is precisely the window in which a "please cancel
+     * before it ships" can still be acted on. The rule was structurally
+     * incapable of firing during the window it exists to protect.
+     *
+     * ------------------------------------------------------------------------
+     * WHY THIS IS NOT THE OLD KEYWORD BUG COMING BACK
+     * ------------------------------------------------------------------------
+     * The header above describes three ways the original wording-driven rule
+     * was wrong. None of them is reachable here:
+     *
+     *   A PROMOTIONAL EMAIL still fails condition 1 — it is not a customer
+     *   reply thread, and this branch sits after every one of those checks.
+     *
+     *   OLD TEXT still cannot hold a thread urgent. `orderChangeIntent` is
+     *   computed from the NEWEST inbound message only, and the 48-hour window
+     *   has already been applied above.
+     *
+     *   AN ALREADY-DISPATCHED ORDER still cannot reach this branch. A delivered
+     *   parcel HAS a findable order, so it resolves to `already_dispatched`
+     *   below. This branch is only reached when the order cannot be found at
+     *   all, which for a message under 48 hours old is overwhelmingly an order
+     *   too new to have been identified — not an old one.
+     *
+     * INTENT IS REQUIRED, and that is what keeps this narrow. Measured across
+     * the whole live store on 2026-09-23, the conversations this newly raises
+     * are 1 on eBay, 3 on Amazon, 1 on Shopify and none on B&Q or Temu. Five.
+     * Without the intent condition it would have been 416.
+     *
+     * IT IS A SEPARATE OUTCOME, NOT `eligible`, so the interface can say the
+     * order has not been identified rather than implying we checked and found
+     * it. An agent opening this needs to know the order is unconfirmed.
+     */
+    if (input.orderChangeIntent) return "order_state_unverified";
+    return "no_matching_order";
+  }
 
   /* ---- 3. Not yet dispatched ---- */
-  if (input.shipment.dispatched) return "already_dispatched";
+  if (input.shipment!.dispatched) return "already_dispatched";
 
   return "eligible";
 }
 
+/**
+ * Whether an unverifiable order still earns the urgent flag.
+ *
+ * A NAMED CONSTANT rather than a literal in `isBeforeShipmentUrgent`, because
+ * this is the one place the rule trades certainty for speed and somebody will
+ * want to turn it off without reading the whole module. Setting it false
+ * restores the previous behaviour exactly: `order_state_unverified` stops being
+ * urgent and the outcome remains visible as the explanation.
+ */
+export const URGENT_WHEN_ORDER_STATE_UNVERIFIED = true;
+
 /** Whether the before-shipment urgent rule fires for this conversation. */
 export function isBeforeShipmentUrgent(input: BeforeShipmentInput): boolean {
-  return beforeShipmentEligibility(input) === "eligible";
+  const outcome = beforeShipmentEligibility(input);
+  if (outcome === "eligible") return true;
+  return URGENT_WHEN_ORDER_STATE_UNVERIFIED && outcome === "order_state_unverified";
+}
+
+/**
+ * Whether the order behind an urgent row was actually verified.
+ *
+ * The interface needs this to tell the two apart: `eligible` means we looked up
+ * the order and it is still here, `order_state_unverified` means we could not
+ * find it at all. Both are urgent; only the first is a statement about an
+ * order, and a badge that implied otherwise would be the same over-claim the
+ * `no_matching_order` outcome was introduced to prevent.
+ */
+export function urgentOrderIsVerified(outcome: BeforeShipmentOutcome): boolean {
+  return outcome === "eligible";
 }
 
 /**
@@ -345,3 +427,18 @@ export const URGENT_LABEL = "URGENT";
  * urgent: the order is still here, and it will not be for long.
  */
 export const URGENT_DESCRIPTION = "Urgent: order has not shipped yet - before-shipping query";
+
+/**
+ * What the badge says when the order could not be identified.
+ *
+ * Says what we KNOW (they are asking us to stop or change it) and what we do
+ * NOT (which order, or whether it has gone), rather than borrowing the
+ * confident wording above. An agent seeing this needs to find the order
+ * themselves, and a badge claiming "has not shipped yet" would tell them the
+ * opposite of the truth — we have not established that.
+ */
+export const URGENT_UNVERIFIED_DESCRIPTION =
+  "Urgent: customer asked to change or stop an order - order not yet identified";
+
+/** The badge word for an urgent row whose order could not be identified. */
+export const URGENT_UNVERIFIED_LABEL = "URGENT?";

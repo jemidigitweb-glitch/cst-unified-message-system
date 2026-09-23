@@ -18,6 +18,130 @@ NNNN_<description>.down.sql   reverses it
 | `0013_automation_restore_cancel_pair` | Relaxes `ck_automation_items_cancel_pair` so Undo Cancel can keep `cancelled_at` | Applied 2026-09-22 |
 | `0014_follow_up_reminders` | Shared CST follow-up reminders: one row per promise made in a conversation | Applied 2026-09-22 |
 | `0015_automation_worker_wake` | Wake signal for the always-running automation worker: one function, four triggers | **Written, NOT executed — awaiting review** |
+| `0016_conversation_message_media` | eBay customer message images, one row per image, URLs only | Applied 2026-09-23 |
+| `0017_agent_activity` | Which CST agent did what, imported from the message application's activity log | Applied 2026-09-23 |
+| `0018_agent_directory` | Minimal agent-id → display-name lookup | Applied 2026-09-23 |
+| `0019_response_sla_policy` | The message application's response-time target, per marketplace and seller account | **Written, NOT executed — awaiting review** |
+
+## Why `0019` exists
+
+**NOT EXECUTED.** The table exists in no database and holds no row. Its importer
+(`npm run import:sla-policy`) defaults to a dry run and has been run in that mode
+only.
+
+CST's SLA performance KPI cannot be computed because the approved target is not
+in CST. It is in `message_app.sla_configs`: **16 hours on a weekday, 24 at the
+weekend**, per seller account, set 2026-04-15. This copies those 42 rows and
+nothing else.
+
+**It stores what the policy SAYS; it does not decide which policy GOVERNS.** CST
+applies its own 24-hour rule (`lib/domain/response-sla.ts`) and the two
+disagree — measured on identical data the gap is worth up to 30 percentage
+points, so it is a business decision, recorded in
+`handover/2026-09-23-response-time-sla-handover.md` (A1). That is precisely what
+makes this safe to apply while the decision is open: no compliance percentage is
+computed from these rows, no dashboard tile changes value, and
+`RESPONSE_SLA_MINUTES` is untouched.
+
+**42 rows of 1,081, and the filter is the point.** `sla_configs` holds two
+populations under one table name: `type='response'` is the policy (42 rows,
+`key_value` NULL on every one), and `type='urgent'` is **1,039 rows of per-case
+escalation log**, written 2026-04-16 and stopped 2026-05-06, each carrying a
+customer's marketplace message id and a `reason` column quoting phrases from
+their conversation. Only the 42 are read, and no column in this migration could
+hold either field — `tests/migrations/sla-policy-schema.test.ts` asserts that
+statically.
+
+**`sub_source_id` is nullable because one target genuinely has no account.**
+Amazon's policy row carries `mail_id = 1`, and `mails.id = 1` has `sub_source`
+NULL — the source does not say which seller account it belongs to. CST holds
+exactly one Amazon account (8), so writing 8 would very probably be right and
+would be a fabricated join, indistinguishable from the 14 eBay rows where the
+source states the account outright. NULL means "the whole channel", and it is a
+verified reading rather than a missing value.
+
+PostgreSQL treats NULLs as distinct in a unique index, so
+`uq_response_sla_policy_scope` coalesces it to `-1`. Without that, the
+channel-wide row is insertable twice and every re-run appends another pair.
+
+**There is deliberately no unique index on source identity**, which is a
+departure from 0016, 0017 and 0018. Three Shopify mailboxes (`mail_id` 2, 3 and
+8) resolve to one seller account (104), so the mapping from source row to policy
+row is **many-to-one** — six source rows become two — and a unique index on
+`source_pk` would assert a one-to-one relationship the data does not have.
+`source_pk` here is provenance; the scope key is the identity, and it is what
+makes the import idempotent. The importer collapses the duplicates, picks the
+lowest source id so a re-run is deterministic, and **refuses the whole run** if
+two rows collapsing to one account disagree on the target.
+
+**Coverage is incomplete, and that is data.** After a full import, 7 of CST's 25
+seller accounts have no target: Shopify 109, 198, 233, 245 and 248 (their
+mailboxes were created 2026-04-21, six days after the policy was written), B&Q
+104, and Temu 248. `target_hours` therefore has **no DEFAULT**: those accounts
+must resolve to no policy at all, never to a borrowed number.
+
+## Why `0016`, `0017` and `0018` exist
+
+**Applied 2026-09-23** to the application database only — `varmen_db`, schema
+`cst_app` — in that order, each as its own transaction. The `cst_app` base-table
+count went from **27 to 30**; three tables, ten indexes (3 PK + 3 unique source
+identity + 4 lookup) and twelve COMMENTs were created. **No existing table
+gained, lost or changed a row**, `conversation_messages.attachments` was
+identical before and after (848 of 31,993 rows, with its CHECK and index
+intact), `app_users` still holds zero rows, and **no source-database object was
+read or written**. All three tables were deployed **empty** — no data was
+imported.
+
+Three new sources became available: `message_app` and `order_management`, both
+**MariaDB**, both owned by other projects, both **strictly read-only**. No
+migration creates, alters or writes a single object in either — they appear in
+no migration in any form, and `tests/migrations/mysql-source-schema.test.ts`
+asserts that statically.
+
+**`0016`** stores eBay customer message images. 0007 chose a `jsonb` column for
+Shopify and B&Q because "an attachment has no identity of its own in the
+source"; eBay media does have one (`message_app.files.id`, plus `view_order` and
+a UNIQUE key), so 0016 keeps it in a child table. That is 0007's reasoning
+applied to a differently-shaped source, not a reversal of it —
+`conversation_messages.attachments` is untouched and keeps serving Shopify and
+B&Q. **Return-case photographs are deliberately not stored**: they are already
+readable through `lib/repositories/ebay-image-repository.ts`, which requires a
+verified order number because `ebay_returns` has no buyer column.
+
+It keeps `source_ref_id` — the `files.ref_id` the row was matched on — so
+reconciliation is a local join. Without it, re-checking one row walks back
+through two databases against an account capped at **50 MySQL connections per
+hour**.
+
+**`0017`** stores which agent did what. Nothing in `cst_app` records this today —
+`draft_revisions.created_by_user_id` is NULL on all 434 rows,
+`context_snapshots.confirmed_by_user_id` on all 405, `internal_notes
+.author_user_id` on both, `audit_log` is empty. The activity log is the only
+verified record that exists. Its `data` JSON payload — which contains the full
+reply text and the customer's email address — is **not** copied; only the one
+identifier the join needs is lifted out.
+
+Its matched/conversation CHECK is a **one-way implication on purpose**, and 0013
+is why: the natural biconditional would collide with `ON DELETE SET NULL` and
+reject a conversation delete with `23514`, exactly as
+`ck_automation_items_cancel_pair` broke Undo Cancel. Both forms were run against
+PostgreSQL in a rolled-back transaction — the biconditional fails the delete with
+`23514`, the one-way form passes and preserves the activity row.
+
+The price, recorded rather than left to be rediscovered: the same looseness
+accepts `INSERT (match_status='matched', conversation_id=NULL)`. A CHECK cannot
+tell an INSERT from a cascade. The importer owns that one, and a test pins the
+admission.
+
+**`0018` is blocked on a decision, not on work.** `cst_app.app_users` looks like
+the right home and is not: `management_user_id` documents a logical reference to
+`issue_tracking.management_users`, a system this project is **not connected
+to**, and the two id spaces overlap with every overlapping id naming a different
+person — id 43 is "Bietrick" there and "mathusha" (17,788 CS actions) in
+`order_management`. Reading `ledsone.staff.users` instead was measured and is
+insufficient: stale by ~2.5 months, and missing 3 of the 13 agents including the
+second most active. `app_users` is left entirely untouched either way. 0016 and
+0017 do not depend on 0018 and can be applied without it.
 
 ## Why the worker wake migration is `0015` and not `0012`
 

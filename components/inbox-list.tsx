@@ -316,7 +316,14 @@ export function InboxList({
                    * urgent.
                    */}
                   <span className="flex min-w-0 items-baseline gap-1.5">
-                    <UrgentFlag urgent={item.urgent} />
+                    <UrgentFlag
+                      urgent={item.urgent}
+                      // `eligible` means the order was looked up and is still
+                      // here; `order_state_unverified` means we could not find
+                      // it at all. Both are urgent, only the first is a claim
+                      // about an order.
+                      orderVerified={item.beforeShipmentOutcome !== "order_state_unverified"}
+                    />
                     {/* Never the bare stored reference — see conversationTitle. */}
                     <span className="truncate text-sm font-medium">
                       {conversationTitle(item, capability)}
