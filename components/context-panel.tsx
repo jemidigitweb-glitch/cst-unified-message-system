@@ -57,8 +57,10 @@ import {
 } from "@/lib/domain/shipment-tracking-display";
 import type { TrackingResult } from "@/lib/tracking/provider";
 
+import { ConversationFollowUps } from "./conversation-follow-ups";
 import { InternalNotesSection } from "./internal-notes-panel";
 import { StatusBadge } from "./status-badge";
+import type { ConversationFollowUpsState } from "./use-conversation-follow-ups";
 import type { InternalNotesState } from "./use-internal-notes";
 
 /**
@@ -1113,9 +1115,20 @@ export function ContextPanel({
   selectedOrderNumber,
   onSelectOrder,
   internalNotes,
+  followUps,
 }: {
   conversation: InboxItem | null;
   capability: MarketplaceCapability;
+  /**
+   * The reminders scheduled on this conversation, held by the workspace for the
+   * same reason `internalNotes` is: one read, one source of truth, and the
+   * "Set follow-up" control in the sibling column can refresh it after storing
+   * a new one.
+   *
+   * OPTIONAL, so a caller with no conversation row behind it renders no card
+   * rather than an empty section.
+   */
+  followUps?: ConversationFollowUpsState;
   /**
    * The conversation's internal notes, held by the workspace.
    *
@@ -1204,6 +1217,21 @@ export function ContextPanel({
         switching conversations cannot leave one case's notes on another's
         panel for the render between selection and load.
       */}
+      {/*
+        WHAT THIS CONVERSATION WAS PROMISED, ABOVE THE NOTES.
+
+        The reminder's note used to be readable only in the follow-up drawer:
+        pressing that drawer's own "Open conversation" hid the one sentence
+        saying why the agent had come. It briefly sat above the thread instead,
+        which stacked it against the pinned internal note and crowded both, so
+        it lives here — beside Internal Notes, which is where a reviewer already
+        looks for what CST has written to itself about this case.
+
+        ABOVE the notes, because a follow-up has a clock running against it and
+        a note does not. Renders nothing at all when no reminder is scheduled.
+      */}
+      {followUps !== undefined && <ConversationFollowUps followUps={followUps} />}
+
       <InternalNotesSection notes={internalNotes} />
 
       <section className="flex flex-col gap-2">

@@ -48,6 +48,7 @@ import { PriorityFilterControl } from "./priority-filter";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
+import { useConversationFollowUps } from "./use-conversation-follow-ups";
 import { useInternalNotes } from "./use-internal-notes";
 import { UnresolvedMessageView } from "./unresolved-message-view";
 import { UsagePanel } from "./usage-panel";
@@ -378,6 +379,21 @@ export function Workspace() {
    * no conversation message can enter the list it returns.
    */
   const internalNotes = useInternalNotes(
+    selectedKind === "conversation" ? selectedId : null,
+  );
+  /**
+   * What the OPEN conversation has been promised.
+   *
+   * Keyed on the same selection as the notes above, so it clears and re-reads
+   * with every change of thread — a promise must never hang over a conversation
+   * it was not made about.
+   *
+   * SEPARATE FROM `followUpFeed`, which backs the shared drawer. That one is a
+   * page of reminders across every marketplace for whichever tab is open; this
+   * is one conversation's, and merging them would mean the card could only show
+   * what the drawer happened to have fetched.
+   */
+  const conversationFollowUps = useConversationFollowUps(
     selectedKind === "conversation" ? selectedId : null,
   );
   /**
@@ -1698,6 +1714,10 @@ export function Workspace() {
                  puts the Set follow-up control on this view. */
               onFollowUpCreated={() => {
                 void refreshFollowUps();
+                /* And the card above this thread, or a reminder just set would
+                   be visible in the drawer and missing from the conversation
+                   it was set on — the gap this card exists to close. */
+                conversationFollowUps.retry();
               }}
               /* The same list the Internal Notes section in the details
                  column renders; the newest of them is pinned above the
@@ -1757,6 +1777,9 @@ export function Workspace() {
                 onSelectOrder={setSelectedOrderNumber}
                 /* The same list the pinned card above the thread renders. */
                 internalNotes={internalNotes}
+                /* This conversation's scheduled reminders, shown above the
+                   notes so the promise and its note travel together. */
+                followUps={conversationFollowUps}
               />
               {/* After the context, because both answer "can I trust this
                   draft?" -- one from the conversation's side, one from the

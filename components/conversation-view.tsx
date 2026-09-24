@@ -308,6 +308,19 @@ export function ConversationView({
        * only; no bubble below can be pinned, there is no Pin control, and a
        * note is pinned by existing rather than by being marked.
        */}
+      {/*
+       * THE FOLLOW-UP CARD IS NOT HERE, AND THAT WAS A CORRECTION.
+       *
+       * It was briefly rendered at this point, above the pinned internal note.
+       * Two stacked cards between the header and the scroller crowded each
+       * other and squeezed the thread — and the pinned note is the one that
+       * earns that position, because it is guidance an agent needs WHILE
+       * reading the messages. A follow-up is a deadline they need to see, not
+       * something they read the thread against.
+       *
+       * It now lives in the details panel beside Internal Notes. See
+       * `ConversationFollowUps` and `ContextPanel`.
+       */}
       {internalNotes !== undefined && (
         <PinnedInternalNotes
           notes={internalNotes.notes}

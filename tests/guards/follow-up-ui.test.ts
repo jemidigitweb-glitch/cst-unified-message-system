@@ -43,7 +43,10 @@ const DRAWER = read("components", "notification-drawer.tsx");
 const WORKSPACE = read("components", "workspace.tsx");
 const CONVERSATION = read("components", "conversation-view.tsx");
 const VIEW_MODEL = read("lib", "domain", "follow-up-view.ts");
-const ALL_UI = [BUTTON, LIST, PANEL_BUTTON];
+const CARD = read("components", "conversation-follow-ups.tsx");
+const CARD_HOOK = read("components", "use-conversation-follow-ups.ts");
+const PANEL = read("components", "context-panel.tsx");
+const ALL_UI = [BUTTON, LIST, PANEL_BUTTON, CARD];
 
 const stripComments = (source: string) =>
   source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
@@ -461,5 +464,118 @@ describe("the follow-up UI adds nothing that could reach a customer", () => {
     for (const source of ALL_UI) {
       expect(source).not.toContain("dangerouslySetInnerHTML");
     }
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * THE PROMISE IS VISIBLE ON THE THREAD THAT OWES IT
+ *
+ * FOUND ON SCREEN: eBay `frequentedfrequencies` sat 17 hours OVERDUE with the
+ * note "come back". The drawer said so; pressing its own "Open conversation"
+ * button then showed a thread with a pinned internal note and no mention of the
+ * promise at all. The note was readable in exactly one place, and it was the
+ * place the agent had just left.
+ * ------------------------------------------------------------------------- */
+
+describe("a conversation shows what it was promised", () => {
+  it("reads the per-conversation route that already existed", () => {
+    // The route and `ConversationFollowUpFeed` were written for a reader that
+    // was never built. This is that reader; nothing new was added server-side.
+    expect(CARD_HOOK).toContain("/follow-up");
+    expect(CARD_HOOK).toContain("ConversationFollowUpFeed");
+  });
+
+  /**
+   * IN THE DETAILS PANEL, NOT ABOVE THE THREAD — and the second assertion is
+   * the correction. It was rendered between the conversation header and the
+   * message scroller first, where it stacked against the pinned internal note
+   * and crowded both. The pinned note earns that position; a deadline does not.
+   */
+  it("is wired into the details panel, not only the drawer", () => {
+    expect(PANEL).toContain("<ConversationFollowUps");
+    expect(WORKSPACE).toContain("useConversationFollowUps");
+    expect(WORKSPACE).toContain("followUps={conversationFollowUps}");
+  });
+
+  it("does not stack a second card above the thread", () => {
+    expect(CONVERSATION).not.toContain("<ConversationFollowUps");
+  });
+
+  /** The note is the whole point: a deadline without it says nothing to act on. */
+  it("renders the reminder's note", () => {
+    expect(CARD).toContain("reminder.note");
+  });
+
+  /** And the same badge vocabulary as the drawer, so OVERDUE reads identically. */
+  it("uses the shared state labels rather than inventing its own", () => {
+    expect(CARD).toContain("FOLLOW_UP_STATE_LABEL");
+    expect(CARD).toContain("FOLLOW_UP_STATE_CLASS");
+    expect(CARD).toContain("followUpDisplayState");
+  });
+
+  /**
+   * A COMPLETED REMINDER IS HISTORY and belongs in the drawer's Completed tab,
+   * not stacked above a live thread.
+   */
+  it("shows scheduled reminders only", () => {
+    expect(stripComments(CARD)).toContain('status === "scheduled"');
+  });
+
+  /** Bounded, so a long note scrolls in its own box instead of pushing the panel down. */
+  it("is bounded rather than growing with the note", () => {
+    expect(CARD).toMatch(/max-h-\d+/);
+    expect(CARD).toContain("overflow-y-auto");
+  });
+
+  /** Above Internal Notes: a follow-up has a clock running, a note does not. */
+  it("sits above the internal notes section", () => {
+    const panel = stripComments(PANEL);
+    expect(panel.indexOf("<ConversationFollowUps")).toBeGreaterThan(-1);
+    expect(panel.indexOf("<ConversationFollowUps")).toBeLessThan(
+      panel.indexOf("<InternalNotesSection"),
+    );
+  });
+
+  /**
+   * Keyed on the selection, so one thread's promise never hangs over another.
+   *
+   * Matched with a regex rather than a literal: this repository checks out with
+   * CRLF on Windows, and an assertion containing a hard `\n` would pass or fail
+   * on line endings rather than on the wiring it means to pin.
+   */
+  it("clears and re-reads when the conversation changes", () => {
+    expect(CARD_HOOK).toContain("[conversationId, attempt]");
+    expect(WORKSPACE).toMatch(
+      /useConversationFollowUps\(\s*selectedKind === "conversation" \? selectedId : null,\s*\)/,
+    );
+  });
+
+  /** Setting one from this view must also refresh what the view shows. */
+  it("re-reads after a reminder is created on this conversation", () => {
+    expect(WORKSPACE).toContain("conversationFollowUps.retry()");
+  });
+
+  /**
+   * NOTHING HERE CONTACTS A CUSTOMER. One action — mark completed — which sets
+   * one row's status. The standing guarantee, asserted for the new surface.
+   */
+  it("adds no way to send, draft or queue anything", () => {
+    for (const source of [CARD, CARD_HOOK]) {
+      for (const forbidden of [
+        /\bsendReply\b/,
+        /\bsendMessage\b/,
+        /\bsendToMarketplace\b/,
+        /\bnotifyCustomer\b/,
+        /\/draft\b/,
+        /\bsetInterval\b/,
+      ]) {
+        expect(stripComments(source)).not.toMatch(forbidden);
+      }
+    }
+  });
+
+  it("writes only through the completion endpoint", () => {
+    const methods = stripComments(CARD_HOOK).match(/method:\s*"(\w+)"/g) ?? [];
+    expect(methods).toEqual(['method: "PATCH"']);
   });
 });

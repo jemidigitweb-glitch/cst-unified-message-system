@@ -136,8 +136,37 @@ function sslConfig(): PoolConfig["ssl"] {
  * or raising `rolconnlimit`, and both are decisions for whoever owns the
  * cluster rather than something this file can settle.
  */
-const APP_POOL_MAX = 3;
-const SOURCE_POOL_MAX = 2;
+/**
+ * TWO, AND THE SECOND ONE IS LOAD-BEARING — DO NOT MAKE THIS 1.
+ *
+ * `app/api/conversations/[conversationId]/draft/route.ts` checks out a client,
+ * runs its transaction, COMMITs, and then calls `recordUsage(pool, ...)` on
+ * this same pool BEFORE `connection.release()` runs in its `finally`. For that
+ * moment two clients are wanted at once.
+ *
+ * At `max: 1` there is no second slot, so `recordUsage` waits out
+ * `connectionTimeoutMillis` and throws. It swallows its own errors by design,
+ * so nothing would surface: every AI draft generation would simply take ten
+ * seconds longer and AI usage accounting would stop recording, silently.
+ *
+ * The other four transaction sites — the workflow route, the second draft
+ * transaction, `cron/sync` and `automation-runner` — all COMMIT and release
+ * without touching the pool in between, so this route is the only constraint.
+ * Releasing before the accounting write would free it, and that is a fair
+ * change to make on its own merits; it is not one to make as a side effect of
+ * connection tuning.
+ */
+const APP_POOL_MAX = 2;
+
+/**
+ * ONE IS SAFE HERE, and the difference from the app pool is the whole reason.
+ *
+ * Nothing ever checks a client OUT of the source pool — `.connect()` is never
+ * called on it anywhere in the application, so no code path can be holding one
+ * while asking for another. Every use is a single `pool.query()`, and the few
+ * places that issue several at once simply queue instead of deadlocking.
+ */
+const SOURCE_POOL_MAX = 1;
 
 function base(config: PoolConfig & { max: number }): PoolConfig {
   return {
