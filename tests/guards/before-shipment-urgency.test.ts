@@ -753,6 +753,100 @@ function fakeSource(dispatched: boolean) {
   };
 }
 
+/* ------------------------------------------------------------------------- *
+ * THE SOURCE IS ONLY ASKED ABOUT ORDERS THAT COULD CHANGE THE ANSWER
+ * ------------------------------------------------------------------------- */
+
+describe("the dispatch lookup is kept off the hot path", () => {
+  /** A source that records whether it was asked anything at all. */
+  function countingSource(dispatched: boolean) {
+    const asked: string[][] = [];
+    return {
+      asked,
+      source: {
+        query: async (config: { values?: readonly unknown[] }) => {
+          const numbers = (config.values?.[0] ?? []) as string[];
+          asked.push(numbers);
+          return {
+            rows: numbers.map((orderNumber) => ({
+              sub_source_id: 104,
+              order_number: orderNumber,
+              order_status: "Inprogress",
+              shipped_time: dispatched ? "2026-09-21 09:00:00" : null,
+              has_completed_shipment: dispatched,
+            })),
+          };
+        },
+      },
+    };
+  }
+
+  /**
+   * THE COMMON CASE, AND IT COSTS NOTHING.
+   *
+   * `cst-source-ro` is a pool to a database shared with unrelated production
+   * systems, and it draws on the same 25-connection role budget as everything
+   * else. A candidate filed under another case area returns
+   * `not_an_order_change` before `shipment` is read, so looking its order up is
+   * a round trip for an answer nobody reads — and where NO candidate is a
+   * before-shipping case, the source is never dialled at all.
+   */
+  it("does not touch the source when no candidate is a before-shipping case", async () => {
+    const latest = "Where is my parcel?";
+    const { asked, source } = countingSource(false);
+    const { client } = fake(
+      [[row({ id: "ordinary" })]],
+      [
+        [
+          candidate({ id: "c1", inbound_texts: [latest], latest_inbound_text: latest }),
+          candidate({ id: "c2", inbound_texts: [latest], latest_inbound_text: latest }),
+        ],
+      ],
+    );
+    const page = await listConversations(client, { marketplace: "amazon", source, now: NOW });
+    expect(asked).toEqual([]);
+    expect(page.urgentCount).toBe(0);
+  });
+
+  /** And when it does ask, it asks only about the rows that need the veto. */
+  it("asks only about the before-shipping candidates", async () => {
+    const other = "Is this light dimmable?";
+    const { asked, source } = countingSource(false);
+    const { client } = fake(
+      [[]],
+      [
+        [
+          candidate({
+            id: "relevant",
+            order_number: "ORDER-RELEVANT",
+            inbound_texts: ["Please cancel my order."],
+            latest_inbound_text: "Please cancel my order.",
+          }),
+          candidate({
+            id: "irrelevant",
+            order_number: "ORDER-IRRELEVANT",
+            inbound_texts: [other],
+            latest_inbound_text: other,
+          }),
+        ],
+      ],
+    );
+    await listConversations(client, { marketplace: "amazon", source, now: NOW });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toEqual(["ORDER-RELEVANT"]);
+  });
+
+  /** The veto still works for the rows it does ask about. */
+  it("still vetoes a dispatched before-shipping order", async () => {
+    const { asked, source } = countingSource(true);
+    const { client } = fake([[row({ id: "ordinary" })]], [[candidate({ id: "shipped" })]]);
+    const page = await listConversations(client, { marketplace: "amazon", source, now: NOW });
+    expect(asked).toHaveLength(1);
+    expect(page.items.map((item) => item.id)).toEqual(["ordinary"]);
+    expect(page.urgentCount).toBe(0);
+  });
+});
+
 describe("an urgent conversation is ordered above the ordinary stream", () => {
   it("puts an unshipped-order conversation above newer ordinary ones", async () => {
     const { client } = fake(

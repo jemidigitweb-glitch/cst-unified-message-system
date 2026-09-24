@@ -25,11 +25,65 @@
  * ONLY THE SOURCES THAT HAVE ATTACHMENTS. eBay messages are platform messages
  * with no attachment column, and `amazon_messages` has none either. Their rows
  * keep NULL.
+ *
+ * ---------------------------------------------------------------------------
+ * TURNED OFF BY CST ON 2026-09-24. IT DOES NOT RUN.
+ * ---------------------------------------------------------------------------
+ * See `ENABLED` below. Nothing here opens a database until that check passes.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import pg from "pg";
+
+/**
+ * Whether this script may run at all.
+ *
+ * ---------------------------------------------------------------------------
+ * OFF, BY CST'S INSTRUCTION, BECAUSE OF THE CONNECTION BUDGET
+ * ---------------------------------------------------------------------------
+ * `varmen_user` has `rolconnlimit = 25` — a cap on the ROLE, shared by the
+ * deployed application, the message sync, the automation worker and any SQL
+ * client somebody has open. Exhausting it returns `53300 too many connections`
+ * and takes the live inbox down with it, which is what happened on 2026-09-24.
+ *
+ * This is a MANUAL, ONE-OFF backfill of a display feature — attachment URLs.
+ * Nobody is waiting on it and nothing depends on it running today, so it is the
+ * cheapest thing to switch off and the last thing that should be competing with
+ * the inbox for a connection.
+ *
+ * `repair-message-bodies.mjs` was deliberately left ON for the same review: it
+ * keeps a reduced pool (`max: 1`) rather than being disabled.
+ *
+ * ---------------------------------------------------------------------------
+ * A CONSTANT, NOT AN ENVIRONMENT VARIABLE
+ * ---------------------------------------------------------------------------
+ * Matching `performanceDashboardAccess` and `URGENT_WHEN_ORDER_STATE_UNVERIFIED`
+ * elsewhere in this project: a variable is a thing somebody sets in a hurry and
+ * nobody reviews. Turning this back on is a one-line edit that shows up in a
+ * diff and gets read — which is the point.
+ *
+ * It refuses BEFORE any pool is constructed, so a disabled run costs zero
+ * connections rather than opening two and then declining to work.
+ */
+const ENABLED = false;
+
+if (!ENABLED) {
+  console.error(
+    [
+      "backfill-attachments is DISABLED and did nothing.",
+      "",
+      "Turned off on 2026-09-24 to protect the shared PostgreSQL connection",
+      'budget: role "varmen_user" is capped at 25 connections and exhausting it',
+      "takes the live inbox down (SQLSTATE 53300).",
+      "",
+      "To run it again, set ENABLED = true at the top of this file.",
+    ].join("\n"),
+  );
+  // Not a failure — a deliberate refusal that did no work. Exit 0 so a caller
+  // does not treat it as a crash, with the reason on stderr where it is seen.
+  process.exit(0);
+}
 
 const ROOT = join(import.meta.dirname, "..");
 const APPLY = process.argv.includes("--apply");
@@ -65,7 +119,23 @@ function pool(prefix, extra) {
     user: process.env[`${prefix}_DB_USER`],
     password: process.env[`${prefix}_DB_PASSWORD`],
     ssl: process.env.DB_SSL_MODE === "disable" ? undefined : { rejectUnauthorized: false },
-    max: 4,
+    /*
+     * ONE CONNECTION, NOT FOUR.
+     *
+     * `varmen_user` has `rolconnlimit = 25` — a cap on the ROLE, shared by the
+     * deployed app, the message sync, the automation worker and anybody with a
+     * SQL client open. This script opens TWO pools, so `max: 4` reserved eight
+     * of those 25 for a manual one-off backfill, and exhausting that budget is
+     * what takes the live inbox down with `53300 too many connections`.
+     *
+     * A backfill is not latency-sensitive and nobody is waiting on it, so it is
+     * the right thing to make slow and cheap rather than fast and greedy. It
+     * still runs; it just queues its own work instead of the inbox's.
+     *
+     * The message sync and the automation worker deliberately keep their larger
+     * pools — they are scheduled, they finish quickly, and CST wants them on.
+     */
+    max: 1,
     ...extra,
   });
 }

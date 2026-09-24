@@ -1267,8 +1267,34 @@ async function applyBeforeShipmentRule(
     return trimmed === "" ? null : trimmed;
   };
 
+  /*
+   * ------------------------------------------------------------------------
+   * ONLY LOOK UP THE ORDERS WHOSE DISPATCH STATE CAN CHANGE THE ANSWER
+   * ------------------------------------------------------------------------
+   * This used to collect a key from EVERY candidate row and send the lot to the
+   * source. That was already wasteful and became more so when the recency
+   * window was removed from the sweep: the candidate set grew from "the last 48
+   * hours" to "the 500 most recent unanswered threads", and all 500 order
+   * numbers went into one `IN` list on every single inbox load.
+   *
+   * The dispatch state is now a VETO on one case area. A row filed under any
+   * other category returns `not_an_order_change` before `shipment` is read at
+   * all, so looking its order up cannot change what the rule says — it is a
+   * round trip to a shared production database for an answer nobody reads.
+   *
+   * THE PAYOFF IS USUALLY ZERO CONNECTIONS. Before-shipping is a minority case
+   * area, so on most pages this filter empties `keys` and the guard below skips
+   * the query entirely — which means `cst-source-ro` is never dialled, and the
+   * inbox runs on the app pool alone.
+   *
+   * IT MIRRORS A HARD REQUIREMENT OF THE RULE, and that is the coupling to
+   * watch: if `beforeShipmentEligibility` ever stops requiring the case area,
+   * this filter must be widened in the same edit or the veto will silently stop
+   * firing for whatever the rule newly admits.
+   */
   const keys: OrderKey[] = [];
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    if (items[index]!.category !== BEFORE_SHIPPING_CATEGORY) continue;
     const orderNumber = orderNumberOf(row);
     if (orderNumber !== null) keys.push({ orderNumber });
   }

@@ -73,7 +73,15 @@ function pool(prefix, extra) {
     user: process.env[`${prefix}_DB_USER`],
     password: process.env[`${prefix}_DB_PASSWORD`],
     ssl: process.env.DB_SSL_MODE === "disable" ? undefined : { rejectUnauthorized: false },
-    max: 4,
+    /*
+     * ONE CONNECTION, NOT FOUR — same reasoning as `backfill-attachments.mjs`.
+     *
+     * `varmen_user` has `rolconnlimit = 25`, shared by everything. This script
+     * opens TWO pools, so `max: 4` held eight of them for a manual repair run
+     * that nobody is waiting on. It is slower now and cannot starve the live
+     * inbox, which is the correct trade for a one-off.
+     */
+    max: 1,
     ...extra,
   });
 }

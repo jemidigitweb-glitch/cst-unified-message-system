@@ -45,13 +45,77 @@ function sslConfig(): PoolConfig["ssl"] {
   }
 }
 
-function base(config: PoolConfig): PoolConfig {
+/**
+ * ---------------------------------------------------------------------------
+ * POOL SIZING, AND THE MEASUREMENT IT COMES FROM
+ * ---------------------------------------------------------------------------
+ * `varmen_user` has `rolconnlimit = 25`. That is a cap on the ROLE, not the
+ * server — the cluster's `max_connections` is 200 — so every process using
+ * these credentials is drawing on one shared budget of 25, and when it runs out
+ * the error is `53300 too many connections for role "varmen_user"`, which is
+ * what took the performance dashboard down on 2026-09-24.
+ *
+ * ---------------------------------------------------------------------------
+ * THE IDLE REAPER DOES NOT RUN ON VERCEL, AND THAT IS THE ROOT CAUSE
+ * ---------------------------------------------------------------------------
+ * Measured in `pg_stat_activity` on 2026-09-24: seven connections, every one
+ * `state = idle`, `idle_for` between 9 and 10 MINUTES, against an
+ * `idleTimeoutMillis` of 30 seconds. The reaper had not fired once.
+ *
+ * It cannot. Vercel functions run on Lambda, and the execution environment is
+ * FROZEN once the response is sent — timers do not fire while frozen, so a pool
+ * can never reap its own idle clients between invocations. They are held until
+ * the instance is recycled or the server drops them.
+ *
+ * That reading also carried three distinct `client_addr` values, all in AWS
+ * ranges: three concurrent Vercel instances, each with its own module-level
+ * pools. The old `max: 5` on both pools therefore had a ceiling of TEN
+ * connections per instance, none of them ever given back — three warm instances
+ * could exhaust a 25-connection budget on their own.
+ *
+ * (`client_addr` is how you tell instances apart if this recurs. Group
+ * `pg_stat_activity` by it; the addresses are not recorded here because
+ * `tests/guards/no-customer-data.test.ts` forbids committing an IP, and it is
+ * right to — they are infrastructure detail with a short shelf life.)
+ *
+ * ---------------------------------------------------------------------------
+ * SO THE SIZE IS THE CONTROL, AND IT IS SIZED TO REAL CONCURRENCY
+ * ---------------------------------------------------------------------------
+ * A pool of 5 was never reachable by one request. The widest fan-out in the
+ * application is three parallel statements on the APP pool
+ * (`/api/performance/summary` runs `messagesHandledByAgent`, `activityCoverage`
+ * and `agentOptions` in one `Promise.all`), and every SOURCE read is a single
+ * batched statement. Sizing to that costs nothing in latency and cuts the
+ * per-instance ceiling from ten to five.
+ *
+ * THIS IS MITIGATION, NOT A FIX. Instance count on Vercel is unbounded, so no
+ * `max` can be proven safe — five instances still reach 25. The durable answers
+ * are a connection pooler (PgBouncer in transaction mode) in front of Postgres,
+ * or raising `rolconnlimit`, and both are decisions for whoever owns the
+ * cluster rather than something this file can settle.
+ */
+const APP_POOL_MAX = 3;
+const SOURCE_POOL_MAX = 2;
+
+function base(config: PoolConfig & { max: number }): PoolConfig {
   return {
     ...config,
     ssl: sslConfig(),
-    max: 5,
-    idleTimeoutMillis: 30_000,
+    /*
+     * Lower than the old 30s. It buys nothing on Vercel, where the timer is
+     * frozen, but it is the difference between holding and releasing for every
+     * context where the event loop DOES keep running — `npm run dev`, the sync
+     * scripts and the automation worker, which are long-lived processes drawing
+     * on the same 25.
+     */
+    idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
+    /*
+     * Let a pool with nothing checked out stop holding the event loop open, so
+     * a script that has finished its work exits — and releases its connections
+     * — instead of lingering for the idle timeout.
+     */
+    allowExitOnIdle: true,
   };
 }
 
@@ -67,6 +131,7 @@ export function getSourcePool(): Pool {
   sourcePool ??= new Pool(
     base({
       ...sourceDbConfig(),
+      max: SOURCE_POOL_MAX,
       options: "-c default_transaction_read_only=on",
       application_name: "cst-source-ro",
     }),
@@ -85,6 +150,7 @@ export function getAppPool(): Pool {
     appPool = new Pool(
       base({
         ...config,
+        max: APP_POOL_MAX,
         options: `-c search_path=${schema}`,
         application_name: "cst-app",
       }),
@@ -103,6 +169,8 @@ export function getKnowledgePool(): Pool | undefined {
   knowledgePool ??= new Pool(
     base({
       ...config,
+      // One batched read per request, like the source pool.
+      max: SOURCE_POOL_MAX,
       options: "-c default_transaction_read_only=on",
       application_name: "cst-knowledge-ro",
     }),
