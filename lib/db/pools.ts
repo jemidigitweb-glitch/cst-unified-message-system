@@ -16,9 +16,51 @@ import { appDbConfig, knowledgeDbConfig, sourceDbConfig } from "@/lib/config/env
  * All queries must be parameterised ($1, $2, ...) — never string-interpolated.
  */
 
-let sourcePool: Pool | undefined;
-let appPool: Pool | undefined;
-let knowledgePool: Pool | undefined;
+/**
+ * ---------------------------------------------------------------------------
+ * THE POOLS LIVE ON `globalThis`, AND THAT IS NOT A STYLE CHOICE
+ * ---------------------------------------------------------------------------
+ * These were three module-level `let`s, which is correct in production and
+ * LEAKS BADLY IN DEVELOPMENT.
+ *
+ * `next dev` hot-reloads a changed module and everything that imports it. Each
+ * re-evaluation gives this file a FRESH set of bindings, so `appPool` comes
+ * back `undefined`, the next caller constructs a NEW `Pool` — and the previous
+ * one is orphaned with its connections still open. Nothing holds a reference to
+ * it any more, so nothing can ever call `.end()` on it. The sockets stay up
+ * until the process dies.
+ *
+ * MEASURED 2026-09-24: a dev server that had been running for under two hours,
+ * across an editing session that touched this file and its dependents
+ * repeatedly, was holding 17 `cst-app` connections against a pool `max` of 3.
+ * Six pools' worth of orphans from one server, on a role capped at 25 — which
+ * is why the inbox kept failing with `53300` however small the pool got. Pool
+ * SIZE cannot fix a leak in pool COUNT.
+ *
+ * `globalThis` survives module re-evaluation, so a reload now finds the pool
+ * that already exists and reuses it. This is the same pattern the Prisma and
+ * Drizzle docs prescribe for Next.js, and for exactly this reason.
+ *
+ * IT CHANGES NOTHING IN PRODUCTION, where a module is evaluated once per
+ * process and these behave precisely as the `let`s did.
+ */
+type PoolCache = {
+  source?: Pool;
+  app?: Pool;
+  knowledge?: Pool;
+};
+
+/*
+ * A symbol rather than a string key, so this cannot collide with anything else
+ * that decides to keep state on the global object.
+ */
+const POOL_CACHE = Symbol.for("cst.db.pools");
+
+const globalWithPools = globalThis as typeof globalThis & {
+  [POOL_CACHE]?: PoolCache;
+};
+
+const pools: PoolCache = (globalWithPools[POOL_CACHE] ??= {});
 
 /**
  * TLS policy.
@@ -128,7 +170,7 @@ function base(config: PoolConfig & { max: number }): PoolConfig {
  * production systems.
  */
 export function getSourcePool(): Pool {
-  sourcePool ??= new Pool(
+  pools.source ??= new Pool(
     base({
       ...sourceDbConfig(),
       max: SOURCE_POOL_MAX,
@@ -136,7 +178,7 @@ export function getSourcePool(): Pool {
       application_name: "cst-source-ro",
     }),
   );
-  return sourcePool;
+  return pools.source;
 }
 
 /**
@@ -145,9 +187,9 @@ export function getSourcePool(): Pool {
  * public or any unrelated project's schema.
  */
 export function getAppPool(): Pool {
-  if (!appPool) {
+  if (!pools.app) {
     const { schema, ...config } = appDbConfig();
-    appPool = new Pool(
+    pools.app = new Pool(
       base({
         ...config,
         max: APP_POOL_MAX,
@@ -156,7 +198,7 @@ export function getAppPool(): Pool {
       }),
     );
   }
-  return appPool;
+  return pools.app;
 }
 
 /**
@@ -166,7 +208,7 @@ export function getAppPool(): Pool {
 export function getKnowledgePool(): Pool | undefined {
   const config = knowledgeDbConfig();
   if (!config) return undefined;
-  knowledgePool ??= new Pool(
+  pools.knowledge ??= new Pool(
     base({
       ...config,
       // One batched read per request, like the source pool.
@@ -175,11 +217,11 @@ export function getKnowledgePool(): Pool | undefined {
       application_name: "cst-knowledge-ro",
     }),
   );
-  return knowledgePool;
+  return pools.knowledge;
 }
 
 /** Closes any pool that was actually opened. For graceful shutdown and tests. */
 export async function closeAllPools(): Promise<void> {
-  await Promise.all([sourcePool?.end(), appPool?.end(), knowledgePool?.end()]);
-  sourcePool = appPool = knowledgePool = undefined;
+  await Promise.all([pools.source?.end(), pools.app?.end(), pools.knowledge?.end()]);
+  pools.source = pools.app = pools.knowledge = undefined;
 }
