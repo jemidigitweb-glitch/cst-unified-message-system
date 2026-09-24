@@ -116,6 +116,13 @@ export type BeforeShipmentOutcome =
   /** Every condition held. */
   | "eligible"
   /**
+   * A before-shipping order-change query that NOBODY HAS REPLIED TO.
+   *
+   * Urgent on the case area and the silence alone — no age limit, no order
+   * lookup, no dispatch read. See `UNANSWERED_BEFORE_SHIPPING_IS_URGENT`.
+   */
+  | "unanswered_before_shipping"
+  /**
    * The customer is asking to stop or change the order and we CANNOT SEE the
    * order at all. Urgent, and the one outcome that says so without claiming
    * the order is real — see `orderStateUnverifiedIsUrgent`.
@@ -235,6 +242,65 @@ export type BeforeShipmentInput = {
    * whether anything can still be done about it.
    */
   readonly orderChangeIntent: boolean;
+  /**
+   * Whether the conversation's CASE AREA is the before-shipping one — the
+   * category the inbox already displays beside the row, from
+   * `BEFORE_SHIPPING_CATEGORY`.
+   *
+   * ------------------------------------------------------------------------
+   * THIS IS THE CONDITION CST ASKED FOR, AND IT HAS NO CLOCK
+   * ------------------------------------------------------------------------
+   * "It needs to be order-before-shipping category, and it's not replied yet —
+   * show the urgency until it is replied." That is the whole rule, and the two
+   * things it does NOT say are the point of it:
+   *
+   *   NO TIME LIMIT. The 48-hour recency window does not apply to this path.
+   *   An unanswered before-shipping query was previously urgent for two days
+   *   and then vanished from the urgent block — which is precisely backwards,
+   *   because the longer nobody answers, the more it needs answering. It now
+   *   stays up until somebody replies.
+   *
+   *   NO ORDER REQUIRED. It does not wait for the order to be identified. The
+   *   eBay identity race described under `orderNumber` means the order often
+   *   cannot be linked during the very window it could still be stopped in.
+   *
+   * ------------------------------------------------------------------------
+   * DISPATCH STILL VETOES IT
+   * ------------------------------------------------------------------------
+   * When the order IS known and the source says it has gone, this is not
+   * urgent: the window has closed and "please cancel" on a parcel already in
+   * transit is a return, not a cancellation. When the order is not known, no
+   * claim is made either way and the silence decides.
+   *
+   * A BOOLEAN, NOT TEXT, for the same reason `orderChangeIntent` is one: the
+   * vocabulary stays in `message-category.ts`, read once by the repository, and
+   * this module keeps having nothing a keyword could arrive through.
+   */
+  readonly beforeShippingCategory: boolean;
+  /**
+   * Whether the customer's NEWEST message is a bare thank-you in a thread we
+   * have already replied to — "Great Thanks" after CST answered.
+   *
+   * ------------------------------------------------------------------------
+   * THE SECOND CLOSING SIGNAL, AND IT READS THE CUSTOMER RATHER THAN US
+   * ------------------------------------------------------------------------
+   * `staffClosedTheOrder` catches the threads WE ended by saying the order went
+   * out or was stopped. It cannot catch the ones the CUSTOMER ended, and those
+   * are just as finished: eBay `piotr.woss-uk` had CST reply "we understand you
+   * would like to keep the order as it is", the customer answer "Great Thanks"
+   * twice, and the row stayed URGENT with the SLA 14 days overdue — because the
+   * newest message was inbound and nothing asked whether it was a REQUEST.
+   *
+   * BOTH HALVES ARE REQUIRED, and the caller composes them: the message says
+   * nothing but thanks, AND we have replied in this thread. A customer whose
+   * opening message is "Hello, thanks" has not been answered by anybody and
+   * must not be dropped, which is why the reply is part of the condition rather
+   * than the wording alone.
+   *
+   * A BOOLEAN, NOT TEXT — the same contract as every other input here. The
+   * vocabulary stays in `message-category.ts`, behind `isPleasantryOnly`.
+   */
+  readonly customerAcknowledgedOnly: boolean;
   readonly orderNumber: string | null;
   /**
    * Dispatch state for that order, or null where the SOURCE had no record of
@@ -275,23 +341,90 @@ export function beforeShipmentEligibility(
    * came back on still counts, because `lastDirection === "inbound"` above is
    * the condition those marketplaces have always used.
    */
-  if (input.marketplace === BEFORE_SHIPMENT_MARKETPLACE && input.everReplied) {
-    return "already_replied";
-  }
   // We already told them it went out, or that we stopped it. A customer's
   // "thank you" after that is not waiting work, however unshipped the source
-  // still believes the order to be.
+  // still believes the order to be. Checked BEFORE the case-area rule below,
+  // because "until it is replied" is satisfied by the reply that closed it.
   if (input.staffClosedTheOrder) return "thread_resolved";
-  // An unknown age cannot satisfy a recency condition, so null fails here
-  // rather than defaulting to "recent enough".
-  if (input.ageHours === null || input.ageHours > BEFORE_SHIPMENT_RECENCY_HOURS) {
-    return "too_old";
-  }
+  /*
+   * AND THE THREADS THE CUSTOMER ENDED. Same outcome, because they are the same
+   * fact — nobody is waiting on us — arrived at from the other side of the
+   * conversation. Checked here, above the case-area rule, so a finished thread
+   * cannot be held open by the category its opening message earned.
+   */
+  if (input.customerAcknowledgedOnly) return "thread_resolved";
 
-  /* ---- 2. A real matching customer order ---- */
+  /*
+   * ------------------------------------------------------------------------
+   * THE CASE-AREA RULE — no clock, no order required, until somebody replies
+   * ------------------------------------------------------------------------
+   * Placed HERE, above the recency window, the Amazon restriction and the
+   * order lookup, because it is subject to none of them. Everything above it
+   * still binds: this is a real customer reply thread, the newest message is
+   * theirs, and we have not already closed it.
+   *
+   * THE DISPATCH VETO IS THE ONE THING THAT OVERRIDES IT. Where the order was
+   * found and the source says it has gone, the window has closed and this is
+   * not urgent — the same guarantee the order-state path below gives, applied
+   * at the same strength. Where the order was NOT found, `shipment` is null,
+   * no claim is made in either direction, and the silence decides.
+   *
+   * IT DOES NOT TOUCH THE PATH BELOW. A conversation whose case area is
+   * something else — a delivery chase, a pre-sales question — falls straight
+   * through to the original rule and keeps exactly the behaviour it had.
+   */
+  /*
+   * ------------------------------------------------------------------------
+   * THE CASE AREA IS REQUIRED. THIS IS THE CONDITION, NOT A SECOND ROUTE IN.
+   * ------------------------------------------------------------------------
+   * CST's rule is "it needs to be order-before-shipping category AND it's not
+   * replied yet", so a conversation filed under any other case area is not
+   * urgent however its order is doing.
+   *
+   * WHAT THIS DELIBERATELY TURNS OFF. Urgency used to be decided by the WINDOW
+   * alone and asked nothing about what the customer wrote — so an unanswered
+   * delivery chase, a pre-sales question or a damage report on any unshipped
+   * order was URGENT. On Amazon, where the thread is keyed by the order number
+   * and almost every conversation resolves, that was most of the tab: the
+   * inbox showed an "Admin related issues" row wearing the red badge purely
+   * because the warehouse had not shipped yet.
+   *
+   * The previous author's reasoning for the wider rule is preserved in
+   * `shouldTagAsOrderChange` and is not wrong — a customer asking about a
+   * colour option before dispatch is someone we can still help. It is now a
+   * question for the SLA timer and the priority ribbon, which still rank those
+   * rows; URGENT is reserved for the case area CST named.
+   */
+  if (!input.beforeShippingCategory) return "not_an_order_change";
+
+  /* ---- 2 and 3. The order, where we can see it ---- */
+  if (input.shipment?.dispatched === true) return "already_dispatched";
+  /*
+   * WHERE THE ORDER WAS ACTUALLY CHECKED, SAY THE STRONGER THING.
+   *
+   * A non-null `shipment` means the order was found in the source, and the line
+   * above has ruled out its having gone — which is precisely `eligible`, the
+   * outcome that earns "order has not shipped yet" on the badge. Falling
+   * through to `unanswered_before_shipping` would downgrade a verified row to a
+   * vaguer claim than the evidence supports.
+   */
+  if (input.shipment !== null) return "eligible";
+
+  /* ---- The order we cannot see ---- */
   const nothingToLookUp = input.orderNumber === null || input.orderNumber.trim() === "";
 
-  if (nothingToLookUp) {
+  if (!nothingToLookUp) {
+    /*
+     * Looked up, and the source has no record of it. An absence is not a
+     * window: a reference is a claim, and the row in the source is the
+     * verification. Still urgent, because the case area and the silence are
+     * what CST's rule turns on — but reported as unverified, never as a
+     * statement about a parcel.
+     */
+    return "unanswered_before_shipping";
+  }
+
+  {
     /*
      * ------------------------------------------------------------------------
      * WE CANNOT SEE THE ORDER, AND THE CUSTOMER IS ASKING US TO STOP IT
@@ -356,17 +489,14 @@ export function beforeShipmentEligibility(
      * and would also read a genuine "no such order" as a reason to escalate.
      */
     if (input.orderChangeIntent) return "order_state_unverified";
-    return "no_matching_order";
+    /*
+     * No key, and the newest message is not itself asking us to stop or change
+     * anything — a follow-up inside a before-shipping thread, say. Urgent on
+     * the case area and the silence, which is CST's rule, and reported as the
+     * outcome that claims nothing about any parcel.
+     */
+    return "unanswered_before_shipping";
   }
-
-  // Looked up, and the source has no record of it. An absence is not a window:
-  // a reference is a claim, and the row in the source is the verification.
-  if (input.shipment === null) return "no_matching_order";
-
-  /* ---- 3. Not yet dispatched ---- */
-  if (input.shipment.dispatched) return "already_dispatched";
-
-  return "eligible";
 }
 
 /**
@@ -380,10 +510,23 @@ export function beforeShipmentEligibility(
  */
 export const URGENT_WHEN_ORDER_STATE_UNVERIFIED = true;
 
+/**
+ * Whether an unanswered before-shipping query is urgent on its case area alone.
+ *
+ * A NAMED CONSTANT for the same reason as the one above: this is CST's rule,
+ * and somebody should be able to find and reverse it without reading the
+ * module. Setting it false restores the pure order-state behaviour — the
+ * outcome remains visible as the explanation.
+ */
+export const UNANSWERED_BEFORE_SHIPPING_IS_URGENT = true;
+
 /** Whether the before-shipment urgent rule fires for this conversation. */
 export function isBeforeShipmentUrgent(input: BeforeShipmentInput): boolean {
   const outcome = beforeShipmentEligibility(input);
   if (outcome === "eligible") return true;
+  if (outcome === "unanswered_before_shipping") {
+    return UNANSWERED_BEFORE_SHIPPING_IS_URGENT;
+  }
   return URGENT_WHEN_ORDER_STATE_UNVERIFIED && outcome === "order_state_unverified";
 }
 
@@ -458,3 +601,45 @@ export const URGENT_UNVERIFIED_DESCRIPTION =
 
 /** The badge word for an urgent row whose order could not be identified. */
 export const URGENT_UNVERIFIED_LABEL = "URGENT?";
+
+/**
+ * What the badge says for an unanswered before-shipping query.
+ *
+ * Says the two things this path actually established — the case area, and that
+ * nobody has replied — and claims nothing about the parcel. It must not borrow
+ * `URGENT_DESCRIPTION`'s "order has not shipped yet": where the order was found
+ * and had shipped this row is not urgent at all, and where it was not found we
+ * never checked, so either way that sentence would be unearned here.
+ */
+export const URGENT_UNANSWERED_DESCRIPTION =
+  "Urgent: before-shipping order change - nobody has replied yet";
+
+/**
+ * The badge a row should wear, chosen from the outcome that raised it.
+ *
+ * ONE PLACE DECIDES THIS. It was previously a boolean the list computed by
+ * comparing the outcome to a string, which put a second opinion about what the
+ * badge means in a component — the same split that let `order_state_unverified`
+ * be flagged by the rule and ignored by the flag. The component now renders
+ * what this returns and forms no view of its own.
+ */
+/*
+ * TAKES A LOOSE STRING, DELIBERATELY. `InboxItem.beforeShipmentOutcome` is
+ * `z.string().nullable()` rather than an enum because `inbox.ts` cannot import
+ * this module — this one already imports `ORDER_CHANGE_CATEGORY` from it, and
+ * narrowing the schema would close that loop into a cycle. So the carried value
+ * arrives here as a string, and the final `return` is the total fallback that
+ * makes any unrecognised value render the ordinary badge rather than crash.
+ */
+export function urgentBadge(outcome: BeforeShipmentOutcome | string | null): {
+  readonly label: string;
+  readonly description: string;
+} {
+  if (outcome === "order_state_unverified") {
+    return { label: URGENT_UNVERIFIED_LABEL, description: URGENT_UNVERIFIED_DESCRIPTION };
+  }
+  if (outcome === "unanswered_before_shipping") {
+    return { label: URGENT_LABEL, description: URGENT_UNANSWERED_DESCRIPTION };
+  }
+  return { label: URGENT_LABEL, description: URGENT_DESCRIPTION };
+}

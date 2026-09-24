@@ -6101,6 +6101,37 @@ const PLEASANTRY_ONLY =
   /^(?:[\s\p{P}\p{S}]*(?:hi|hello|hey|dear|sir|madam|many|much|thanks|thank|you|thankyou|cheers|regards|kind|best|wishes|great|brilliant|perfect|lovely|danke|vielen|dank|gr(?:ü|ue)(?:ß|ss)e|hallo|guten|tag|morgen|abend|mfg|lg)[\s\p{P}\p{S}]*)+$/iu;
 
 /**
+ * Whether a message is nothing but greeting and thanks — "Great, thanks".
+ *
+ * ------------------------------------------------------------------------
+ * EXPORTED FOR THE URGENT RULE, WHICH ASKS A DIFFERENT QUESTION
+ * ------------------------------------------------------------------------
+ * The classifier uses `PLEASANTRY_ONLY` to decide what a whole THREAD is
+ * about, and deliberately never consults it for a single message: a lone "Many
+ * thanks, kind regards." is still a customer writing to us and still earns the
+ * admin tag rather than a blank.
+ *
+ * The urgent rule asks something else entirely — is anybody still WAITING on us
+ * — and for that, a customer whose newest message is a bare thank-you after we
+ * have already replied is not. eBay conversation `piotr.woss-uk` is the case:
+ * CST answered, the customer sent "Great Thanks" twice, and the row sat URGENT
+ * with the SLA 14 days overdue because the newest message was inbound.
+ *
+ * IT IS ONLY HALF A SIGNAL, and the caller supplies the other half. On its own
+ * this says "no request in this message", not "the thread is finished" — the
+ * rule requires that we have actually replied before reading it as closure, so
+ * a customer who opens with "Hello, thanks" is never silently dropped.
+ *
+ * ANCHORED WHOLE-STRING, which is what keeps it safe: "Thanks, but when is it
+ * shipping?" does not match, because the question is not a pleasantry.
+ */
+export function isPleasantryOnly(text: string | null | undefined): boolean {
+  const trimmed = (text ?? "").trim();
+  if (trimmed === "") return false;
+  return PLEASANTRY_ONLY.test(trimmed);
+}
+
+/**
  * The categories that represent an actual case, as opposed to an enquiry.
  *
  * Used to pick which of several messages names what the conversation is ABOUT:

@@ -1,9 +1,4 @@
-import {
-  URGENT_DESCRIPTION,
-  URGENT_LABEL,
-  URGENT_UNVERIFIED_DESCRIPTION,
-  URGENT_UNVERIFIED_LABEL,
-} from "@/lib/domain/before-shipment-urgency";
+import { urgentBadge } from "@/lib/domain/before-shipment-urgency";
 
 /**
  * The URGENT badge: a before-shipping query on an order that has not left yet.
@@ -36,33 +31,42 @@ import {
 export function UrgentFlag({
   urgent,
   /**
-   * Whether the order behind this row was actually found.
+   * WHICH outcome raised the flag, so the badge can say the right thing.
    *
-   * DEFAULTS TO TRUE so every existing caller keeps the badge it already
-   * renders. Only the inbox list, which knows the outcome, passes `false`.
+   * THREE ROWS WEAR THIS RED AND THEY DO NOT CLAIM THE SAME THING:
    *
-   * WHY THE TWO MUST LOOK DIFFERENT. A row flagged because the customer asked
-   * us to stop an order we CANNOT SEE is urgent for a different reason than one
-   * whose order was looked up and is still in the warehouse. Wearing the
-   * confident badge, it would tell an agent the parcel has not shipped — which
-   * is exactly what we failed to establish. Same red, because both are the same
-   * priority; a question mark and different hover text, because they are not
-   * the same claim.
+   *   `eligible` — we looked the order up and it is still in the warehouse.
+   *   The confident badge, and the only one entitled to say so.
+   *
+   *   `order_state_unverified` — they asked us to stop an order we CANNOT SEE.
+   *   Wearing the confident badge it would tell an agent the parcel has not
+   *   shipped, which is exactly what we failed to establish.
+   *
+   *   `unanswered_before_shipping` — a before-shipping case area nobody has
+   *   replied to. Says that, and nothing about the parcel.
+   *
+   * Same red in every case, because all three are the same priority; different
+   * word and hover text, because they are different claims.
+   *
+   * DEFAULTS TO NULL so every existing caller keeps the badge it already
+   * renders. The mapping lives in `urgentBadge`, not here — a component that
+   * decided this itself is how the flag and the rule disagreed once before.
    */
-  orderVerified = true,
+  outcome = null,
 }: {
   urgent: boolean;
-  orderVerified?: boolean;
+  /** The carried `InboxItem.beforeShipmentOutcome` — see `urgentBadge`. */
+  outcome?: string | null;
 }) {
   if (!urgent) return null;
-  const description = orderVerified ? URGENT_DESCRIPTION : URGENT_UNVERIFIED_DESCRIPTION;
+  const { label, description } = urgentBadge(outcome);
   return (
     <span
       title={description}
       aria-label={description}
       className="inline-flex shrink-0 items-center rounded-sm bg-red-600 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white uppercase dark:bg-red-500"
     >
-      {orderVerified ? URGENT_LABEL : URGENT_UNVERIFIED_LABEL}
+      {label}
     </span>
   );
 }

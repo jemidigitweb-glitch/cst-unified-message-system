@@ -250,34 +250,44 @@ describe("the dispatch gate", () => {
   });
 
   /**
-   * An order the source has never heard of is NOT an undispatched one. A reference
-   * is a claim; the row in the source is the verification.
+   * AN ORDER THE SOURCE CANNOT FIND NO LONGER EXCLUDES THE CONVERSATION, and
+   * this test asserted the opposite until CST's rule arrived.
+   *
+   * The old reasoning — "a reference is a claim; the row in the source is the
+   * verification" — held while the ORDER decided membership. The case area
+   * decides it now, and the order is only a veto: not finding one establishes
+   * no veto, it does not establish that the customer stopped waiting. The
+   * outcome says as much, so nothing downstream claims the parcel was checked.
    */
-  it("excludes a conversation whose order the source cannot find", async () => {
+  it("keeps a conversation whose order the source cannot find", async () => {
     const { page } = await listOrderChange([awaitingRow()], undefined, []);
-    expect(page.items).toEqual([]);
+    expect(page.items.map((item) => item.id)).toEqual(["1"]);
+    expect(page.items[0]!.beforeShipmentOutcome).toBe("unanswered_before_shipping");
   });
 
   /**
-   * Older than `BEFORE_SHIPMENT_RECENCY_HOURS`, which CST set to 48. Bounded in
-   * SQL as well, so this asserts the parameter is actually sent — a window applied
-   * only in TypeScript would let stale rows consume the per-marketplace budget
-   * that live ones are competing for.
+   * THE WINDOW IS NO LONGER SENT, AND THAT IS THE ASSERTION.
+   *
+   * It used to bound the candidate set in SQL so stale rows could not consume
+   * the per-marketplace budget. CST removed the window, and this feed moves
+   * with the inbox flag — a drawer that still dropped a before-shipping query
+   * at 48 hours while the inbox kept it red would be the two surfaces
+   * disagreeing about what "before shipping" means.
    */
-  it("bounds the candidates by the recency window, in the query", async () => {
+  it("no longer bounds the candidates by a recency window", async () => {
     const { calls } = await listOrderChange([awaitingRow()]);
-    expect(calls[0]!.values![2]).toBe(BEFORE_SHIPMENT_RECENCY_HOURS);
+    expect(calls[0]!.values![2]).toBeNull();
+    // The constant survives; the response SLA is still measured against it.
     expect(BEFORE_SHIPMENT_RECENCY_HOURS).toBe(48);
-    expect(calls[0]!.text).toContain("make_interval(hours => $3::int)");
   });
 
-  /** And again in TypeScript, from the same instant the query measures. */
-  it("excludes a customer message older than the window", async () => {
+  /** And again in TypeScript: an old unanswered query is still live work. */
+  it("keeps a customer message older than the old window", async () => {
     const { page } = await listOrderChange([
-      // 49 hours before NOW — one hour past the edge.
+      // 49 hours before NOW — one hour past what used to be the edge.
       awaitingRow({ sla_starts_at: "2026-07-31T11:00:00Z" }),
     ]);
-    expect(page.items).toEqual([]);
+    expect(page.items.map((item) => item.id)).toEqual(["1"]);
   });
 
   /**

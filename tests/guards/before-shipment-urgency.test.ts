@@ -10,10 +10,17 @@ import {
   BEFORE_SHIPMENT_RECENCY_HOURS,
   BEFORE_SHIPPING_CATEGORY,
   type BeforeShipmentInput,
+  UNANSWERED_BEFORE_SHIPPING_IS_URGENT,
+  URGENT_DESCRIPTION,
+  URGENT_LABEL,
+  URGENT_UNANSWERED_DESCRIPTION,
+  URGENT_UNVERIFIED_LABEL,
   beforeShipmentEligibility,
   isBeforeShipmentUrgent,
+  urgentBadge,
   urgentOrderIsVerified,
 } from "@/lib/domain/before-shipment-urgency";
+import { isPleasantryOnly } from "@/lib/knowledge/message-category";
 import { ORDER_CHANGE_CATEGORY } from "@/lib/domain/inbox";
 import {
   RESPONSE_SLA_MINUTES,
@@ -47,6 +54,15 @@ function eligible(overrides: Partial<BeforeShipmentInput> = {}): BeforeShipmentI
     everReplied: false,
     ageHours: 2,
     orderChangeIntent: true,
+    /*
+     * TRUE, because it is now a CONDITION of the rule rather than one of two
+     * routes into it: "it needs to be order-before-shipping category and it's
+     * not replied yet." A fixture that left it false would describe a
+     * conversation the rule refuses outright, which is what the dedicated
+     * tests below set it false to prove.
+     */
+    beforeShippingCategory: true,
+    customerAcknowledgedOnly: false,
     orderNumber: "LED65289",
     shipment: { dispatched: false },
     ...overrides,
@@ -79,6 +95,8 @@ describe("a customer message on a linked, unshipped order is urgent", () => {
     expect(Object.keys(eligible()).sort()).toEqual(
       [
         "ageHours",
+        "beforeShippingCategory",
+        "customerAcknowledgedOnly",
         "everReplied",
         "inboxPlacement",
         "marketplace",
@@ -99,6 +117,253 @@ describe("a customer message on a linked, unshipped order is urgent", () => {
   });
 });
 
+/* ------------------------------------------------------------------------- *
+ * THE CASE-AREA RULE — before-shipping, unanswered, until somebody replies
+ *
+ * CST's rule, and it overrides the recency window entirely: "it needs to be
+ * order-before-shipping category, and it's not replied yet — show the urgency
+ * until it is replied." Plus the one veto they added: where the order IS
+ * visible and has been dispatched, it is not urgent.
+ * ------------------------------------------------------------------------- */
+
+describe("an unanswered before-shipping query stays urgent until it is answered", () => {
+  /*
+   * The order is DELIBERATELY invisible here. With a readable, undispatched
+   * order the rule says `eligible` — the stronger claim — so this helper
+   * describes the other half: a before-shipping case area whose order could not
+   * be checked, which is where `unanswered_before_shipping` lives.
+   */
+  const unanswered = (overrides: Partial<BeforeShipmentInput> = {}) =>
+    eligible({
+      beforeShippingCategory: true,
+      orderNumber: null,
+      shipment: null,
+      orderChangeIntent: false,
+      ...overrides,
+    });
+
+  it("fires on the case area and the silence alone", () => {
+    expect(beforeShipmentEligibility(unanswered())).toBe("unanswered_before_shipping");
+    expect(isBeforeShipmentUrgent(unanswered())).toBe(true);
+  });
+
+  /**
+   * THE WHOLE POINT OF THE CHANGE. Every one of these ages was `too_old` before
+   * — the conversation was urgent for two days and then vanished, which is
+   * backwards: the longer nobody answers, the more it needs answering.
+   */
+  it.each([0, 1, 47, 48, 49, 72, 24 * 7, 24 * 90])("ignores the clock at %ih", (ageHours) => {
+    expect(beforeShipmentEligibility(unanswered({ ageHours })), `${ageHours}h`).toBe(
+      "unanswered_before_shipping",
+    );
+  });
+
+  /** Even an age nobody could establish, which the order-state path refuses. */
+  it("does not need the arrival time to be known", () => {
+    expect(beforeShipmentEligibility(unanswered({ ageHours: null }))).toBe(
+      "unanswered_before_shipping",
+    );
+  });
+
+  /**
+   * NO ORDER REQUIRED. The eBay identity race means the order usually cannot be
+   * linked during the window it could still be stopped in.
+   */
+  it.each([null, "", "   "])("does not wait for the order to be identified (%j)", (orderNumber) => {
+    expect(
+      beforeShipmentEligibility(unanswered({ orderNumber, shipment: null })),
+    ).toBe("unanswered_before_shipping");
+  });
+
+  /** And it does not care whether the customer's wording reads as an order change. */
+  it("does not re-read the customer's intent", () => {
+    expect(beforeShipmentEligibility(unanswered({ orderChangeIntent: false }))).toBe(
+      "unanswered_before_shipping",
+    );
+  });
+
+  /**
+   * THE VETO CST ASKED FOR, IN BOTH DIRECTIONS: "if order details available and
+   * it's not dispatched yet it's order before shipping; if it's dispatched it's
+   * not urgent."
+   */
+  it("is not urgent once the visible order has been dispatched", () => {
+    const dispatched = unanswered({ shipment: { dispatched: true } });
+    expect(beforeShipmentEligibility(dispatched)).toBe("already_dispatched");
+    expect(isBeforeShipmentUrgent(dispatched)).toBe(false);
+  });
+
+  /**
+   * The other side of the veto. A VISIBLE, undispatched order is the stronger
+   * outcome — `eligible` — because it is the one that earns "order has not
+   * shipped yet" on the badge. Still urgent either way.
+   */
+  it("is urgent, and says so more confidently, while the visible order has not been dispatched", () => {
+    const visible = unanswered({
+      orderNumber: "LED65289",
+      shipment: { dispatched: false },
+    });
+    expect(beforeShipmentEligibility(visible)).toBe("eligible");
+    expect(isBeforeShipmentUrgent(visible)).toBe(true);
+    expect(urgentOrderIsVerified(beforeShipmentEligibility(visible))).toBe(true);
+  });
+
+  /** An order nobody can see makes no claim either way, so the silence decides. */
+  it("stays urgent when the order cannot be seen at all", () => {
+    expect(isBeforeShipmentUrgent(unanswered({ shipment: null }))).toBe(true);
+  });
+
+  /* --- what still stops it --- */
+
+  /** "Until it is replied" — and this is the reply. */
+  it("stops the moment we answer", () => {
+    expect(beforeShipmentEligibility(unanswered({ lastDirection: "outbound" }))).toBe(
+      "no_customer_action_needed",
+    );
+  });
+
+  /** Our reply closed the order out, so the thread is done however it is tagged. */
+  it("stops when our reply already closed the order", () => {
+    expect(beforeShipmentEligibility(unanswered({ staffClosedTheOrder: true }))).toBe(
+      "thread_resolved",
+    );
+  });
+
+  /**
+   * ------------------------------------------------------------------------
+   * THE DEFECT THIS CLOSED, FOUND ON SCREEN
+   * ------------------------------------------------------------------------
+   * eBay `piotr.woss-uk`: CST replied "we understand you would like to keep the
+   * order as it is and do not wish to cancel it", the customer answered "Great
+   * Thanks" twice, and the row sat URGENT with the SLA 14 days overdue. The
+   * newest message was inbound, so "nobody has replied" was true of the message
+   * and false of the thread — and nothing asked whether it was a REQUEST.
+   */
+  it("stops when the customer's last word is a bare thank-you", () => {
+    const acknowledged = unanswered({ customerAcknowledgedOnly: true });
+    expect(beforeShipmentEligibility(acknowledged)).toBe("thread_resolved");
+    expect(isBeforeShipmentUrgent(acknowledged)).toBe(false);
+  });
+
+  /** It closes the thread whatever its age, and whatever the order is doing. */
+  it.each([
+    ["an old thread", { ageHours: 24 * 90 }],
+    ["an undispatched order", { shipment: { dispatched: false } }],
+    ["an order nobody can see", { shipment: null, orderNumber: null }],
+  ])("closes %s once the customer has signed off", (_label, override) => {
+    expect(
+      beforeShipmentEligibility(unanswered({ customerAcknowledgedOnly: true, ...override })),
+    ).toBe("thread_resolved");
+  });
+
+  it.each([
+    ["a platform notice", { platformNotice: true }],
+    ["a filtered placement", { inboxPlacement: "filtered" as const }],
+    ["an outbound-only thread", { inboxPlacement: "outbound_only" as const }],
+  ])("never fires for %s", (_label, override) => {
+    expect(beforeShipmentEligibility(unanswered(override))).toBe(
+      "not_a_customer_conversation",
+    );
+  });
+
+  /**
+   * IT OVERRIDES AMAZON'S NEVER-REPLIED RESTRICTION, and that is intended. That
+   * restriction reserves the ORDER-STATE path for untouched requests; this rule
+   * is about a customer waiting on an answer, and a thread we replied in once
+   * before still has nobody answering the message on screen now.
+   */
+  it("fires on Amazon even in a thread we have replied in before", () => {
+    expect(
+      beforeShipmentEligibility(unanswered({ marketplace: "amazon", everReplied: true })),
+    ).toBe("unanswered_before_shipping");
+  });
+
+  it("still reads no customer text", () => {
+    const source = read("lib", "domain", "before-shipment-urgency.ts")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(source).not.toMatch(/new RegExp|\.test\(|cancel|stop dispatch/i);
+  });
+
+  it("can be reversed from one named constant", () => {
+    expect(UNANSWERED_BEFORE_SHIPPING_IS_URGENT).toBe(true);
+  });
+});
+
+describe("a customer signing off is read as a sign-off", () => {
+  /** The exact messages from the screenshot, and their common variants. */
+  it.each([
+    "Great Thanks",
+    "Great, thanks",
+    "Thanks",
+    "Many thanks",
+    "Thank you",
+    "Thanks, kind regards",
+    "Perfect, thank you!",
+    "Brilliant thanks",
+    "Vielen Dank",
+  ])("reads %j as nothing but thanks", (text) => {
+    expect(isPleasantryOnly(text)).toBe(true);
+  });
+
+  /**
+   * THE SENTENCES IT MUST NOT SWALLOW. A thank-you with a question attached is
+   * a question — reading it as closure would silently drop the request, which
+   * is the same class of error as `staffClosedTheOrder` reading "has NOT been
+   * dispatched" as dispatched.
+   */
+  it.each([
+    "Thanks, but when will it ship?",
+    "Thank you - please cancel the order.",
+    "Great, can you change the address?",
+    "Thanks for nothing, this arrived broken",
+    "",
+    "   ",
+  ])("does not read %j as a sign-off", (text) => {
+    expect(isPleasantryOnly(text)).toBe(false);
+  });
+
+  it("treats an absent message as no signal rather than closure", () => {
+    expect(isPleasantryOnly(null)).toBe(false);
+    expect(isPleasantryOnly(undefined)).toBe(false);
+  });
+});
+
+describe("the badge says what was actually established", () => {
+  it("claims the parcel is still here only where the order was checked", () => {
+    expect(urgentBadge("eligible").description).toBe(URGENT_DESCRIPTION);
+    expect(urgentBadge("eligible").label).toBe(URGENT_LABEL);
+  });
+
+  /**
+   * The case-area rule does not read dispatch when the order is invisible, so
+   * its badge must not borrow a sentence that says the parcel has not shipped.
+   */
+  it("claims nothing about the parcel for an unanswered before-shipping query", () => {
+    const badge = urgentBadge("unanswered_before_shipping");
+    expect(badge.label).toBe(URGENT_LABEL);
+    expect(badge.description).toBe(URGENT_UNANSWERED_DESCRIPTION);
+    expect(badge.description).not.toMatch(/not shipped|has not shipped/i);
+  });
+
+  it("keeps the question mark for an order nobody could find", () => {
+    expect(urgentBadge("order_state_unverified").label).toBe(URGENT_UNVERIFIED_LABEL);
+  });
+
+  /** An unrecognised or absent outcome renders the ordinary badge, never a crash. */
+  it.each([null, "something_new"])("falls back safely for %j", (outcome) => {
+    expect(urgentBadge(outcome).label).toBe(URGENT_LABEL);
+  });
+
+  it("is what the component renders, rather than a second opinion", () => {
+    const element = UrgentFlag({ urgent: true, outcome: "unanswered_before_shipping" }) as {
+      props: { title: string; children: unknown };
+    };
+    expect(element.props.title).toBe(URGENT_UNANSWERED_DESCRIPTION);
+    expect(element.props.children).toBe(URGENT_LABEL);
+  });
+});
+
 describe("the rule does not fire", () => {
   /**
    * REQUIRED CASE: no matching order, AND the customer is not asking us to
@@ -108,24 +373,34 @@ describe("the rule does not fire", () => {
    * than `order_state_unverified` — see the pair of tests below, which cover
    * the same absence when the customer IS asking us to stop the order.
    */
-  it("when no order number could be established and nothing was asked of us", () => {
-    for (const orderNumber of [null, "", "   "]) {
-      expect(
-        beforeShipmentEligibility(eligible({ orderNumber, orderChangeIntent: false })),
-        JSON.stringify(orderNumber),
-      ).toBe("no_matching_order");
-    }
+  /**
+   * ------------------------------------------------------------------------
+   * THE CASE AREA IS THE CONDITION, AND THIS IS THE TEST THAT SAYS SO
+   * ------------------------------------------------------------------------
+   * FOUND ON SCREEN: the Amazon tab showed a conversation tagged "Admin
+   * related issues" wearing the URGENT badge, because urgency used to be
+   * decided by the window alone and asked nothing about what the customer
+   * wrote — and on Amazon the thread is keyed by the order number, so almost
+   * every conversation resolves to a real, often-unshipped order.
+   *
+   * CST's rule is "it needs to be order-before-shipping category AND it's not
+   * replied yet", so any other case area is refused however open the window is.
+   */
+  it("when the case area is not before-shipping, whatever the order is doing", () => {
+    const input = eligible({ beforeShippingCategory: false });
+    expect(beforeShipmentEligibility(input)).toBe("not_an_order_change");
+    expect(isBeforeShipmentUrgent(input)).toBe(false);
   });
 
-  /**
-   * An order the SOURCE has no record of is ALSO "no matching order", and
-   * deliberately not "not dispatched". An absence is not a window: reading it
-   * as one would promise that a parcel nobody can find can still be stopped.
-   */
-  it("when the source has no record of the matched order and nothing was asked of us", () => {
+  /** Not even when the order is verifiably still sitting in the warehouse. */
+  it.each([
+    ["an undispatched order", { shipment: { dispatched: false } }],
+    ["a brand-new message", { ageHours: 0 }],
+    ["an explicit order-change request", { orderChangeIntent: true }],
+  ])("refuses another case area with %s", (_label, override) => {
     expect(
-      beforeShipmentEligibility(eligible({ shipment: null, orderChangeIntent: false })),
-    ).toBe("no_matching_order");
+      beforeShipmentEligibility(eligible({ beforeShippingCategory: false, ...override })),
+    ).toBe("not_an_order_change");
   });
 
   /**
@@ -143,28 +418,37 @@ describe("the rule does not fire", () => {
   it("fires when there is no order key at all and the customer asked us to stop it", () => {
     for (const orderNumber of [null, "", "   "]) {
       expect(
-        beforeShipmentEligibility(eligible({ orderNumber, orderChangeIntent: true })),
+        beforeShipmentEligibility(
+          eligible({ orderNumber, shipment: null, orderChangeIntent: true }),
+        ),
         JSON.stringify(orderNumber),
       ).toBe("order_state_unverified");
     }
   });
 
   /**
-   * THE NARROW SCOPE IS THE POINT. "No key to look up" is the identity race;
+   * A REAL KEY THAT FAILED TO RESOLVE IS STILL URGENT NOW, and this test
+   * asserted the opposite until CST's rule arrived.
+   *
+   * It used to return `no_matching_order` and drop out, on the reasoning that
    * "looked it up and got nothing back" is ambiguous — it is also what a source
-   * outage looks like, because the caller passes an empty map when the pool is
-   * absent. Only the first escalates.
+   * outage looks like. That reasoning applied when the ORDER decided urgency.
+   * The case area decides it now, and the order is only a veto: an outage means
+   * no veto was established, not that the customer stopped waiting.
+   *
+   * It is reported as `unanswered_before_shipping`, so the badge claims nothing
+   * about the parcel — see the badge tests above.
    */
-  it("does NOT fire when a real order key simply failed to resolve", () => {
+  it("still fires when a real order key failed to resolve", () => {
     expect(
       beforeShipmentEligibility(
-        eligible({ orderNumber: "LED65289", shipment: null, orderChangeIntent: true }),
+        eligible({ orderNumber: "LED65289", shipment: null, orderChangeIntent: false }),
       ),
-    ).toBe("no_matching_order");
+    ).toBe("unanswered_before_shipping");
   });
 
   it("treats an unverified order as urgent, but not as a verified one", () => {
-    const input = eligible({ orderNumber: null, orderChangeIntent: true });
+    const input = eligible({ orderNumber: null, shipment: null, orderChangeIntent: true });
     expect(isBeforeShipmentUrgent(input)).toBe(true);
     expect(urgentOrderIsVerified(beforeShipmentEligibility(input))).toBe(false);
     expect(urgentOrderIsVerified("eligible")).toBe(true);
@@ -184,17 +468,25 @@ describe("the rule does not fire", () => {
     ).toBe("already_dispatched");
   });
 
-  /** And the other three guarantees of condition 1 still bind first. */
+  /**
+   * The guarantees of condition 1 still bind first, and still bind hardest —
+   * they sit above the case-area rule, so no category can reach past them.
+   *
+   * THE TWO AGE ROWS ARE GONE from this table on purpose. They asserted
+   * `too_old`, and there is no longer any age at which this rule gives up: that
+   * is the whole of what CST asked for. The ages are covered positively in
+   * "ignores the clock at %ih" above.
+   */
   it.each([
     ["a platform notice", { platformNotice: true }, "not_a_customer_conversation"],
     ["a filtered placement", { inboxPlacement: "filtered" as const }, "not_a_customer_conversation"],
     ["our own message last", { lastDirection: "outbound" as const }, "no_customer_action_needed"],
-    ["an unknown arrival time", { ageHours: null }, "too_old"],
-    ["a message older than the window", { ageHours: 49 }, "too_old"],
+    ["a thread we closed out", { staffClosedTheOrder: true }, "thread_resolved"],
+    ["a customer sign-off", { customerAcknowledgedOnly: true }, "thread_resolved"],
   ])("still refuses %s even with no order and a cancellation", (_label, override, expected) => {
     expect(
       beforeShipmentEligibility(
-        eligible({ orderNumber: null, orderChangeIntent: true, ...override }),
+        eligible({ orderNumber: null, shipment: null, orderChangeIntent: true, ...override }),
       ),
     ).toBe(expected);
   });
@@ -220,23 +512,23 @@ describe("the rule does not fire", () => {
   });
 
   /**
-   * AMAZON ONLY: a thread we have already replied in is a conversation in
-   * progress, not an untouched request.
+   * ------------------------------------------------------------------------
+   * THE AMAZON "NEVER REPLIED AT ALL" RESTRICTION IS GONE, EVERYWHERE
+   * ------------------------------------------------------------------------
+   * This test asserted `already_replied` on Amazon: a thread we had answered
+   * was treated as a conversation in progress rather than an untouched request.
+   *
+   * CST's rule replaces it. "Not replied yet" now means the message ON SCREEN
+   * is unanswered, and a thread we replied in last week still has nobody
+   * answering the one the customer sent today. What stops those threads is a
+   * reply or a sign-off, which is what `thread_resolved` is for — and that is
+   * the condition doing the real work, as `piotr.woss-uk` showed.
+   *
+   * The matching predicate was removed from the sweep SQL in the same change,
+   * so the query and the rule still agree.
    */
-  it("on Amazon, when we have replied in the thread at all", () => {
-    expect(
-      beforeShipmentEligibility(eligible({ marketplace: "amazon", everReplied: true })),
-    ).toBe("already_replied");
-  });
-
-  /**
-   * EVERY OTHER MARKETPLACE KEEPS ITS EXISTING BEHAVIOUR. The same thread — we
-   * replied, the customer came back — is still urgent on eBay, Shopify, B&Q and
-   * Temu, because "the customer spoke last" is the condition those have always
-   * used. The restriction is Amazon's alone.
-   */
-  it.each(["ebay", "shopify", "bandq", "temu"])(
-    "but %s still counts a thread we replied in",
+  it.each(["amazon", "ebay", "shopify", "bandq", "temu"])(
+    "counts a thread we replied in, on %s",
     (marketplace) => {
       expect(beforeShipmentEligibility(eligible({ marketplace, everReplied: true }))).toBe(
         "eligible",
@@ -244,6 +536,7 @@ describe("the rule does not fire", () => {
     },
   );
 
+  /** The constant survives for the sweep's own use; it no longer gates the rule. */
   it("the scoped marketplace is stated once", () => {
     expect(BEFORE_SHIPMENT_MARKETPLACE).toBe("amazon");
   });
@@ -259,38 +552,44 @@ describe("the rule does not fire", () => {
 });
 
 /* ------------------------------------------------------------------------- *
- * THE RECENCY WINDOW — 24h and 48h count; older does not
+ * THE RECENCY WINDOW NO LONGER GATES THE RULE
  *
- * THESE THREE ASSERTIONS WERE STALE AND FAILING BEFORE THIS CHANGE. The window
- * was 72 hours on the original reasoning that a Friday-evening order is still
- * unshipped on Monday morning; CST replaced it with 48, and
- * `BEFORE_SHIPMENT_RECENCY_HOURS` was changed without these being brought with
- * it. They are corrected here rather than left red because the response SLA now
- * depends on this number — see "expires strictly inside the window that keeps
- * the row on screen" — and a test asserting 72 would make that dependency
- * unreadable.
+ * This block asserted that 24h and 48h counted and anything older did not. CST
+ * removed the window outright — "forget about the 48h" — so the assertions are
+ * inverted rather than deleted: an age that used to drop a conversation must
+ * now be proved NOT to.
+ *
+ * `BEFORE_SHIPMENT_RECENCY_HOURS` survives because the response SLA is still
+ * expressed against it, and because the sweep's own comments refer to what it
+ * used to bound. It decides nothing here any more, and that is what the last
+ * test pins.
  * ------------------------------------------------------------------------- */
 
-describe("every before-shipping query in the window counts", () => {
-  it("includes 24 and 48 hours old alike", () => {
-    for (const ageHours of [0, 1, 24, 47, 48]) {
+describe("every before-shipping query counts, at every age", () => {
+  it("includes everything from brand new to a month old", () => {
+    for (const ageHours of [0, 1, 24, 47, 48, 48.5, 72, 100, 24 * 30]) {
       expect(beforeShipmentEligibility(eligible({ ageHours })), `${ageHours}h`).toBe("eligible");
     }
   });
 
-  it("drops anything past the window", () => {
-    for (const ageHours of [48.5, 72, 100, 24 * 30]) {
-      expect(beforeShipmentEligibility(eligible({ ageHours })), `${ageHours}h`).toBe("too_old");
-    }
+  /** An unknown arrival time is no longer a reason to give up on the customer. */
+  it("keeps a conversation whose arrival time is unknown", () => {
+    expect(beforeShipmentEligibility(eligible({ ageHours: null }))).toBe("eligible");
   });
 
-  /** An unknown age cannot satisfy a recency condition. */
-  it("drops a conversation whose arrival time is unknown", () => {
-    expect(beforeShipmentEligibility(eligible({ ageHours: null }))).toBe("too_old");
-  });
-
-  it("states the window as one number", () => {
+  it("still states the number, which the response SLA is measured against", () => {
     expect(BEFORE_SHIPMENT_RECENCY_HOURS).toBe(48);
+  });
+
+  /**
+   * THE RULE MUST NOT READ IT AGAIN. A future edit that reintroduces an age
+   * comparison would silently restore the behaviour CST asked us to remove, so
+   * this asserts the two ages either side of the old boundary agree.
+   */
+  it("gives the same answer either side of the old boundary", () => {
+    expect(beforeShipmentEligibility(eligible({ ageHours: 47 }))).toBe(
+      beforeShipmentEligibility(eligible({ ageHours: 49 })),
+    );
   });
 });
 
@@ -481,11 +780,18 @@ describe("an urgent conversation is ordered above the ordinary stream", () => {
   });
 
   /**
-   * URGENCY AND THE TAG ARE SEPARATE, and this is the table that proves it.
+   * ------------------------------------------------------------------------
+   * URGENCY NOW FOLLOWS THE CASE AREA, AND THIS IS THE TABLE THAT PROVES IT
+   * ------------------------------------------------------------------------
+   * THIS TABLE ASSERTED THE OPPOSITE FOR THE BOTTOM FOUR ROWS. Every row here
+   * is an unanswered customer on a real, unshipped order, and that used to be
+   * enough on its own: the window was open, so a delivery chase and a pre-sales
+   * question wore the same red badge as a cancellation.
    *
-   * Every row here is an unanswered customer on a real, UNSHIPPED order, so
-   * every row is URGENT — the window is open whatever they asked about. Only
-   * the ones actually asking to change or stop the order are RE-TAGGED.
+   * CST found that on the Amazon tab — a row tagged "Admin related issues"
+   * showing URGENT — and the rule is now "it needs to be order-before-shipping
+   * category AND it's not replied yet". So urgency and the tag agree by
+   * construction: both follow the case area.
    *
    * Run through `listConversations` rather than the pure function, so these
    * assert the vocabulary the system actually uses rather than a boolean a
@@ -495,32 +801,36 @@ describe("an urgent conversation is ordered above the ordinary stream", () => {
     ["Please cancel my order.", true],
     ["Stop dispatch, I ordered the wrong size.", true],
     ["Can I change the delivery address before it goes out?", true],
-    // Ordinary traffic on an unshipped order: urgent, but NOT an order change.
+    // Ordinary traffic on an unshipped order. Still waiting, still ranked by
+    // the SLA timer and the priority ribbon — but no longer URGENT.
     ["Where is my parcel?", false],
     ["Is this light dimmable?", false],
     ["The shade arrived cracked.", false],
     ["Can I have a VAT invoice?", false],
-  ])("is urgent for %j, and re-tags only when it is an order change (%s)", async (latest, retagged) => {
+  ])("is urgent for %j only when it is the before-shipping case area (%s)", async (latest, urgent) => {
     const { client } = fake([[]], [[candidate({ id: "c1", inbound_texts: [latest], latest_inbound_text: latest })]]);
     const page = await listConversations(client, {
       marketplace: "amazon",
       source: fakeSource(false),
       now: NOW,
     });
-    // The window is open regardless of the subject.
-    expect(page.items[0]!.urgent, latest).toBe(true);
-    expect(page.items[0]!.category === BEFORE_SHIPPING_CATEGORY, latest).toBe(retagged);
+    // A row the rule refuses rejoins the ordinary stream, so it may not be
+    // first -- or present at all when the page is empty.
+    const item = page.items.find((candidate) => candidate.id === "c1") ?? null;
+    expect(item?.urgent ?? false, latest).toBe(urgent);
+    expect(page.urgentCount, latest).toBe(urgent ? 1 : 0);
   });
 
   /**
-   * THE AMAZON OVER-TAGGING DEFECT, PINNED.
+   * THE AMAZON OVER-TAGGING DEFECT, PINNED — AND NOW THE OVER-FLAGGING ONE TOO.
    *
    * A pre-sales question on an unshipped order must not be filed as an order
-   * change just because the parcel has not left the warehouse. It stays urgent
-   * — the customer is waiting and we can still help — and keeps the category
-   * the phrase table read.
+   * change just because the parcel has not left the warehouse. It keeps the
+   * category the phrase table read, and it is no longer URGENT either: that is
+   * the second half CST added, having found exactly this row wearing the badge
+   * on the Amazon tab.
    */
-  it("does not file a pre-sales question as an order change", async () => {
+  it("neither files nor flags a pre-sales question as an order change", async () => {
     const latest =
       "This link shows white ceiling fittings. Is there an option for a dome cone the same colour as the shade?";
     const { client } = fake([[]], [[candidate({ id: "c1", inbound_texts: [latest], latest_inbound_text: latest })]]);
@@ -529,15 +839,17 @@ describe("an urgent conversation is ordered above the ordinary stream", () => {
       source: fakeSource(false),
       now: NOW,
     });
-    expect(page.items[0]!.urgent).toBe(true);
-    expect(page.items[0]!.category).not.toBe(BEFORE_SHIPPING_CATEGORY);
+    const item = page.items.find((candidate) => candidate.id === "c1") ?? null;
+    expect(item?.urgent ?? false).toBe(false);
+    expect(item?.category).not.toBe(BEFORE_SHIPPING_CATEGORY);
+    expect(page.urgentCount).toBe(0);
   });
 
   /**
    * OLD TEXT CANNOT DECIDE THE TAG. The thread's history contains a
-   * cancellation; the newest message does not. Only the newest is read, so the
-   * conversation is urgent on the open window but is not filed as an order
-   * change on a request that is no longer being made.
+   * cancellation; the newest message does not — and the classifier reads the
+   * thread in order, so the conversation is not filed as an order change on a
+   * request that is no longer being made, and is therefore not urgent either.
    */
   it("reads the newest message only when deciding the tag", async () => {
     const { client } = fake(
@@ -557,7 +869,8 @@ describe("an urgent conversation is ordered above the ordinary stream", () => {
       source: fakeSource(false),
       now: NOW,
     });
-    expect(page.items[0]!.category).not.toBe(BEFORE_SHIPPING_CATEGORY);
+    const item = page.items.find((candidate) => candidate.id === "c1") ?? null;
+    expect(item?.category).not.toBe(BEFORE_SHIPPING_CATEGORY);
   });
 
   /** REQUIRED CASE: a dispatched order is not lifted. */
@@ -573,11 +886,51 @@ describe("an urgent conversation is ordered above the ordinary stream", () => {
   });
 
   /**
-   * NO SOURCE, NO FLAG. An unknown dispatch state is never read as "not
-   * dispatched" — the inbox still loads and nothing is urgent.
+   * ------------------------------------------------------------------------
+   * "NO SOURCE, NO FLAG" NO LONGER HOLDS FOR A BEFORE-SHIPPING CASE AREA
+   * ------------------------------------------------------------------------
+   * This asserted the opposite until CST's rule arrived, and the inversion is
+   * deliberate: "if order details are available and it is not dispatched it is
+   * order-before-shipping; if it is dispatched it is not urgent." The order
+   * details are a VETO, so their absence cannot be the thing that suppresses a
+   * waiting customer — it only means no claim is made about the parcel, which
+   * is exactly what `unanswered_before_shipping` says and why its badge borrows
+   * none of `URGENT_DESCRIPTION`'s confidence.
+   *
+   * THE COST, STATED: a source outage now lights up every unanswered
+   * before-shipping thread rather than none of them. That is the safer
+   * direction — a customer nobody answered is real whether or not the source is
+   * reachable — but it is a change in blast radius, not just in wording.
+   *
+   * The dispatch state still decides everything it can decide. See the test
+   * above: a candidate whose order IS readable and HAS shipped is not lifted.
    */
-  it("flags nothing when the dispatch state cannot be read", async () => {
+  it("still flags a before-shipping query when the dispatch state cannot be read", async () => {
     const { client } = fake([[row({ id: "ordinary" })]], [[candidate({ id: "unknown" })]]);
+    const page = await listConversations(client, {
+      marketplace: "ebay",
+      source: null,
+      now: NOW,
+    });
+    expect(page.items.map((item) => item.id)).toEqual(["unknown", "ordinary"]);
+    expect(page.items[0]!.urgent).toBe(true);
+    // And it says the order was never checked, rather than implying it was.
+    expect(page.items[0]!.beforeShipmentOutcome).toBe("unanswered_before_shipping");
+    expect(page.urgentCount).toBe(1);
+  });
+
+  /**
+   * The other half of the same guarantee, and the one that matters more: a
+   * conversation whose case area is NOT before-shipping still gets nothing
+   * without a source, because that path is the pure order-state rule and an
+   * unknown dispatch state must never read as "not dispatched".
+   */
+  it("still flags nothing without a source when it is not a before-shipping case", async () => {
+    const latest = "Where is my parcel?";
+    const { client } = fake(
+      [[row({ id: "ordinary" })]],
+      [[candidate({ id: "unknown", inbound_texts: [latest], latest_inbound_text: latest })]],
+    );
     const page = await listConversations(client, {
       marketplace: "ebay",
       source: null,
@@ -599,8 +952,56 @@ describe("an urgent conversation is ordered above the ordinary stream", () => {
     });
     const sweep = calls.find((call) => isSweep(call.text))!;
     expect(sweep.text).not.toContain("OFFSET");
-    expect(sweep.values).toContain(BEFORE_SHIPMENT_RECENCY_HOURS);
     expect(sweep.values).not.toContain(40);
+  });
+
+  /**
+   * THE WINDOW IS NO LONGER A PREDICATE IN THE SWEEP, and this pins that.
+   *
+   * It used to be passed as a parameter and compared against the newest inbound
+   * instant, so an unanswered before-shipping query stopped being a CANDIDATE
+   * after 48 hours — it could not be ranked because it was never transferred.
+   * The constant still exists and still bounds the ORDER-STATE path inside
+   * `beforeShipmentEligibility`; it must not come back here.
+   */
+  it("no longer bounds the candidate set by age", async () => {
+    const { calls, client } = fake([[row()]]);
+    await listConversations(client, { marketplace: "ebay", source: fakeSource(false), now: NOW });
+    const sweep = calls.find((call) => isSweep(call.text))!;
+    expect(sweep.values).not.toContain(BEFORE_SHIPMENT_RECENCY_HOURS);
+    expect(sweep.text).not.toContain("make_interval");
+  });
+
+  /**
+   * THE CASE FROM THE INBOX, END TO END.
+   *
+   * eBay `piotr.woss-uk`: an order-change thread CST replied to, which the
+   * customer closed with "Great Thanks". It sat URGENT with the SLA 14 days
+   * overdue. Run through `listConversations` rather than the pure function, so
+   * this asserts what the list actually produces.
+   */
+  it("does not flag a thread the customer closed with a thank-you", async () => {
+    const { client } = fake(
+      [[row({ id: "ordinary" })]],
+      [
+        [
+          candidate({
+            id: "signed-off",
+            inbound_texts: ["Please cancel my order.", "Great Thanks"],
+            latest_inbound_text: "Great Thanks",
+            latest_outbound_text: "We understand you would like to keep the order as it is.",
+            ever_replied: true,
+          }),
+        ],
+      ],
+    );
+    const page = await listConversations(client, {
+      marketplace: "ebay",
+      source: fakeSource(false),
+      now: NOW,
+    });
+    expect(page.items.map((item) => item.id)).toEqual(["ordinary"]);
+    expect(page.urgentCount).toBe(0);
   });
 
   it("holds the urgent ids out of the ordinary stream, and serves the block once", async () => {

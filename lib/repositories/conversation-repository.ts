@@ -18,15 +18,21 @@ import {
   classifyConversationCategory,
   classifyMessageCategory,
   classifyMessageCategoryWithFallback,
+  isPleasantryOnly,
 } from "@/lib/knowledge/message-category";
 import {
   type PriorityReading,
   explainConversationPriority,
   explainMessagePriority,
 } from "@/lib/knowledge/message-priority";
+/*
+ * `BEFORE_SHIPMENT_MARKETPLACE` and `BEFORE_SHIPMENT_RECENCY_HOURS` were
+ * imported here and are no longer: this file passed both to the urgent sweep as
+ * query parameters, and neither predicate survives. The constants still exist —
+ * the response SLA is measured against the window — they are simply not this
+ * module's business any more.
+ */
 import {
-  BEFORE_SHIPMENT_MARKETPLACE,
-  BEFORE_SHIPMENT_RECENCY_HOURS,
   BEFORE_SHIPPING_CATEGORY,
   beforeShipmentEligibility,
   isBeforeShipmentUrgent,
@@ -353,7 +359,7 @@ SELECT c.id::text                  AS id,
        -- plainly non-numeric usernames. Every one was a guaranteed-miss round
        -- trip to the source that then reported no_matching_order as though the
        -- order had been checked and found absent.
-       ${orderRefExpression("$6")}  AS order_number,
+       ${orderRefExpression("$4")}  AS order_number,
        ${LATEST_INBOUND_INSTANT}   AS sla_starts_at,
        ${LATEST_INBOUND_INSTANT_SOURCE} AS sla_starts_at_source,
        ${LATEST_OUTBOUND_TEXT}     AS latest_outbound_text,
@@ -390,26 +396,40 @@ WHERE c.marketplace = $1
   -- Condition 1: a customer reply thread whose newest message is theirs...
   AND c.inbox_visibility = 'reply_inbox'
   AND ${LAST_DIRECTION} = 'inbound'
-  -- ...and, ON $5 ONLY, which nobody has replied to AT ALL. Stricter than the
-  -- line above: that one is also true of a thread we answered and the customer
-  -- came back on, which is a conversation in progress rather than an untouched
-  -- request. Every other marketplace keeps the behaviour it already had.
-  AND (
-    c.marketplace <> $5::text
-    OR NOT EXISTS (
-      SELECT 1
-      FROM cst_app.conversation_messages cm
-      WHERE cm.conversation_id = c.id AND cm.direction = 'outbound'
-    )
-  )
+  -- THE AMAZON "NEVER REPLIED AT ALL" RESTRICTION IS GONE FROM HERE TOO.
+  --
+  -- It excluded any Amazon thread containing an outbound message, on the
+  -- reasoning that a thread we answered is a conversation in progress rather
+  -- than an untouched request. beforeShipmentEligibility no longer applies that
+  -- test -- CST's rule is that a before-shipping case area stays urgent until
+  -- the message on screen is answered, and a thread we replied in a week ago
+  -- still has nobody answering the one the customer sent today.
+  --
+  -- LEAVING IT HERE WOULD BE THE WORST OF BOTH: the rule would admit those
+  -- threads and this query would never hand them over, so the two would
+  -- disagree silently and only on one marketplace. ever_replied is still
+  -- SELECTed, because the acknowledgement test needs it.
+  --
   -- Whether we already told them it went out or was stopped is decided in
   -- TypeScript, from the text selected above, because it has to be read through
   -- claimStatus: "your order has NOT been dispatched yet" is the commonest
   -- sentence in one of these threads and a SQL LIKE would read it backwards.
-  -- Recent enough to still be live work. Applied here as well as in
-  -- beforeShipmentEligibility so an ancient never-shipped, never-closed
-  -- thread is not even transferred, let alone ranked.
-  AND ${LATEST_INBOUND_INSTANT} >= now() - make_interval(hours => $4::int)
+  -- THE RECENCY WINDOW IS NO LONGER A PREDICATE HERE.
+  --
+  -- It used to compare LATEST_INBOUND_INSTANT against now() minus 48 hours, so
+  -- an unanswered before-shipping query stopped being a CANDIDATE two days after
+  -- the customer wrote -- it could not be ranked because it was never
+  -- transferred. CST's rule is that such a conversation stays urgent until
+  -- somebody replies, so the window cannot bound the candidate set any more.
+  --
+  -- THE WINDOW STILL BINDS THE ORDER-STATE PATH, in beforeShipmentEligibility,
+  -- which is the only place it was ever decided. A row that is too old for that
+  -- path and is not a before-shipping case area falls out there exactly as it
+  -- did before, and rejoins the ordinary stream in its date position.
+  --
+  -- WHAT BOUNDS THIS QUERY NOW is the LIMIT below, newest-first: the 500 most
+  -- recent unanswered reply-inbox threads. urgentScanCapped reports reaching it
+  -- rather than letting the list quietly under-report.
 ORDER BY c.last_source_ts DESC, c.id DESC
 LIMIT $3`;
 
@@ -1264,6 +1284,22 @@ async function applyBeforeShipmentRule(
       orderNumber === null ? null : (shipmentState.get(orderKeyOf({ orderNumber })) ?? null);
 
     const startedAt = item.slaStartsAt === null ? null : new Date(item.slaStartsAt);
+    /*
+     * THE CASE AREA THE ROW ALREADY CARRIES, read once and passed to both
+     * calls below. `toInboxItem` has already classified it through
+     * `categoryFor`, so this is the same value the inbox prints beside the row
+     * and the same one the category filter matches — not a second reading of
+     * the text that could drift from the first.
+     */
+    const beforeShippingCategory = item.category === BEFORE_SHIPPING_CATEGORY;
+    /*
+     * BOTH HALVES, COMPOSED HERE. The wording test reads the NEWEST inbound
+     * message only — never the thread — so an old "thanks" cannot close a live
+     * request, and `ever_replied` is what makes it closure rather than an
+     * opening pleasantry nobody has answered.
+     */
+    const customerAcknowledgedOnly =
+      row.ever_replied === true && isPleasantryOnly(row.latest_inbound_text ?? null);
     const outcome = beforeShipmentEligibility({
       marketplace: item.marketplace,
       // Read from the row rather than assumed false. The sweep already applies
@@ -1275,6 +1311,8 @@ async function applyBeforeShipmentRule(
       platformNotice: isPlatformNotice(item),
       staffClosedTheOrder: staffClosedTheOrder(row.latest_outbound_text ?? null),
       orderChangeIntent: asksToChangeTheOrder(row.latest_inbound_text ?? null),
+      beforeShippingCategory,
+      customerAcknowledgedOnly,
       ageHours:
         startedAt === null ? null : (now.getTime() - startedAt.getTime()) / MS_PER_HOUR,
       orderNumber,
@@ -1295,6 +1333,8 @@ async function applyBeforeShipmentRule(
       platformNotice: isPlatformNotice(item),
       staffClosedTheOrder: staffClosedTheOrder(row.latest_outbound_text ?? null),
       orderChangeIntent: asksToChangeTheOrder(row.latest_inbound_text ?? null),
+      beforeShippingCategory,
+      customerAcknowledgedOnly,
       ageHours:
         startedAt === null ? null : (now.getTime() - startedAt.getTime()) / MS_PER_HOUR,
       orderNumber,
@@ -1392,11 +1432,7 @@ export async function listConversations(
       options.marketplace,
       options.placement ?? null,
       URGENT_SCAN_LIMIT,
-      BEFORE_SHIPMENT_RECENCY_HOURS,
-      // Which marketplace carries the extra never-replied restriction. Passed
-      // rather than inlined so the query and the rule cannot disagree about it.
-      BEFORE_SHIPMENT_MARKETPLACE,
-      // $6: the marketplace whose counterparty_ref is a buyer username rather
+      // $4: the marketplace whose counterparty_ref is a buyer username rather
       // than an order number, so the fallback is skipped there.
       USERNAME_KEYED_MARKETPLACE,
     ],
@@ -1760,12 +1796,20 @@ export async function listAwaitingResponseByCategory(
     // purely to learn whether that marketplace has an older unanswered
     // conversation past its own window.
     //
-    // $3: the recency window, and only where the area is defined by it. NULL
-    // everywhere else — see LIST_AWAITING_RESPONSE.
+    // $3: the recency window. NULL — see LIST_AWAITING_RESPONSE — and now NULL
+    // on the before-shipping feed as well.
+    //
+    // THIS FEED AND THE INBOX FLAG MOVE TOGETHER, which is the whole reason the
+    // window was ever one shared constant. The inbox now keeps an unanswered
+    // before-shipping query urgent until somebody replies; a drawer that still
+    // dropped it at 48 hours would be the two surfaces disagreeing about what
+    // "before shipping" means, which is precisely what sharing the number was
+    // meant to prevent. Membership is still decided by the rule below — the
+    // `item.urgent` filter — not by an age.
     values: [
       [...marketplaces],
       limit + 1,
-      gate === "before_shipment" ? BEFORE_SHIPMENT_RECENCY_HOURS : null,
+      null,
       // $4: the marketplace whose counterparty_ref is a buyer username rather
       // than an order number, so the fallback is skipped there.
       USERNAME_KEYED_MARKETPLACE,
