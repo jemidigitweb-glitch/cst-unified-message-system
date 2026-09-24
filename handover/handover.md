@@ -1,4 +1,4 @@
-# CST Senior Developer Handover
+# CST  Handover
 
 **Date:** 2026-09-24
 **Branch:** `sync-reconcile-late-arrivals`
@@ -160,9 +160,10 @@ fix a leak in pool *count*. See the header of `lib/db/pools.ts`.
 | Draft revisions | migration 0004 | Append-only; no DELETE route |
 | Internal notes | migration 0012 | Guarded out of drafts, exports and automations |
 | Follow-up reminders | migration 0014 | Reminds a person; cannot contact a customer |
-| Post-dispatch automation | `lib/domain/automation/` | Renders to `test_mode` only; contacts nobody |
+| Post-dispatch automation | `lib/domain/automation/` | Renders to `test_mode` only; contacts nobody — **see §8** |
+| Category tagging | `lib/knowledge/message-category.ts` | Eleven case areas, deterministic, not persisted — **see §7** |
 | Response SLA | migration 0019 | Per-scope policy |
-| Performance dashboard | `app/performance/` | **Unauthenticated — see §9** |
+| Performance dashboard | `app/performance/` | **Unauthenticated — see §11** |
 | Conversation search, customer notes, unresolved feed, agent activity | various | — |
 
 ### Partially implemented
@@ -266,7 +267,292 @@ voltage because nobody had added `table_lamp` to the list.
 
 ---
 
-## 7. Database overview
+## 7. Category tagging flow
+
+**Eleven CST case areas, assigned deterministically at read time, stored
+nowhere.** This is the chip beside each conversation in the inbox, the inbox
+filter, and one input to the draft prompt.
+
+```
+MESSAGE_CATEGORIES (lib/knowledge/message-category.ts)
+  Delivery queries · Pre sales queries · Admin related issues
+  Order change, before shipping queries · Defective items · Damage queries
+  Wrong item sent messages · Parts missing queries · Wrong quantity sent issues
+  Wrong description issues · Return and refunds
+```
+
+### The pipeline
+
+```
+listConversations()  ← INBOUND_TEXTS already selected for this row
+        │
+        ▼
+categoryFor(row)  — four outcomes, in this order:
+  1. marketplace is bandq or temu       → null      (suppressed: stored text is
+                                                     known to carry non-customer
+                                                     content, so any fallback
+                                                     would turn noise into findings)
+  2. readable customer text              → classify, and WHATEVER IT RETURNS STANDS,
+                                           including null
+  3. inbound exists but every body empty → "Admin related issues"
+                                           (UNREADABLE_CONTENT_CATEGORY)
+  4. no inbound message at all           → null     (outbound-only threads)
+        │
+        ▼
+classifyConversationCategory(readable[])      ← per-message array, in order
+   (falls back to classifyMessageCategoryWithFallback for older projections)
+        │
+        ├── SIGNALS            hand-written phrase table, scored by match count
+        ├── corpusMatches()    730 rows / 7,825 phrases from eleven workbooks
+        ├── CST_EVIDENCE       ownership resolution — whose thing is broken
+        └── semanticsOf()      speech act, claim status, clause splitting
+        │
+        ▼
+  tie between two equally strong signals → null (uncategorised), never a coin toss
+        │
+        ▼
+CategoryTag  — renders NOTHING when null. An absent chip is the honest rendering
+               of "no category was established"; a grey "Uncategorised" chip
+               would spend a row's attention reporting nothing.
+```
+
+### Four properties that define this design
+
+**It is not a model call.** The classifier is a phrase table a reviewer can read
+and challenge. `lib/knowledge/message-category.ts` is pure — no network, no
+model, no database.
+
+**It is not persisted.** Classification runs on the read path of every
+conversation in the inbox. A phrase-table change therefore takes effect on the
+next request rather than needing a backfill, and there is no stored category
+that can go stale against the code that produced it.
+
+**A corpus match is a candidate, never a verdict.** `cst-corpus-match.ts` finds
+which of 7,825 phrases appear in a message and stops there. Three rules keep
+that from degenerating into a blind keyword vote:
+
+| Guard | Effect |
+| ----- | ------ |
+| `RuleRole` | Only `PRIMARY_ISSUE` rows may propose a category. "Please refund me" matches rows in six workbooks and is a reason to file under none of them |
+| Shared phrases | A phrase claimed by three or more categories decides nothing. It stays in the corpus so a reviewer can see that "not what I ordered" appears in four books — it just cannot vote. Measured from the corpus itself, so it stays true as the workbooks change |
+| The caller | `message-category.ts` checks each proposal against what the whole message says and resolves ownership before anything becomes a category |
+
+**The thread is read in order.** The per-message array is preferred over a
+concatenated column, because that is what stops a closing "found it, all sorted"
+costing a conversation the category its opening message earned — and what stops
+two unrelated sentences in two unrelated messages forming a phrase neither
+contains.
+
+### Where the category is consumed
+
+| Consumer | Use |
+| -------- | --- |
+| Inbox list | The chip (`components/category-tag.tsx`) and the category filter |
+| Before-shipment urgency | `ORDER_CHANGE_CATEGORY` is imported, not retyped, so the flag and the notification feed match on the same string |
+| Draft prompt | `categoryBlock()` emits it as **INTERNAL GUIDANCE**, explicitly not a verified fact — *"where it disagrees with what the customer plainly wrote, the customer's own words win"*, and the model is told never to mention it |
+| Draft validation | `categoryCoverage()` re-reads it to check the reply addressed what was asked |
+
+### Related but separate — do not merge these
+
+- **`classifyCaseType`** names the request behind a conversation the rule base
+  could *not* ground a reply for, and joins `cst_app.conversation_rule_analysis`
+  and the No Rule list. It has its own label vocabulary. Reusing one for the
+  other would either break stored, compared-against data or make the two tabs
+  call the same thing by different names.
+- **`explainConversationPriority`** answers "how soon", not "what about". It is
+  deliberately a second, independent reading of the same column and shares no
+  code with the category.
+
+### Corpus regeneration
+
+`lib/knowledge/cst-category-corpus.ts` is **generated — do not edit by hand**:
+
+```bash
+node scripts/build-category-corpus.mjs --write
+```
+
+It is committed rather than parsed at runtime because classification is on the
+read path; reading eleven spreadsheets per message would not be cheap,
+deterministic or local. The workbooks remain the authority and this is their
+reviewed, reproducible projection.
+
+### Current state — FROZEN
+
+The category rule migration is **paused after phase 0** and the classifier is
+frozen pending a decision to resume. `tmp/category-baseline-*.json` is the
+baseline that work depends on; **do not delete `tmp/`**. Unmerged branches
+`phase-1-category-storage`, `store-category-rules`,
+`prepare-category-rules-for-the-database` and
+`classify-from-the-whole-cst-corpus` belong to it.
+
+Coverage as measured 2026-09-24 — 1,032 tests across six files, all passing:
+
+```
+tests/knowledge/category-golden-set.test.ts   tests/knowledge/message-category.test.ts
+tests/knowledge/category-regression.test.ts   tests/knowledge/cst-category-corpus.test.ts
+tests/knowledge/category-ownership.test.ts    tests/guards/category-tag.test.ts
+```
+
+Background on why the fallback is what it is:
+`documentation/2026-09-03-category-classification-audit.md`.
+
+---
+
+## 8. Dispatch automation flow
+
+**It schedules, rechecks and renders. It contacts nobody.** The post-dispatch
+automation is the only scheduled writer in the system besides the sync. It is
+deterministic: no model runs, no corpus is retrieved, nothing is drafted or
+reviewed. The CST draft workflow is a different feature and is untouched by it.
+
+### Lifecycle
+
+```
+AUTOMATION_ITEM_STATUSES  (lib/domain/automation/automation-types.ts)
+  scheduled   discovered, waiting for scheduled_at
+  sent        processed successfully — in this phase ALWAYS in test mode
+  skipped     the recheck found the order no longer qualified
+  failed      processing could not complete
+  cancelled   an operator stopped it before processing
+```
+
+There is deliberately no `sending`, no `drafting`, no `pending_review` and no
+`reviewed`. `PROCESSED_MODES` has exactly one member, `test_mode` — *"a second
+would mean a transport exists."*
+
+### The run
+
+```
+runPostDispatchAutomation({ app, source, scanLimit≤1000, draftLimit≤200 })
+│
+├─ settings row missing?        → refuse. A missing row is NOT "use the defaults";
+│                                 it means 0011 was never seeded, and inventing a
+│                                 not_before here is the backfill this design exists
+│                                 to prevent
+├─ scanRefusal(settings)        → one refusal covers BOTH halves. Switching the
+│                                 automation off stops scheduled records too —
+│                                 draining a queue after the switch was thrown is
+│                                 the opposite of what "off" means
+├─ template missing/unapproved/inactive → refuse
+│
+├─ SCAN   findDispatchedShipments(source, { notBefore, subSourceIds, limit })
+│   └─ per shipment:
+│        eligibilityForPostDispatch()  ← SQL floor and scope re-applied IN CODE.
+│                                        Two implementations agreeing is what makes
+│                                        the query an optimisation, not the policy
+│        itemExistsForShipment()       ← app asks first, so a repeated scan writes
+│                                        nothing; uq_automation_items_shipment
+│                                        decides anyway, so two concurrent scans
+│                                        cannot both insert. Status-blind
+│        insertScheduledItem()         ← stamps templateId + templateVersion NOW,
+│                                        so changing the selection tomorrow does
+│                                        not rewrite today's provenance
+│
+└─ PROCESS  processDueItems() — oldest first
+     SELECT … FOR UPDATE SKIP LOCKED, every outcome written in the SAME
+     transaction: a second run cannot take a record this one holds, and a crash
+     mid-run leaves rows `scheduled` rather than half-processed
+        │
+        ├─ FRESH source read + eligibility recheck  → skipped
+        ├─ renderTemplate()                         → failed on any unresolved hole
+        └─ markItemProcessed(testMode)              → sent
+```
+
+### Why eligibility runs twice
+
+Once at scan time so an ineligible shipment never becomes a record, and again
+immediately before processing **on a fresh source read** — because the delay
+between those two moments is exactly when an order gets cancelled, refunded or
+returned, and a message rendered from the scan's snapshot would be a cheerful
+dispatch update about a parcel the customer has already sent back.
+
+Status values are the source's own, confirmed live rather than assumed:
+
+| Column | Values |
+| ------ | ------ |
+| `shipment.status` | Completed (1,005,997) · New (141,623) · Cancelled (7,045) |
+| `orders.status` | Completed (1,079,963) · Refunded (18,887) · Cancelled (10,726) · Deleted (879) · Inprogress (699) · Hold (29) · New (8) |
+
+"Dispatched" means `shipment.status = 'Completed'` **and nothing else** — `New`
+is a shipment that has not gone out. Comparison is case-insensitive because the
+source's capitalisation is a display choice, not a contract.
+
+Returns and cancellations are authoritative and join cleanly on (order number,
+storefront): `ebay_returns` matched all 42,185 rows, `ebay_order_cancellations`
+all 4,551, `amazon_returns` 13,085 of 15,636. **A return row means "returned"
+whatever state it is in** — 37,814 eBay rows carry a null state, and the safe
+reading of a return whose outcome is unrecorded is to say nothing.
+
+### Template rendering
+
+Substitution only — no expression language, no conditionals, no fallback text,
+no defaults. Every `{{placeholder}}` is replaced by a value copied from a source
+column, **or the render fails**:
+
+> "Your order  has been dispatched" and "Your order null has been dispatched"
+> are both messages this business would not send, and both would sail through a
+> render that treated an absent value as an empty string.
+
+A literal `{{courier}}` reaching a customer is worse than either, so anything
+unresolved fails, not just `requiredVariables`. The customer's name is available
+because the message is addressed to them; their email, address and phone are
+not, because a dispatch update needs none.
+
+### Triggers
+
+| Entry point | Cadence |
+| ----------- | ------- |
+| `GET /api/cron/automation` | Fails closed without `CRON_SECRET`; asserts app DB + read-only source first. **No `vercel.json` cron entry exists for it** |
+| `npm run worker:automation` | Long-running. Sleeps until the soonest `scheduled_at` rather than polling |
+| `npm run worker:automation:once` | One pass, exit |
+
+The worker is woken by **two mechanisms, deliberately**: `pg_notify('cst_automation_wake', …)`
+fired inside the writing transaction (migration 0015), so a rolled-back insert
+wakes nobody — plus one small indexed `SELECT` every 15 seconds against
+`ix_automation_items_due`. *"The second is the guarantee; LISTEN is the speed."*
+Nothing is processed early because of the recheck.
+
+### Safety, enforced not asserted
+
+| Level | Mechanism |
+| ----- | --------- |
+| Database | `ck_automation_items_sent_requires_test_mode` — a row cannot reach `sent` unless it is a test-mode row |
+| Database | `uq_automation_items_shipment` — one record per shipment |
+| Domain | `PROCESSED_MODES` has one member |
+| Build | `tests/guards/automation-no-transport.test.ts` — no marketplace client, mail host, credential, outbound URL or sender anywhere beneath the runner |
+
+`no-send-capability.test.ts` grants this automation — and only it — the literal
+word `sent`, by exact path. The prohibition is on a **capability**, not a
+spelling, and the database refuses a non-test-mode `sent` row regardless.
+
+Migration 0013 exists because 0011's original cancel CHECK was a biconditional
+(`cancelled_at` set **iff** `status = 'cancelled'`), which forbade Undo Cancel:
+restoring sets `status` back to `scheduled` while deliberately keeping
+`cancelled_at` as history. 0013 relaxes it to one direction only.
+
+### Current state
+
+Working and running in **test mode only**. Every processed record is a rendered
+string in `cst_app`; nothing has ever been transmitted. Turning that into real
+customer contact means **adding the transport it was deliberately built
+without** — that is new capability requiring business approval, not a
+configuration change.
+
+Coverage measured 2026-09-24 — 145 tests across five files, all passing:
+
+```
+tests/automation/post-dispatch-scan.test.ts        tests/guards/automation-undo-cancel.test.ts
+tests/automation/post-dispatch-processing.test.ts  tests/guards/automation-worker.test.ts
+tests/guards/automation-no-transport.test.ts
+```
+
+Further reading: `documentation/2026-09-21-post-dispatch-automation-overview.md`,
+`workflows/2026-09-21-post-dispatch-workflow.md`,
+`sql/2026-09-21-post-dispatch-source-verification.sql`.
+
+---
+
+## 9. Database overview
 
 **Two engines, four connections.** `SOURCE_DB` (PostgreSQL, read-only),
 `APP_DB` (PostgreSQL, writes confined to `cst_app`), `KNOWLEDGE_DB` (PostgreSQL,
@@ -295,7 +581,7 @@ Three schema decisions that must not be "simplified":
 
 ---
 
-## 8. Testing status
+## 10. Testing status
 
 Measured 2026-09-24 on this checkout:
 
@@ -333,7 +619,7 @@ analyse. It does not affect the result.
 
 ---
 
-## 9. Known limitations
+## 11. Known limitations
 
 1. **No authentication anywhere.** `/performance` names individual staff and
    reports numbers about their work. Access control was deliberately lifted for
@@ -342,13 +628,13 @@ analyse. It does not affect the result.
    one-line switch and its callers already handle refusal.
 2. **Source timezone unconfirmed.** Every displayed timestamp is a naive value
    of unknown zone. Needs the ingestion owner, not code.
-3. **Schema state per environment unknowable** from the repo (§7).
+3. **Schema state per environment unknowable** from the repo (§9).
 4. **Production ingestion cadence.** `vercel.json` runs `/api/cron/sync` once a
    day at 08:00, bounded to 3 pages × 300 rows per feed. An unmerged
    `sync-every-five-minutes` branch exists.
 5. **`/api/cron/sync` fails closed** when `CRON_SECRET` is unset — correct, but
    a missing variable looks like an outage.
-6. **SOT coverage is thin and `synced_at` is discarded** (§6, §8).
+6. **SOT coverage is thin and `synced_at` is discarded** (§6, §10).
 7. **`KNOWLEDGE_DB` / `cst_rules` are not on the draft path.** Whether the
    database snapshot is current, authoritative or abandoned is unverified.
 8. **`.env.example` drift** — it omits `DB_ORDER_*` and `CRON_SECRET`, so a
@@ -357,7 +643,7 @@ analyse. It does not affect the result.
 
 ---
 
-## 10. Recommended next steps
+## 12. Recommended next steps
 
 **Read in this order.** The header comments are the most reliable documentation
 in this repository — they record measured evidence and, repeatedly, the exact
@@ -372,14 +658,14 @@ bug a piece of code exists to prevent. Read the header before editing the body.
 
 **Then, before writing code:**
 
-1. **Confirm schema state** per environment (§7). Every plan depends on it.
+1. **Confirm schema state** per environment (§9). Every plan depends on it.
 2. **Confirm the rule corpus is reachable in the deployed build.** `Knowledge-
    source/` is gitignored while `.vercelignore` re-includes `*.xlsx`. A Vercel
    build from git has no workbooks, and `coverageFor()` would then refuse every
    draft — on the OpenAI path too, because that gate reads local files and never
    consults the vector store. **Verify this first; it decides whether the AI
    feature is live or dark in production.**
-3. **Ask the ingestion owner the timezone question** (§9.2). One answer unblocks
+3. **Ask the ingestion owner the timezone question** (§11.2). One answer unblocks
    a permanent fix.
 
 **Highest-value work, in dependency order:**
@@ -389,7 +675,7 @@ bug a piece of code exists to prevent. Read the header before editing the body.
 | 1 | Sweep the SOT denylist against the live 6-tab schema. It was validated against 413 keys on a 3-tab schema; the catalogue is now 1,824 SKUs across 6 tabs, and the denylist fails open | Low — test only |
 | 2 | Surface `synced_at` (already fetched, never used) | Low |
 | 3 | Typed empty-reason from the SOT resolver, so a reply can say "we don't publish that" rather than promising to check | Low-Medium |
-| 4 | Authentication, closing §9.1 and giving every write a real actor | Medium |
+| 4 | Authentication, closing §11.1 and giving every write a real actor | Medium |
 | 5 | Ground `ungroundedClaims` against *named* facts rather than a concatenated blob of all fact names and values | Medium |
 
 **House rules to preserve:**
