@@ -8,7 +8,10 @@ import {
   kpiByKey,
   readiness,
 } from "@/lib/domain/performance-metrics";
-import { performanceDashboardAccess } from "@/lib/domain/performance-dashboard-access";
+import {
+  type DashboardAccess,
+  performanceDashboardAccess,
+} from "@/lib/domain/performance-dashboard-access";
 import {
   AGENT_OPTIONS_SQL,
   COVERAGE_SQL,
@@ -20,9 +23,11 @@ import {
  * The dashboard's honesty rules, tested as rules rather than as rendering.
  *
  * Everything asserted here is a promise the page makes to somebody whose work
- * it reports: that an absent measurement is shown as absent, that a shared
- * login is never given a name, and that the whole surface stays shut until
- * somebody can be identified.
+ * it reports: that an absent measurement is shown as absent, and that a shared
+ * login is never given a name.
+ *
+ * The promise that the surface stays shut until somebody can be identified is
+ * no longer among them — see the access-control block below.
  */
 
 describe("access control", () => {
@@ -34,15 +39,19 @@ describe("access control", () => {
   const setEnv = (value: string) => vi.stubEnv("NODE_ENV", value);
 
   /**
-   * The single most important test in this file. The application has no
-   * session, no login and zero user records; this page names ten members of
-   * staff and counts their work.
+   * THIS TEST ASSERTED THE OPPOSITE UNTIL THE DASHBOARD WAS OPENED FOR AN
+   * INTERNAL DEMONSTRATION, and the inversion is the point of the comment.
+   *
+   * Nothing about the exposure changed when it opened. The application still
+   * has no session, no login and zero rows in `cst_app.app_users`, and this
+   * page still names members of staff and counts their work. What changed is
+   * that the deployment now serves it to whoever has the URL, and limiting
+   * that is a platform-edge concern (Vercel Deployment Protection) rather than
+   * something this module does.
    */
-  it("is closed in production", () => {
+  it("is open in production", () => {
     setEnv("production");
-    const access = performanceDashboardAccess();
-    expect(access.allowed).toBe(false);
-    expect(access.allowed === false && access.reason).toMatch(/authenticated access/i);
+    expect(performanceDashboardAccess().allowed).toBe(true);
   });
 
   it("is open in development", () => {
@@ -56,20 +65,37 @@ describe("access control", () => {
   });
 
   /**
-   * No escape hatch. A flag that opens this in production is a thing somebody
-   * sets in a hurry, so there must not be one to set.
+   * Still no escape hatch, now in the other direction. The gate consults no
+   * variable at all, so neither opening nor closing this can happen by a value
+   * somebody sets in a hurry — it takes an edit to the module, which is a thing
+   * that shows up in a diff and gets read.
    */
-  it("cannot be opened in production by any environment variable", () => {
-    setEnv("production");
-    for (const name of [
-      "PERFORMANCE_DASHBOARD_ENABLED",
-      "ENABLE_PERFORMANCE_DASHBOARD",
-      "DASHBOARD_ENABLED",
-    ]) {
-      process.env[name] = "true";
-      expect(performanceDashboardAccess().allowed).toBe(false);
-      delete process.env[name];
+  it("does not consult any environment variable", () => {
+    for (const environment of ["production", "development", "test"]) {
+      setEnv(environment);
+      for (const name of [
+        "PERFORMANCE_DASHBOARD_ENABLED",
+        "ENABLE_PERFORMANCE_DASHBOARD",
+        "DASHBOARD_ENABLED",
+      ]) {
+        for (const value of ["true", "false", "0"]) {
+          process.env[name] = value;
+          expect(performanceDashboardAccess().allowed).toBe(true);
+        }
+        delete process.env[name];
+      }
     }
+  });
+
+  /**
+   * The refusal branch is kept in the type even though nothing returns it, so
+   * that closing this again is a returned value rather than a rewrite of three
+   * call sites. Asserted here so a later tidy-up that narrows `DashboardAccess`
+   * to `{ allowed: true }` fails a test instead of silently removing the seam.
+   */
+  it("still models a refusal, so it can be closed in one edit", () => {
+    const refusal: DashboardAccess = { allowed: false, reason: "closed" };
+    expect(refusal.allowed === false && refusal.reason).toBe("closed");
   });
 });
 

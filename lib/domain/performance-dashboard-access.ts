@@ -2,50 +2,56 @@
  * Whether the Customer Service Insights dashboard may be served at all.
  *
  * ------------------------------------------------------------------------
- * IT IS CLOSED IN PRODUCTION, AND THAT IS NOT A CONFIGURATION CHOICE
+ * IT IS CURRENTLY OPEN EVERYWHERE, FOR AN INTERNAL DEMONSTRATION
  * ------------------------------------------------------------------------
- * This dashboard names individual members of staff and reports numbers about
- * their work. Every other screen in this application shows customer messages to
- * whoever opens it, which is already more than it should — but a per-agent
- * productivity report is a different kind of exposure, and the application has
- * no authentication of any kind: 26 API routes, none of them checking a user,
- * `cst_app.app_users` holding zero rows, and no session anywhere.
+ * This module used to refuse in production. That refusal was lifted so the
+ * dashboard could be shown from the Vercel deployment, and the consequence is
+ * worth writing down rather than leaving to be discovered:
  *
- * So the gate is not "is a flag set". It is "does a deployed environment exist
- * that can identify who is asking", and today the answer is no. There is
- * deliberately NO environment variable that opens this in production, because a
- * variable is a thing somebody sets in a hurry.
+ *   This page names individual members of staff and reports numbers about
+ *   their work, and the application still has no authentication of any kind —
+ *   no session, no login, no middleware, and zero rows in `cst_app.app_users`.
+ *   Anyone holding the deployment URL can read it. NOTHING IN THIS REPOSITORY
+ *   LIMITS THAT. If the demo needs limiting, it is limited at the platform
+ *   edge — Vercel Deployment Protection — and not here.
  *
  * ------------------------------------------------------------------------
- * WHAT REPLACES THIS
+ * WHAT SHOULD REPLACE THIS, AND HOW TO CLOSE IT AGAIN
  * ------------------------------------------------------------------------
- * When `verifySession()` exists — a real session, read close to the data, as
- * `node_modules/next/dist/docs/01-app/02-guides/authentication.md` describes —
- * this module's body becomes that check and the production refusal goes away.
- * The call sites do not change: the page and every route already ask this one
- * question, so the whole surface opens and closes in one edit.
+ * The call sites did not change when this opened and will not change when it
+ * closes. The page, the API route and the navigation link all ask this one
+ * question, so the whole surface moves together in one edit to the body below.
+ * That is the reason the refusal branch is kept in the type rather than
+ * deleted: closing this is a returned value, not a rewrite.
+ *
+ * The intended end state is not the old `NODE_ENV` refusal — that was a stand-in
+ * for a check that did not exist yet — but a real one: `verifySession()` read
+ * close to the data, as
+ * `node_modules/next/dist/docs/01-app/02-guides/authentication.md` describes,
+ * admitting `cst_app.app_users.cst_role = 'admin'`. The design is recorded in
+ * `handover/2026-09-22-internal-notes-handover.md`: authenticate against
+ * `issue_tracking.management_users`, which `app_users.management_user_id` was
+ * built to reference.
+ *
+ * ------------------------------------------------------------------------
+ * A REFUSAL IS STILL 404, NOT 403
+ * ------------------------------------------------------------------------
+ * Unchanged, and still true of whatever check replaces this. A 403 confirms the
+ * address is real and worth trying again later; there is nothing to gain from
+ * telling a refused caller that a staff performance report lives here. Callers
+ * render `notFound()` and routes return 404. The reason below is for the
+ * developer reading logs, never for the response body.
  *
  * ------------------------------------------------------------------------
  * WHY IT LIVES IN `lib/domain` AND NOT `lib/config`
  * ------------------------------------------------------------------------
- * It sat beside `env.ts` at first, which looked tidy and was wrong: a guard in
- * `tests/guards/api-surface.test.ts` forbids any component importing
+ * A guard in `tests/guards/api-surface.test.ts` forbids any component importing
  * `@/lib/config/`, because that directory holds database credentials and a
  * browser bundle must never reach it. The page has to ask this question before
  * it renders, so the question belongs where a page may look.
  *
- * It is also simply not configuration. It reads no credential and no setting —
- * it is a policy decision about who may be shown named staff activity, which is
- * domain logic, and it is pure.
- *
- * ------------------------------------------------------------------------
- * IT ANSWERS 404, NOT 403
- * ------------------------------------------------------------------------
- * A 403 confirms the address is real and worth trying again later. There is
- * nothing to gain from telling an unauthenticated caller that a staff
- * performance report exists here, so callers render `notFound()` and routes
- * return 404. The reason below is for the developer reading logs, never for the
- * response body.
+ * It is also not configuration. It reads no credential and no setting — it is a
+ * policy decision about who may be shown named staff activity, and it is pure.
  */
 
 export type DashboardAccess =
@@ -53,20 +59,17 @@ export type DashboardAccess =
   | { readonly allowed: false; readonly reason: string };
 
 /**
- * `NODE_ENV === "production"` covers every deployment, including Vercel
- * previews, which build as production. That is intended: a preview URL is as
- * reachable as a production one.
+ * Open in every environment, including production.
+ *
+ * This deliberately consults nothing — not `NODE_ENV`, not a flag, not a
+ * variable. Opening and closing this dashboard is an edit to this function, so
+ * it is a thing that appears in a diff and gets read, rather than a value
+ * somebody sets in a hurry in a dashboard somewhere.
+ *
+ * Returning the `DashboardAccess` union rather than a bare `true` is what keeps
+ * that edit to one line: the callers already handle a refusal.
  */
 export function performanceDashboardAccess(): DashboardAccess {
-  if (process.env.NODE_ENV === "production") {
-    return {
-      allowed: false,
-      reason:
-        "The performance dashboard is closed in every deployed environment until " +
-        "authenticated access exists. It reports named staff activity and this " +
-        "application has no session, no login and no user records.",
-    };
-  }
   return { allowed: true };
 }
 

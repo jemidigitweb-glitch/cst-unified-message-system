@@ -26,10 +26,14 @@ import { breakdownOf, resolutionSupport } from "@/lib/domain/unresolved-cases";
 /**
  * GET /api/performance/summary — the Customer Service Insights dashboard.
  *
- * CLOSED IN EVERY DEPLOYED ENVIRONMENT. The first thing this does is ask
- * `performanceDashboardAccess()`, and a refusal answers 404 with no body worth
- * reading — see that module for why it is 404 rather than 403, and what
- * replaces it when authentication exists.
+ * THE ACCESS CHECK IS THE FIRST THING THIS DOES, and a refusal answers 404 with
+ * no body worth reading — see `performanceDashboardAccess()` for why it is 404
+ * rather than 403, and what replaces it when authentication exists.
+ *
+ * That check currently admits every caller, including in production, for an
+ * internal demonstration. This route therefore serves named per-agent figures
+ * to anyone who can reach the deployment. The check is kept rather than removed
+ * precisely so that closing it again is one edit in one module.
  *
  * READS POSTGRESQL ONLY. No MySQL client is imported here and none could be
  * usefully added: everything this serves was imported into `cst_app` first and

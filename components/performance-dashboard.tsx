@@ -436,10 +436,15 @@ function Filters({
         </label>
       </div>
 
-      {/* One line, not a wall. The reasons live in the limitations section. */}
+      {/*
+        One line, not a wall. This used to end "see limitations below" and point
+        at the `Limitations` panel; that panel is commented out at the bottom of
+        this file for the demonstration, so the pointer is dropped rather than
+        left aimed at nothing. Restore both together.
+      */}
       {unavailable.length > 0 ? (
         <p className="border-t border-black/5 pt-3 text-xs opacity-60 dark:border-white/10">
-          Not available: {unavailable.map((f) => f.label).join(" · ")} — see limitations below.
+          Not available: {unavailable.map((f) => f.label).join(" · ")}
         </p>
       ) : null}
     </div>
@@ -641,7 +646,18 @@ export function PerformanceDashboard() {
         </p>
       </section>
 
-      <Limitations summary={summary} />
+      {/*
+        HIDDEN FOR THE DEMONSTRATION, NOT DELETED.
+
+        `Limitations` renders every unresolved dependency behind a collapsed
+        `<details>`. It is commented out rather than removed so it comes back by
+        deleting four lines, and so the reasons it carries are not quietly lost:
+        six KPIs still cannot be computed, and the panel is where the page says
+        so in full. The one-line "Not available:" summary above the filters is
+        left in place, so the page still names what is missing — it just no
+        longer offers the long explanation underneath.
+      */}
+      {/* <Limitations summary={summary} /> */}
     </main>
   );
 }
