@@ -359,9 +359,27 @@ export function Workspace() {
    * one conversation can never be sent with another's draft request.
    */
   const [selectedOrderNumber, setSelectedOrderNumber] = useState<string | null>(null);
-  useEffect(() => {
+  /**
+   * Cleared DURING RENDER, not in an effect, and here that is a correctness
+   * fix rather than a tidy-up.
+   *
+   * The comment above states the guarantee: a choice made on one conversation
+   * must never be sent with another's draft request. An effect cannot give that
+   * guarantee, because it runs AFTER the commit — between selecting a new
+   * conversation and the effect firing there is a painted frame in which the
+   * new `selectedId` is paired with the previous conversation's
+   * `selectedOrderNumber`, and a generate click landing in that frame would
+   * send it. Adjusting state during render closes the window: React discards
+   * the render and redoes it before anything is shown or can be clicked.
+   *
+   * React's documented pattern for "reset state when a prop changes"; the
+   * previous id is tracked in state purely so the reset fires once per change.
+   */
+  const [orderSelectionFor, setOrderSelectionFor] = useState<string | null>(null);
+  if (orderSelectionFor !== selectedId) {
+    setOrderSelectionFor(selectedId);
     setSelectedOrderNumber(null);
-  }, [selectedId]);
+  }
   /**
    * The open conversation's internal notes, held HERE and rendered twice.
    *

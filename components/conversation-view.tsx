@@ -210,9 +210,27 @@ export function ConversationView({
     if (node && detail) node.scrollTop = node.scrollHeight;
   }, [detail]);
 
-  useEffect(() => {
-    if (detail) setWorkflowState(detail.conversation.workflowState);
-  }, [detail]);
+  /**
+   * Re-seed the local workflow state DURING RENDER, not in an effect.
+   *
+   * Same trigger as the effect this replaces — a new `detail` object, which is
+   * what arrives when a different conversation is opened or the open one is
+   * re-fetched — so the behaviour is unchanged. What changes is when: an effect
+   * runs after the commit, so there was one painted frame showing the previous
+   * conversation's badge under the new conversation's thread. Adjusting state
+   * during render makes React discard that render and redo it before anything
+   * reaches the screen, which is React's documented replacement for this exact
+   * "reset state when a prop changes" case.
+   *
+   * COMPARED BY REFERENCE, deliberately. The effect's dependency was the object
+   * too, so a re-fetch re-seeds here exactly as it did before. Writing the same
+   * value back is a no-op in React, so an unchanged re-fetch costs nothing.
+   */
+  const [seededFrom, setSeededFrom] = useState<ConversationDetail | null>(null);
+  if (detail !== null && detail !== seededFrom) {
+    setSeededFrom(detail);
+    setWorkflowState(detail.conversation.workflowState);
+  }
 
   if (error !== null) {
     return <p className="p-6 text-sm opacity-70">{error}</p>;

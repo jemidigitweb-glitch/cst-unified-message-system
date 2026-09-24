@@ -156,8 +156,26 @@ describe("the reviewer picks; nothing else does, and nothing merges", () => {
    * request.
    */
   it("clears the choice when the selected conversation changes", () => {
-    expect(workspace).toContain("setSelectedOrderNumber(null)");
-    expect(workspace).toContain("}, [selectedId]);");
+    /*
+     * ASSERTED ON CODE WITH COMMENTS STRIPPED, the same discipline as the
+     * migration and no-send guards, so prose describing the reset cannot
+     * satisfy a check about whether the reset exists.
+     *
+     * MECHANISM-AGNOSTIC, AND THAT IS THE FIX. This used to assert the literal
+     * `}, [selectedId]);` — the dependency array of a `useEffect`. That pinned
+     * the guarantee to one implementation, and the implementation changed: the
+     * workspace now clears during render instead, which is React's documented
+     * pattern for resetting state when a prop changes and which closes a
+     * one-frame window where the previous conversation's choice was paired with
+     * the newly selected one. The GUARANTEE did not change, so this now checks
+     * the guarantee — the choice is cleared, and the clearing is keyed to
+     * `selectedId` — rather than how the component notices the change.
+     */
+    const code = workspace.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+    expect(code).toContain("setSelectedOrderNumber(null)");
+
+    const at = code.indexOf("setSelectedOrderNumber(null)");
+    expect(code.slice(Math.max(0, at - 200), at)).toContain("selectedId");
   });
 
   it("never blends the resolved order with the candidates", () => {

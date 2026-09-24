@@ -459,7 +459,14 @@ function Filters({
  * hiding it: a reader who wants to know why a tile is empty gets the full
  * measured reason, and a reader who wants the figures is no longer wading past
  * row counts to reach them.
+ *
+ * CURRENTLY PARKED, NOT DEAD. The render call is commented out at the bottom of
+ * this file, with the reasoning beside it; the panel is kept whole so turning it
+ * back on is uncommenting one line rather than rewriting it. The disable below
+ * says that in the one place a reader checking the lint output will look —
+ * deleting the component to silence the warning would throw away working code.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- parked, see above
 function Limitations({ summary }: { summary: Summary }) {
   const blocked = [
     ...summary.kpis

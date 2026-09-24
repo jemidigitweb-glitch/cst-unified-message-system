@@ -1,5 +1,4 @@
 import type { CstRule } from "@/lib/domain/knowledge";
-import type { ConversationMessageView } from "@/lib/domain/inbox";
 import { normaliseRef } from "@/lib/knowledge/rule-evidence";
 
 /**

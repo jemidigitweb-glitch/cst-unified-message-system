@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { resolveVerifiedTracking } from "@/lib/context/resolve-tracking-context";
-import type { VerifiedFact } from "@/lib/domain/draft";
 
 /**
  * One choice, one shipment — and nothing at all until the choice is made.
