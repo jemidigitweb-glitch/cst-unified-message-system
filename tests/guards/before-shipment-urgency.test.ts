@@ -307,6 +307,28 @@ describe("a customer signing off is read as a sign-off", () => {
   });
 
   /**
+   * ------------------------------------------------------------------------
+   * THE SECOND DEFECT, FOUND ON SCREEN
+   * ------------------------------------------------------------------------
+   * eBay `david_tuck_ward`: CST answered the delivery-partner request, the
+   * customer replied "Many thanks James, that is much appreciated. Best
+   * regards, David." — and the row kept the URGENT badge under a countdown.
+   * Three things in that sentence are in no vocabulary and never can be: the
+   * agent's name, the customer's own name, and the appreciation clause.
+   */
+  it.each([
+    "Many thanks James, that is much appreciated.\nBest regards,\nDavid.",
+    "Many thanks, much appreciated",
+    "Thank you David, appreciated",
+    "Thanks Sarah, I really appreciate it",
+    "Great, thanks James",
+    "Thanks.\nKind regards,\nDavid Tuckward",
+    "Hi James, thank you - it's much appreciated",
+  ])("reads %j as nothing but thanks", (text) => {
+    expect(isPleasantryOnly(text)).toBe(true);
+  });
+
+  /**
    * THE SENTENCES IT MUST NOT SWALLOW. A thank-you with a question attached is
    * a question — reading it as closure would silently drop the request, which
    * is the same class of error as `staffClosedTheOrder` reading "has NOT been
@@ -317,6 +339,16 @@ describe("a customer signing off is read as a sign-off", () => {
     "Thank you - please cancel the order.",
     "Great, can you change the address?",
     "Thanks for nothing, this arrived broken",
+    // A NAME DOES NOT BUY SILENCE. The name comes out; the request stays.
+    "Thanks James, can you cancel it?",
+    "Many thanks, David - when will it ship?",
+    "Thank you David.\nPlease cancel my order.",
+    // What sits in the signature slot must be a name, not an instruction.
+    "Many thanks, Cancel",
+    "Thanks,\nRefund",
+    // Appreciation is admitted as a clause, not as free vocabulary.
+    "Is it?",
+    "That is not what I ordered",
     "",
     "   ",
   ])("does not read %j as a sign-off", (text) => {
@@ -326,6 +358,35 @@ describe("a customer signing off is read as a sign-off", () => {
   it("treats an absent message as no signal rather than closure", () => {
     expect(isPleasantryOnly(null)).toBe(false);
     expect(isPleasantryOnly(undefined)).toBe(false);
+  });
+
+  /**
+   * ------------------------------------------------------------------------
+   * A CANCELLATION IS NEVER A SIGN-OFF, HOWEVER POLITELY IT IS WRAPPED
+   * ------------------------------------------------------------------------
+   * This is the one direction the rule may not fail in. Reading a sign-off
+   * wrongly costs a red badge on a finished thread; reading a CANCELLATION as a
+   * sign-off drops the most time-critical message in the inbox out of the
+   * urgent block entirely, and the window it needed closes while nobody is
+   * looking at it.
+   *
+   * Every phrasing below is thanks and a cancellation in one message, including
+   * the shapes the name-removal above could plausibly reach — the word in the
+   * signature slot, the word in the vocative slot, the word alone on a line.
+   */
+  it.each([
+    "Many thanks, please cancel my order",
+    "Thanks James, please cancel the order. Best regards, David.",
+    "Thank you.\nCancel my order please.\nDavid",
+    "Many thanks - cancel it",
+    "Thanks, I would like to cancel",
+    "Hi James, thanks - do not send it",
+    "Great, thanks. Please stop the dispatch.",
+    "Thanks, Cancel my order",
+    "Cancel",
+    "Thanks.\nCancel.",
+  ])("never reads the cancellation in %j as closure", (text) => {
+    expect(isPleasantryOnly(text)).toBe(false);
   });
 });
 

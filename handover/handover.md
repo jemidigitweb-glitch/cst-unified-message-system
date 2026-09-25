@@ -1,8 +1,8 @@
 # CST  Handover
 
-**Date:** 2026-09-24
+**Date:** 2026-09-25
 **Branch:** `sync-reconcile-late-arrivals`
-**Baseline commit at audit:** `4aa5b6e`
+**Baseline commit at audit:** `4925d32`
 
 Everything below was verified against the working tree on the date above. Where
 a number appears, it was measured — by running the command shown, or by a query
@@ -352,6 +352,36 @@ contains.
 | Draft prompt | `categoryBlock()` emits it as **INTERNAL GUIDANCE**, explicitly not a verified fact — *"where it disagrees with what the customer plainly wrote, the customer's own words win"*, and the model is told never to mention it |
 | Draft validation | `categoryCoverage()` re-reads it to check the reply addressed what was asked |
 
+### The URGENT badge stops when the customer signs off
+
+`isPleasantryOnly` (`lib/knowledge/message-category.ts`) is the wording half of
+the closure signal; the repository supplies the other half (`ever_replied`), and
+`beforeShipmentEligibility` returns `thread_resolved`. Two conversations found
+on screen drove it:
+
+| Conversation | Newest inbound | Was |
+| ------------ | -------------- | --- |
+| eBay `piotr.woss-uk` | "Great Thanks" ×2 | URGENT, SLA 14 days overdue |
+| eBay `david_tuck_ward` | "Many thanks James, that is much appreciated. Best regards, David." | URGENT, SLA counting down |
+
+The second needed three things no vocabulary can hold — the agent's name, the
+customer's own name, and an appreciation clause. So the two positional name
+slots (vocative after a thanks or greeting, signature at the very end) are
+removed by `withoutNames`, `NOT_A_NAME` keeps a request out of those slots, and
+what remains is tested against `SIGN_OFF_ONLY` — `PLEASANTRY_ONLY` plus
+`APPRECIATION_CLAUSE`.
+
+**A cancellation is never a sign-off.** That direction is the one the rule may
+not fail in: a wrong sign-off costs a red badge on a finished thread, a wrong
+cancellation drops the most time-critical message in the inbox out of the urgent
+block while its window closes. Ten phrasings are pinned in
+`tests/guards/before-shipment-urgency.test.ts`.
+
+**The classifier did not move.** `PLEASANTRY_ONLY` is unchanged in what it
+matches and is still the only pattern the thread reading consults, so the frozen
+baseline below is untouched — the wider reading lives in `SIGN_OFF_ONLY` and is
+consulted only by the urgent rule.
+
 ### Related but separate — do not merge these
 
 - **`classifyCaseType`** names the request behind a conversation the rule base
@@ -583,14 +613,14 @@ Three schema decisions that must not be "simplified":
 
 ## 10. Testing status
 
-Measured 2026-09-24 on this checkout:
+Measured 2026-09-25 on this checkout:
 
 ```
 npx tsc --noEmit   → exit 0, clean
 npx eslint .       → exit 0, clean
 npx vitest run     → Test Files  156 passed | 13 skipped (169)
-                     Tests     4,560 passed | 35 skipped (4,595)
-                     Duration  ~48s
+                     Tests     4,584 passed | 35 skipped (4,619)
+                     Duration  ~47s
 ```
 
 The 13 skipped files are **opt-in**, not broken. Each gates itself on an env

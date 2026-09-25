@@ -6089,6 +6089,21 @@ function looksResolved(text: string): boolean {
 }
 
 /**
+ * The vocabulary of a sign-off: greeting, thanks, and the words that decorate
+ * them. Nothing here asks for anything.
+ *
+ * A NAMED CONSTANT rather than a literal inside one pattern, because two
+ * patterns read it — the classifier's `PLEASANTRY_ONLY` and the urgent rule's
+ * wider `SIGN_OFF_ONLY`. One list, so the two can never disagree about what a
+ * pleasantry word is.
+ */
+const PLEASANTRY_WORD =
+  "hi|hello|hey|dear|sir|madam|many|much|thanks|thank|you|thankyou|cheers|regards|kind|best|wishes|great|brilliant|perfect|lovely|danke|vielen|dank|gr(?:ü|ue)(?:ß|ss)e|hallo|guten|tag|morgen|abend|mfg|lg";
+
+/** Whitespace and punctuation between sign-off words — commas, dashes, "!". */
+const PLEASANTRY_GAP = "[\\s\\p{P}\\p{S}]*";
+
+/**
  * A message made of nothing but greeting and thanks.
  *
  * Used ONLY when deciding whether a whole thread is just the customer signing
@@ -6096,9 +6111,104 @@ function looksResolved(text: string): boolean {
  * both have to be accounted for. It is deliberately not consulted for a single
  * message on its own: a lone "Many thanks, kind regards." is still a customer
  * writing to us, and still gets the admin tag rather than a blank.
+ *
+ * DELIBERATELY NOT WIDENED when `SIGN_OFF_ONLY` below was added. This constant
+ * decides a THREAD'S CATEGORY, and the category classifier is frozen — see the
+ * note on `isPleasantryOnly`. Anything the urgent rule needs to read more
+ * generously is read there, not here.
  */
-const PLEASANTRY_ONLY =
-  /^(?:[\s\p{P}\p{S}]*(?:hi|hello|hey|dear|sir|madam|many|much|thanks|thank|you|thankyou|cheers|regards|kind|best|wishes|great|brilliant|perfect|lovely|danke|vielen|dank|gr(?:ü|ue)(?:ß|ss)e|hallo|guten|tag|morgen|abend|mfg|lg)[\s\p{P}\p{S}]*)+$/iu;
+const PLEASANTRY_ONLY = new RegExp(
+  `^(?:${PLEASANTRY_GAP}(?:${PLEASANTRY_WORD})${PLEASANTRY_GAP})+$`,
+  "iu",
+);
+
+/**
+ * "that is much appreciated", "I really appreciate it", "appreciated".
+ *
+ * THE ONE CLAUSE A SIGN-OFF MAY BUILD OUT OF ORDINARY WORDS, and it is spelled
+ * out as a phrase rather than by admitting `that`, `is` and `it` to
+ * `PLEASANTRY_WORD`. Those three as free vocabulary would read "Is it?" and
+ * "That is not what I ordered — it is much worse" through the same door; tied to
+ * `appreciated` they can only ever say thank you.
+ */
+const APPRECIATION_CLAUSE = [
+  // "that is much appreciated", "it's very much appreciated", "appreciated"
+  "(?:(?:that|this|it)(?:\\s*(?:'|’)\\s*s|\\s+(?:is|was))?\\s+)?(?:(?:so|very|really|greatly|hugely|much|all)\\s+)*appreciated",
+  // "I really appreciate it", "we appreciate your help"
+  "(?:i|we)\\s+(?:(?:really|do|very|much|greatly)\\s+)*appreciate\\s+(?:it|that|this|everything|your\\s+(?:help|time|assistance|support)|the\\s+(?:help|update))",
+].join("|");
+
+/**
+ * A sign-off, read the way the URGENT rule needs it read: greeting, thanks and
+ * appreciation, and nothing that asks for anything.
+ *
+ * A STRICT SUPERSET OF `PLEASANTRY_ONLY`, built from the same word list with one
+ * clause added. It is separate only so the classifier's reading stays exactly
+ * where it was — see the note on that constant.
+ */
+const SIGN_OFF_ONLY = new RegExp(
+  `^(?:${PLEASANTRY_GAP}(?:${APPRECIATION_CLAUSE}|${PLEASANTRY_WORD})${PLEASANTRY_GAP})+$`,
+  "iu",
+);
+
+/**
+ * THE WORDS THAT ARE NEVER SOMEBODY'S NAME.
+ *
+ * `withoutNames` below removes a capitalised word from the two slots a name
+ * appears in, and a customer who writes "Many thanks, Cancel" would otherwise
+ * have their request removed with it. Short and deliberately so: it lists only
+ * what a customer plausibly capitalises AND is asking for, not a second copy of
+ * the intent vocabulary.
+ */
+const NOT_A_NAME =
+  /^(?:cancel\w*|refund\w*|return\w*|replac\w*|exchang\w*|urgent\w*|help|order\w*|deliver\w*|dispatch\w*|despatch\w*|ship\w*|damag\w*|broken|faulty|missing|please|why|when|where|what|how|invoice|address|payment|money|waiting)$/i;
+
+/** Whether a stripped candidate is a request wearing a capital letter. */
+function namesSomethingElse(candidate: string): boolean {
+  return candidate.split(/\s+/).some((word) => NOT_A_NAME.test(word));
+}
+
+/**
+ * The person addressed — "Many thanks James" — where only a name can be.
+ *
+ * CASE-SENSITIVE ON THE NAME, which is what keeps it from eating the message:
+ * "Thanks, but when will it ship?" and "Thank you - please cancel" carry
+ * lowercase words after the thanks, so nothing is removed and both still fail
+ * the sign-off test. The keyword itself is spelled both ways because the regex
+ * cannot be case-insensitive without losing the capital that identifies a name.
+ */
+const VOCATIVE_NAME =
+  /\b(?:[Tt]hanks?(?:\s+[Yy]ou)?|[Tt]hankyou|[Cc]heers|[Hh]i|[Hh]ello|[Hh]ey|[Dd]ear|[Dd]anke)[ \t]+(\p{Lu}[\p{L}'’-]{1,19})\b/gu;
+
+/**
+ * The name a message is signed with — "Best regards,\nDavid."
+ *
+ * ONLY AT THE VERY END, and only after a comma, semicolon or line break, so it
+ * is the signature slot rather than any capitalised word in the message. What
+ * remains still has to be nothing but a sign-off, which is what makes removing
+ * it safe: "Please cancel\nDavid." loses the name and is still a cancellation.
+ */
+const SIGNATURE_NAME =
+  /[\n,;][\s\p{P}\p{S}]*(\p{Lu}[\p{L}'’-]{1,19}(?:[ \t]+\p{Lu}[\p{L}'’-]{1,19})?)[\s\p{P}\p{S}]*$/u;
+
+/**
+ * The message with the names taken out of it.
+ *
+ * A name carries no intent, but it is not in any vocabulary and never can be —
+ * so a thank-you addressed to the agent who answered, or signed by the customer
+ * who sent it, read as content and held the thread open. Removing the two
+ * positional slots is what lets the vocabulary test decide the rest.
+ */
+function withoutNames(text: string): string {
+  const signature = SIGNATURE_NAME.exec(text);
+  const body =
+    signature !== null && !namesSomethingElse(signature[1]!)
+      ? text.slice(0, signature.index)
+      : text;
+  return body.replace(VOCATIVE_NAME, (whole, name: string) =>
+    namesSomethingElse(name) ? whole : whole.slice(0, whole.length - name.length),
+  );
+}
 
 /**
  * Whether a message is nothing but greeting and thanks — "Great, thanks".
@@ -6124,11 +6234,30 @@ const PLEASANTRY_ONLY =
  *
  * ANCHORED WHOLE-STRING, which is what keeps it safe: "Thanks, but when is it
  * shipping?" does not match, because the question is not a pleasantry.
+ *
+ * ------------------------------------------------------------------------
+ * IT READS MORE THAN THE CLASSIFIER'S `PLEASANTRY_ONLY`, ON PURPOSE
+ * ------------------------------------------------------------------------
+ * eBay `david_tuck_ward` is the second case, found on screen: CST answered the
+ * delivery-partner request, the customer replied "Many thanks James, that is
+ * much appreciated. Best regards, David." — and the row kept the red URGENT
+ * badge with an SLA counting down, because three things in that sentence are in
+ * no vocabulary and never will be: the agent's name, the customer's own name,
+ * and "that is much appreciated".
+ *
+ * So the names are removed from the two slots a name occupies — see
+ * `withoutNames` — and the appreciation clause is admitted as a phrase, and what
+ * is left is tested against `SIGN_OFF_ONLY`. The classifier's own constant is
+ * untouched, so no thread changes the category it was given.
+ *
+ * WHAT IS STILL REFUSED is unchanged and is the point: anything left after the
+ * names come out has to be a sign-off word. "Thanks James, can you cancel it?"
+ * loses `James` and keeps the question, so it is not closure.
  */
 export function isPleasantryOnly(text: string | null | undefined): boolean {
   const trimmed = (text ?? "").trim();
   if (trimmed === "") return false;
-  return PLEASANTRY_ONLY.test(trimmed);
+  return SIGN_OFF_ONLY.test(withoutNames(trimmed));
 }
 
 /**
