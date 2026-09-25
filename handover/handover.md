@@ -164,7 +164,7 @@ fix a leak in pool *count*. See the header of `lib/db/pools.ts`.
 | Category tagging | `lib/knowledge/message-category.ts` | Eleven case areas, deterministic, not persisted — **see §7** |
 | Response SLA | migration 0019 | Per-scope policy |
 | Performance dashboard | `app/performance/` | **Unauthenticated — see §11** |
-| Conversation search, customer notes, unresolved feed, agent activity | various | — |
+| Conversation search, customer notes, unresolved feed, agent activity | various | Customer notes carry a search box — order reference or name, across marketplaces |
 
 ### Partially implemented
 
@@ -174,6 +174,29 @@ fix a leak in pool *count*. See the header of `lib/db/pools.ts`.
 | SOT product catalogue | Parent-listing route reaches ~1% of listings; component route ~62%. A listing *title* resolves for essentially all |
 | Category classification | Implemented and **frozen**; the rule migration is paused after phase 0 |
 | Knowledge database | `KNOWLEDGE_DB` and `cst_rules` exist; the draft path reads workbooks from disk instead |
+
+### Searching the customer-notes panel
+
+The notes drawer carries a search box above its marketplace tabs. It reads the
+**order reference** and the **customer name** — never the note text, or typing
+an order number would return the note that mentions it beside the note that is
+it, and the row prints only those two fields so a reader could not tell which.
+
+**It narrows what is already loaded.** No request, no endpoint, no query
+parameter: the panel holds one bounded page and the box filters it, which is
+why the "most recent customer notes" caveat beneath the list changes from
+*Showing* to *Searched* while a query is active. A searchable list otherwise
+reads as a complete index of every note there has ever been.
+
+**The search runs before the tabs are counted**, so the counts describe the
+search: an agent with an order number who does not know which marketplace it
+was bought on reads `Amazon 1` rather than an empty eBay list. When the current
+tab has no match and another does, the empty state says how many.
+
+`searchCustomerNotes` is a pure function in `lib/domain/customer-note.ts`; the
+drawer still holds no state of its own. A reference is matched with punctuation
+removed from both sides — the marketplaces do not agree on any of it — and
+every whitespace-separated term must match, so a second word narrows.
 
 ### Not implemented
 
@@ -619,8 +642,8 @@ Measured 2026-09-25 on this checkout:
 npx tsc --noEmit   → exit 0, clean
 npx eslint .       → exit 0, clean
 npx vitest run     → Test Files  156 passed | 13 skipped (169)
-                     Tests     4,584 passed | 35 skipped (4,619)
-                     Duration  ~47s
+                     Tests     4,599 passed | 35 skipped (4,634)
+                     Duration  ~58s
 ```
 
 The 13 skipped files are **opt-in**, not broken. Each gates itself on an env
