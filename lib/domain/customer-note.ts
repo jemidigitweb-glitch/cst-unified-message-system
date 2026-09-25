@@ -156,6 +156,100 @@ export function customerNotesForChannel(
   return notes.filter((note) => note.channel === filter);
 }
 
+/* ------------------------------------------------------------------------- *
+ * SEARCHING THE NOTES ON SCREEN
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The two fields the search reads: the ORDER REFERENCE and WHOSE ORDER IT IS.
+ *
+ * ------------------------------------------------------------------------
+ * DELIBERATELY NOT THE NOTE TEXT
+ * ------------------------------------------------------------------------
+ * CST asked to find a note "by order id or name", and those are the two things
+ * a row is identified by — they are also the two things printed on its first
+ * line, so a reader can see why every result matched. Searching the body as
+ * well would answer a different question: typing an order number would return
+ * the note that MENTIONS it ("this is the same as order 12345") alongside the
+ * note that IS it, and the reader would have no way to tell which without
+ * opening both.
+ *
+ * ------------------------------------------------------------------------
+ * TWO READINGS OF ONE TERM, BECAUSE THE FIELDS ARE NOT ALIKE
+ * ------------------------------------------------------------------------
+ * A NAME is matched as typed, case-folded — "tuck" finds "David Tuckward".
+ *
+ * A REFERENCE is matched with its punctuation removed from BOTH sides, because
+ * the marketplaces do not agree on any of it: eBay prints `12-34567-89012`,
+ * Shopify prints `LED65289`, and an agent reading a number off a packing slip
+ * or a customer's email types whichever they see. `1234567` would otherwise
+ * miss the eBay order it is plainly part of.
+ *
+ * EVERY TERM MUST MATCH, and either field may satisfy it. That is what makes
+ * "david 12345" narrower than "david", which is what a second word is for.
+ */
+function foldName(value: string): string {
+  return value.toLowerCase();
+}
+
+function foldReference(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/** Whether one note answers one already-folded term. */
+function noteAnswersTerm(note: CustomerNote, term: string): boolean {
+  const name = note.customerName;
+  if (name !== null && foldName(name).includes(foldName(term))) return true;
+
+  const reference = note.orderNumber;
+  if (reference === null) return false;
+  const folded = foldReference(term);
+  // A term of pure punctuation folds to nothing, and an empty needle is in
+  // every string — it must not silently match every note with a reference.
+  if (folded === "") return false;
+  return foldReference(reference).includes(folded);
+}
+
+/**
+ * The notes matching what the agent typed.
+ *
+ * A BLANK QUERY IS NOT A FILTER. It returns the list unchanged rather than
+ * nothing, so an empty box is the panel exactly as it was before there was one.
+ *
+ * PURE, and applied BEFORE the marketplace tabs are built — see
+ * `customerNoteChannelTabs`. That ordering is the whole design: the counts on
+ * the tabs then describe the search, so an agent who types an order number
+ * while looking at eBay is told "Amazon 1" rather than being shown an empty
+ * list on a tab the note was never on.
+ */
+export function searchCustomerNotes(
+  notes: readonly CustomerNote[],
+  query: string,
+): readonly CustomerNote[] {
+  const terms = query.trim().split(/\s+/).filter((term) => term !== "");
+  if (terms.length === 0) return notes;
+  return notes.filter((note) => terms.every((term) => noteAnswersTerm(note, term)));
+}
+
+/** The search box's label and placeholder. One spelling, read by both. */
+export const CUSTOMER_NOTE_SEARCH_LABEL = "Search customer notes by order or name";
+export const CUSTOMER_NOTE_SEARCH_PLACEHOLDER = "Order ID or name…";
+
+/** Shown in place of the list when the search matched nothing anywhere. */
+export const CUSTOMER_NOTES_NO_MATCH = "No customer notes match that order or name.";
+
+/**
+ * Told to an agent whose search matched, but not on the tab they are looking at.
+ *
+ * THE COUNTS ON THE TABS ALREADY SAY THIS, and this sentence exists because a
+ * reader who has just typed is looking at the list, not at the tab row. It
+ * names the number and nothing else — which tab is one glance up, and repeating
+ * it here would go stale the moment a marketplace is added.
+ */
+export function customerNoteMatchesElsewhere(count: number): string {
+  return `No matches on this marketplace. ${count} on ${count === 1 ? "another" : "other"} marketplace${count === 1 ? "" : "s"}.`;
+}
+
 /** What the non-marketplace tab is called. It names itself, not a platform. */
 export const CUSTOMER_NOTE_TAB_LABEL: Readonly<Record<"other", string>> = {
   other: "Other",

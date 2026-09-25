@@ -477,6 +477,48 @@ describe("the marketplace tabs and their lists are untouched", () => {
   });
 });
 
+describe("the customer-notes search narrows what is loaded and nothing more", () => {
+  /**
+   * CST asked to find a note by order id or name. The box does that by
+   * filtering the page of notes already on the client — so the three things a
+   * search bar could quietly become are what this guards against: a request, a
+   * piece of drawer state, and a second opinion about what "matches" means.
+   */
+  it("issues no request of its own", () => {
+    // The notes endpoint is fetched where it always was, without a query.
+    expect(drawer).not.toMatch(/fetch\(/);
+    expect(workspace).not.toContain("/api/customer-notes?");
+    expect(workspace).not.toContain("/api/customer-notes/search");
+  });
+
+  it("keeps the search text in the workspace, not in the drawer", () => {
+    // The drawer holds no state at all — see "observes and nothing more".
+    expect(workspace).toContain('const [noteSearch, setNoteSearch] = useState("")');
+    expect(workspace).toContain("noteSearch={noteSearch}");
+    expect(workspace).toContain("onSearchNotes={setNoteSearch}");
+  });
+
+  it("asks the domain what matches rather than deciding in the component", () => {
+    expect(drawer).toContain("searchCustomerNotes(notes.notes, search)");
+    // No second reading of the fields in the component.
+    expect(drawer).not.toMatch(/\.customerName\s*\.\s*toLowerCase/);
+    expect(drawer).not.toMatch(/orderNumber[^\n]*includes\(/);
+  });
+
+  it("searches before the tabs are counted, so a match elsewhere is visible", () => {
+    // Both derivations read `matched`, not the unfiltered feed: the counts on
+    // the tabs are the search's result.
+    expect(drawer).toContain("customerNoteChannelTabs(matched, channel)");
+    expect(drawer).toContain("customerNotesForChannel(matched, channel)");
+  });
+
+  it("still says the list is bounded once it can be searched", () => {
+    // A searchable list reads as a complete index. It is one month of notes.
+    expect(drawer).toMatch(/most\s+recent customer notes/);
+    expect(drawer).toContain('noteSearch.trim() === "" ? "Showing" : "Searched"');
+  });
+});
+
 describe("the route reads globally and only reads", () => {
   it("exports GET and nothing else", () => {
     expect(route).toMatch(/export\s+async\s+function\s+GET\b/);

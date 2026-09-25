@@ -2,12 +2,17 @@
 
 import {
   CUSTOMER_NOTES_EMPTY,
+  CUSTOMER_NOTES_NO_MATCH,
   CUSTOMER_NOTES_TITLE,
+  CUSTOMER_NOTE_SEARCH_LABEL,
+  CUSTOMER_NOTE_SEARCH_PLACEHOLDER,
   CUSTOMER_NOTE_TAB_LABEL,
   type CustomerNoteChannelFilter,
   type CustomerNoteFeed,
   customerNoteChannelTabs,
+  customerNoteMatchesElsewhere,
   customerNotesForChannel,
+  searchCustomerNotes,
 } from "@/lib/domain/customer-note";
 import type { FollowUpFeed, FollowUpTab } from "@/lib/domain/follow-up-view";
 import {
@@ -127,6 +132,8 @@ function CustomerNoteList({
   failures,
   channel,
   onSelectChannel,
+  search,
+  onSearch,
   onSelectNote,
 }: {
   notes: CustomerNoteFeed | null;
@@ -134,6 +141,9 @@ function CustomerNoteList({
   failures: Readonly<Record<string, string>>;
   channel: CustomerNoteChannelFilter;
   onSelectChannel: (channel: CustomerNoteChannelFilter) => void;
+  /** What the agent has typed. The workspace holds it, like every other value. */
+  search: string;
+  onSearch: (query: string) => void;
   onSelectNote: (noteId: string) => void;
 }) {
   if (error !== null) return <p className="p-5 text-sm opacity-70">{error}</p>;
@@ -141,6 +151,21 @@ function CustomerNoteList({
   if (notes.notes.length === 0) {
     return <p className="p-5 text-sm opacity-60">{CUSTOMER_NOTES_EMPTY}</p>;
   }
+
+  /*
+   * THE SEARCH RUNS FIRST, ACROSS EVERY MARKETPLACE, AND THE TABS FOLLOW IT.
+   *
+   * An agent with an order number in front of them does not necessarily know
+   * which marketplace it was bought on — that is half the reason they are
+   * looking it up. Filtering the selected tab and leaving the counts alone
+   * would answer "not here" and say nothing about where it is; searching the
+   * whole loaded list and then counting per tab answers "Amazon 1" instead.
+   *
+   * Both steps are pure functions in the domain, so this panel still holds no
+   * state and decides nothing.
+   */
+  const matched = searchCustomerNotes(notes.notes, search);
+  const searching = search.trim() !== "";
 
   /*
    * MARKETPLACE TABS, DERIVED FROM WHAT IS LOADED.
@@ -153,11 +178,31 @@ function CustomerNoteList({
    * has no channel for are grouped under "Other" rather than being hidden or
    * filed under a marketplace they do not belong to.
    */
-  const tabs = customerNoteChannelTabs(notes.notes, channel);
-  const visible = customerNotesForChannel(notes.notes, channel);
+  const tabs = customerNoteChannelTabs(matched, channel);
+  const visible = customerNotesForChannel(matched, channel);
 
   return (
     <>
+      {/*
+        THE SEARCH BOX, ABOVE THE TABS BECAUSE IT OUTRANKS THEM.
+        It narrows every tab at once and the counts beneath it are its result,
+        so it reads top-down: type, then see where the matches are.
+
+        A PLAIN INPUT, NOT A FORM. There is nothing to submit — the list
+        narrows as it is typed — and a nested form inside the drawer would
+        capture Enter for a request that does not exist.
+      */}
+      <div className="shrink-0 px-4 pt-3">
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => onSearch(event.target.value)}
+          placeholder={CUSTOMER_NOTE_SEARCH_PLACEHOLDER}
+          aria-label={CUSTOMER_NOTE_SEARCH_LABEL}
+          className="w-full rounded-full border border-black/10 bg-transparent px-3 py-1.5 text-sm dark:border-white/15"
+        />
+      </div>
+
       <div
         role="tablist"
         aria-label="Marketplace"
@@ -189,7 +234,21 @@ function CustomerNoteList({
       </div>
 
       {visible.length === 0 ? (
-        <p className="p-5 text-sm opacity-60">{CUSTOMER_NOTES_EMPTY}</p>
+        /*
+         * THREE DIFFERENT SILENCES, AND THEY ARE NOT THE SAME NEWS.
+         *
+         * Nothing typed → this marketplace simply has no notes.
+         * Typed, nothing anywhere → the order or name is not in what is loaded.
+         * Typed, matches on another tab → say how many, because the reader is
+         * looking at the list rather than at the counts one line above.
+         */
+        <p data-testid="customer-notes-empty" className="p-5 text-sm opacity-60">
+          {!searching
+            ? CUSTOMER_NOTES_EMPTY
+            : matched.length === 0
+              ? CUSTOMER_NOTES_NO_MATCH
+              : customerNoteMatchesElsewhere(matched.length)}
+        </p>
       ) : (
         <ul>
           {visible.map((note) => {
@@ -273,6 +332,8 @@ export function NotificationDrawer({
   notesError,
   noteChannel,
   onSelectNoteChannel,
+  noteSearch,
+  onSearchNotes,
   noteFailures,
   onSelectNote,
   followUp,
@@ -302,6 +363,15 @@ export function NotificationDrawer({
    */
   noteChannel: CustomerNoteChannelFilter;
   onSelectNoteChannel: (channel: CustomerNoteChannelFilter) => void;
+  /**
+   * What the agent has typed into the notes search box.
+   *
+   * Held by the workspace for the same reason the tab is: this panel holds no
+   * state. It also means the box survives the panel being closed and reopened,
+   * which is what an agent working through one order expects.
+   */
+  noteSearch: string;
+  onSearchNotes: (query: string) => void;
   /**
    * Why individual notes would not open, keyed by note id.
    *
@@ -384,6 +454,8 @@ export function NotificationDrawer({
             failures={noteFailures}
             channel={noteChannel}
             onSelectChannel={onSelectNoteChannel}
+            search={noteSearch}
+            onSearch={onSearchNotes}
             onSelectNote={onSelectNote}
           />
         ) : error !== null ? (
@@ -514,11 +586,17 @@ export function NotificationDrawer({
           </p>
         )}
 
-        {/* The same caveat, for the same reason, on the other list. */}
+        {/*
+         * The same caveat, for the same reason, on the other list — and it is
+         * worth MORE once there is a search box, because a bounded list that
+         * can be searched reads as a complete index of the notes. It is not
+         * one: the search narrows what was loaded, so the sentence says
+         * "searched" rather than "showing" while a query is active.
+         */}
         {showingNotes && notes?.hasMore && (
           <p className="px-4 py-3 text-[11px] opacity-55">
-            Showing the {notes.scanned} most recent customer notes. Older ones are not
-            included.
+            {noteSearch.trim() === "" ? "Showing" : "Searched"} the {notes.scanned} most
+            recent customer notes. Older ones are not included.
           </p>
         )}
       </div>

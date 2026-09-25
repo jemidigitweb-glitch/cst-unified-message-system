@@ -309,6 +309,20 @@ export function Workspace() {
     DEFAULT_CUSTOMER_NOTE_CHANNEL,
   );
   /**
+   * What CST typed into the notes search box — an order reference or a name.
+   *
+   * HERE RATHER THAN IN THE PANEL, like `noteChannel` above and every other
+   * piece of this screen's state, so the drawer stays presentational. It also
+   * means closing the panel and reopening it keeps the search, which is what an
+   * agent working through one order expects.
+   *
+   * THE SEARCH ITSELF IS NOT HERE. `searchCustomerNotes` is a pure domain
+   * function applied where the rows are rendered, and it reads the ORDER
+   * REFERENCE and the CUSTOMER NAME only — never the note text. No request is
+   * made: this narrows the notes already loaded.
+   */
+  const [noteSearch, setNoteSearch] = useState("");
+  /**
    * The note a conversation was opened from, if any.
    *
    * Shown as separate context above the thread — never as a chat bubble, which
@@ -1482,6 +1496,8 @@ export function Workspace() {
         notesError={customerNotesError}
         noteChannel={noteChannel}
         onSelectNoteChannel={setNoteChannel}
+        noteSearch={noteSearch}
+        onSearchNotes={setNoteSearch}
         noteFailures={noteFailures}
         onSelectNote={(noteId) => {
           void openCustomerNote(noteId);
