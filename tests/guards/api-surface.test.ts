@@ -78,6 +78,14 @@ const DELETE_EXEMPT = join(
  * conversation; the other moves one row from `scheduled` to `completed`.
  * "the follow-up routes touch reminders and nothing else" below pins that,
  * exactly as the settings and cancel entries are pinned.
+ *
+ * THE ROOT-CAUSE ENTRY IS THE NEWEST, and it is on this list for a reason worth
+ * stating: that route also READS the live marketplace source, which no other
+ * mutable route does. So it carries a second obligation the others do not —
+ * `getSourcePool` may appear in it, but only ever on the GET path, and the
+ * writer it reaches for must name one table. "the root cause route records only
+ * a CST root cause" below pins both halves, so widening this list did not widen
+ * what the route can do.
  */
 const MUTABLE_ROUTES = [
   /[\\/]draft[\\/]route\.tsx?$/,
@@ -89,7 +97,16 @@ const MUTABLE_ROUTES = [
   /[\\/]conversations[\\/][^\\/]+[\\/]notes[\\/][^\\/]+[\\/]route\.tsx?$/,
   /[\\/]conversations[\\/][^\\/]+[\\/]follow-up[\\/]route\.tsx?$/,
   /[\\/]follow-up-reminders[\\/][^\\/]+[\\/]route\.tsx?$/,
+  /[\\/]conversations[\\/][^\\/]+[\\/]root-cause[\\/]route\.tsx?$/,
 ];
+
+const ROOT_CAUSE_ROUTE = join(
+  API_DIR,
+  "conversations",
+  "[conversationId]",
+  "root-cause",
+  "route.ts",
+);
 
 const NOTES_ROUTE = join(API_DIR, "conversations", "[conversationId]", "notes", "route.ts");
 const NOTE_ROUTE = DELETE_EXEMPT;
@@ -412,6 +429,128 @@ describe("API surface", () => {
     expect(complete).toMatch(/SET status = 'completed'/);
     expect(complete).toMatch(/WHERE id = \$1::bigint AND status = 'scheduled'/);
     expect(complete).not.toMatch(/INSERT/);
+  });
+
+  /**
+   * The root-cause exemption, pinned — and it is pinned harder than the others
+   * because this is the only mutable route that touches the read-only source.
+   *
+   * IT MAY READ THE MARKETPLACE SOURCE AND IT MAY WRITE ITS OWN TWO CST TABLES,
+   * and those capabilities must never meet. `getSourcePool` is allowed here,
+   * unlike on every other route in this list, because the panel shows the
+   * message application's own recorded value beside CST's — but the writer it
+   * calls is `recordRootCause`, which names only the revision header and its
+   * labels in the APPLICATION database, and no writer that could reach the
+   * source exists anywhere behind it.
+   */
+  it("keeps the root cause route to reading both values and recording a CST one", () => {
+    expect(existsSync(ROOT_CAUSE_ROUTE)).toBe(true);
+    const source = readFileSync(ROOT_CAUSE_ROUTE, "utf8");
+
+    expect(source).toMatch(/recordRootCause/);
+    expect(source).toMatch(/getCurrentRootCause/);
+    expect(source).toMatch(/loadMessageAppRootCause/);
+    expect(source).toMatch(/readRootCauseSelection/);
+    expect(source).toMatch(/getAppPool/);
+    expect(source).not.toMatch(/getKnowledgePool/);
+
+    // Append-only: a selection is corrected by recording another revision.
+    expect(source).toMatch(/export\s+async\s+function\s+GET\b/);
+    expect(source).toMatch(/export\s+async\s+function\s+POST\b/);
+    expect(source).not.toMatch(/export\s+async\s+function\s+PATCH\b/);
+    expect(source).not.toMatch(/export\s+async\s+function\s+DELETE\b/);
+
+    for (const forbidden of [
+      "saveRevision",
+      "advanceWorkflowState",
+      "updateAutomationSettings",
+      "insertScheduledItem",
+      "buildDraftInput",
+      "conversationExport",
+      "addInternalNote",
+      "createReminder",
+    ]) {
+      expect(source, "root cause route must not call " + forbidden).not.toContain(forbidden);
+    }
+  });
+
+  /**
+   * AND THE ROOT CAUSE WRITER TOUCHES ITS OWN TWO TABLES, INSERT-ONLY.
+   *
+   * The revision header and its selected labels are one recorded decision
+   * written across a parent and a child table, so the writer names both — and
+   * NOTHING else. An UPDATE or a DELETE in either would turn this append-only
+   * record into the overwriting one the message application uses, which is the
+   * single behaviour this feature exists not to copy.
+   *
+   * Asserted as an exact, ordered list rather than "contains no UPDATE": a
+   * third table appearing here widens this route's reach as surely as an UPDATE
+   * would, and the list catches both.
+   */
+  it("keeps the root cause writer to its own two tables and to inserts", () => {
+    const raw = readFileSync(join(REPO_DIR, "conversation-root-cause-repository.ts"), "utf8");
+    /*
+     * Comments stripped before the name check, because the header names the
+     * tables this module must NOT touch — prose saying "not that one" is the
+     * opposite of the thing being guarded against, and would otherwise fail it.
+     */
+    const repository = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+
+    for (const other of [
+      "cst_app.internal_notes",
+      "cst_app.follow_up_reminders",
+      "cst_app.automation_items",
+      "cst_app.automation_settings",
+      "cst_app.draft_replies",
+      "cst_app.draft_revisions",
+      "cst_app.audit_log",
+      "customer_service",
+      "order_management",
+      "message_app",
+    ]) {
+      expect(repository, "root cause repository must not name " + other).not.toContain(other);
+    }
+
+    const writes = repository.match(/\b(INSERT INTO|UPDATE|DELETE FROM)\s+\S+/g) ?? [];
+    expect(writes).toEqual([
+      "INSERT INTO cst_app.conversation_root_causes",
+      "INSERT INTO cst_app.conversation_root_cause_labels",
+    ]);
+
+    /*
+     * Every cst_app table this module names at all. It WRITES two; it also
+     * READS `conversations` and `context_snapshots`, because the export needs
+     * the marketplace, the store and the verified order a recorded cause
+     * belongs to — all joins inside the same database.
+     *
+     * The reads are listed explicitly rather than the check relaxed: the point
+     * of this assertion is that reaching a further table is a deliberate act,
+     * and an allowlist keeps it one.
+     */
+    const tables = [...repository.matchAll(/\b(?:FROM|INTO|JOIN|UPDATE)\s+(cst_app\.\w+)/g)].map(
+      ([, name]) => name,
+    );
+    for (const table of new Set(tables)) {
+      expect(
+        [
+          "cst_app.conversation_root_causes",
+          "cst_app.conversation_root_cause_labels",
+          "cst_app.conversations",
+          "cst_app.context_snapshots",
+        ],
+        "root cause repository must not reach " + table,
+      ).toContain(table);
+    }
+
+    // And the two it only reads are never written.
+    for (const readOnly of ["cst_app.conversations", "cst_app.context_snapshots"]) {
+      for (const verb of ["INSERT INTO ", "UPDATE ", "DELETE FROM "]) {
+        expect(repository, readOnly + " must not be written").not.toContain(verb + readOnly);
+      }
+    }
+    // It reads the application pool only; the source pool is the route's business.
+    expect(repository).not.toContain("getSourcePool");
+    expect(repository).not.toContain("getKnowledgePool");
   });
 
   /**

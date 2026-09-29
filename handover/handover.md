@@ -1,8 +1,8 @@
 # CST  Handover
 
-**Date:** 2026-09-25
+**Date:** 2026-09-29
 **Branch:** `sync-reconcile-late-arrivals`
-**Baseline commit at audit:** `4925d32`
+**Baseline commit at audit:** `9a541b2`
 
 Everything below was verified against the working tree on the date above. Where
 a number appears, it was measured — by running the command shown, or by a query
@@ -163,6 +163,8 @@ fix a leak in pool *count*. See the header of `lib/db/pools.ts`.
 | Post-dispatch automation | `lib/domain/automation/` | Renders to `test_mode` only; contacts nobody — **see §8** |
 | Category tagging | `lib/knowledge/message-category.ts` | Eleven case areas, deterministic, not persisted — **see §7** |
 | Response SLA | migration 0019 | Per-scope policy |
+| Message App root cause display | `lib/domain/message-app-root-cause.ts` | Read-only; shows the other system's value, refuses to pick when a thread's values disagree |
+| CST root cause capture | migration 0020 — **NOT APPLIED** | Append-only; 18 measured labels + courier/issue-type/note — **see §13** |
 | Performance dashboard | `app/performance/` | **Unauthenticated — see §11** |
 | Conversation search, customer notes, unresolved feed, agent activity | various | Customer notes carry a search box — order reference or name, across marketplaces |
 
@@ -613,10 +615,13 @@ read-only, optional), `DB_ORDER_*` (MariaDB 10.4, read-only by GRANT —
 MariaDB has no `transaction_read_only`, so `assertOrderSourceReadOnly` verifies
 the privilege set at runtime rather than trusting a comment).
 
-**Schema management: by hand.** 19 migrations, no runner, no ledger table. Which
+**Schema management: by hand.** 20 migrations, no runner, no ledger table. Which
 migrations are live in which environment **cannot be determined from this
 repository** — run `SELECT table_name FROM information_schema.tables WHERE
 table_schema='cst_app'` against each environment.
+
+**0020 is written and NOT APPLIED anywhere.** It is the only migration in this
+state. The application degrades honestly without it — see §13.
 
 Three schema decisions that must not be "simplified":
 
@@ -652,11 +657,19 @@ a live database session — `RUN_LIVE_GEMINI=1`, and equivalents for the source
 and repository live suites. **They are not part of the default run and should
 not be made so.**
 
-**26 architecture guard tests** enforce design decisions that ordinary tests
+**Re-measured 2026-09-29**, after root cause capture: `npx vitest run` →
+**4,784 passed**, 35 skipped, across 161 passing files. `tsc` and `eslint` clean.
+
+**Three failures predate that work and are unrelated to it.**
+`tests/knowledge/cst-rules-files.test.ts` fails on a missing "Message Handling"
+area in the spreadsheet corpus and on a cache-timing assertion. They reproduce
+without the root cause changes; nothing in that feature touches `lib/knowledge/`.
+
+**24 architecture guard files** enforce design decisions that ordinary tests
 cannot: `no-send-capability`, `automation-no-transport`, `internal-note-
 visibility`, `no-customer-data`, `api-surface` (no component may import
-`lib/config/`), `file-naming`, and others. Treat a guard failure as a design
-question, not a test to fix.
+`lib/config/`), `file-naming`, `message-app-root-cause-panel`, and others. Treat
+a guard failure as a design question, not a test to fix.
 
 **Known coverage gaps** (not failures — untested scenarios):
 
@@ -693,6 +706,12 @@ analyse. It does not affect the result.
 8. **`.env.example` drift** — it omits `DB_ORDER_*` and `CRON_SECRET`, so a
    fresh clone following it gets no MariaDB source and a cron route that refuses
    every request.
+9. **Migration 0020 is written and unapplied**, so CST root cause capture is
+   dark everywhere (§13). The panel degrades honestly rather than breaking.
+10. **The root cause vocabulary is a snapshot, not a live link.** The 18 labels
+    were measured out of the source on 2026-09-29. New labels appearing there
+    will not appear here until the measurement query is re-run and
+    `ROOT_CAUSE_VOCABULARY_VERSION` bumped.
 
 ---
 
@@ -725,6 +744,7 @@ bug a piece of code exists to prevent. Read the header before editing the body.
 
 | # | Work | Risk |
 | - | ---- | ---- |
+| 0 | **Apply migration 0020**, following the acceptance test in `validation/2026-09-29-root-cause-capture-validation.md`, then build the root cause report (§13) | Low to apply; the report needs a deliberate decision about double counting |
 | 1 | Sweep the SOT denylist against the live 6-tab schema. It was validated against 413 keys on a 3-tab schema; the catalogue is now 1,824 SKUs across 6 tabs, and the denylist fails open | Low — test only |
 | 2 | Surface `synced_at` (already fetched, never used) | Low |
 | 3 | Typed empty-reason from the SOT resolver, so a reply can say "we don't publish that" rather than promising to check | Low-Medium |
@@ -741,4 +761,65 @@ bug a piece of code exists to prevent. Read the header before editing the body.
 - New database access goes through `lib/db/pools.ts`. A module-level
   `new Pool()` reintroduces the measured hot-reload leak.
 - Migrations are reviewed by **static tests that read the SQL as text and never
-  execute it**. Follow that pattern for migration 0020.
+  execute it**. `tests/migrations/conversation-root-cause-schema.test.ts` is the
+  most recent example.
+
+---
+
+## 13. Root cause — two values, two systems
+
+**The business question.** Which courier causes the most problems, how often, by
+date range, courier, store and issue type, with counts and percentages,
+exportable.
+
+**Why the other system cannot answer it.** The message application records one
+flat label. `FULFILMENT_CARRIER` says a carrier was involved and nothing about
+which one or what they did. CST cannot fix that at source: it holds **no write
+privilege** on that database — measured, `SHOW GRANTS FOR CURRENT_USER()`
+returns `USAGE ON *.*` plus SELECT on 25 named tables in `order_management`, and
+`message_app` is not granted at all.
+
+**So there are two values on screen, separately labelled, and neither
+overwrites the other:**
+
+| | Message App Root Cause | CST Root Cause |
+| --- | --- | --- |
+| Owned by | the message application | CST |
+| Read from | `customer_service.*.root_cause`, 5 tables, read-only | `cst_app.conversation_root_causes` |
+| Written by | their agents and their classifier, every 5 min, no user, no log | a CST agent, by pressing a chip |
+| Shape | one label | cause → courier → issue type → note |
+| History | overwritten on change | **append-only**; nothing is ever lost |
+| Component | `MessageAppRootCauseSection` — no control of any kind | `components/root-cause-selector.tsx` |
+
+They **will** disagree, routinely. That is the point of showing both. Nothing
+reconciles them and nothing should.
+
+**The vocabulary was measured, not designed.** The 18 labels are the distinct
+stored values across all five source tables on 2026-09-29 — query and result in
+`sql/2026-09-29-root-cause-vocabulary-measurement.sql`. Case variants folded;
+free prose (the OTHER flow) left out; nothing invented. `Delivery Issue`,
+`FULFILMENT_CARRIER` and `FULFILMENT_WAREHOUSE` open the courier levels, and
+they are existing labels so CST rows stay comparable with theirs.
+
+**Append-only is deliberate and load-bearing.** Changing a root cause inserts.
+No UPDATE, no DELETE, no soft delete, no PATCH route, and no unique constraint
+on `conversation_id` — the last is the most likely well-meant edit and a test
+guards it. The reason: the whole point of asking which courier is worst is that
+somebody will later ask how a number was arrived at.
+
+**The consequence for the report, which is NOT built:** a naive `count(*)`
+double counts a conversation whose cause was corrected. Decide between counting
+current values per conversation and counting rows, and **say which on the
+report**. Both queries are written out in
+`query-packs/2026-09-29-root-cause-query-pack.md`. "By store" is not in this
+table — join `cst_app.conversations`.
+
+**Status: 0020 is not applied.** Until it is, the message-app half works
+unchanged, the CST half reads as nothing recorded, and pressing Record answers
+503. Apply it via the acceptance test in
+`validation/2026-09-29-root-cause-capture-validation.md`. Before ever running
+the rollback: the table holds hand-recorded decisions with **no upstream copy**
+— take a dump first.
+
+Full detail: `documentation/2026-09-29-root-cause-capture-overview.md` and
+`handover/2026-09-29-root-cause-capture-handover.md`.

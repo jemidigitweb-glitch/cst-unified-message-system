@@ -59,6 +59,7 @@ import type { TrackingResult } from "@/lib/tracking/provider";
 
 import { ConversationFollowUps } from "./conversation-follow-ups";
 import { InternalNotesSection } from "./internal-notes-panel";
+import { RootCauseSelector } from "./root-cause-selector";
 import { StatusBadge } from "./status-badge";
 import type { ConversationFollowUpsState } from "./use-conversation-follow-ups";
 import type { InternalNotesState } from "./use-internal-notes";
@@ -1244,6 +1245,20 @@ export function ContextPanel({
         </dl>
       </section>
 
+      {/*
+        AND CST'S OWN, DIRECTLY BENEATH IT AND SEPARATELY LABELLED.
+
+        Two values, two systems. CST cannot write to the message application —
+        measured, not assumed — so a selection made here is a CST record that
+        application will never see. Showing them as one field would have to pick
+        a winner, and neither system has the standing to be it; showing them
+        adjacent lets a reviewer see at a glance when they disagree.
+
+        Unlike the section above, this one ALWAYS renders: an empty selector is
+        the invitation to record something, whereas an empty read-only display
+        would be a heading over a blank.
+      */}
+      <RootCauseSelector key={`cst-root-cause-${conversation.id}`} conversationId={conversation.id} />
 
       {/*
         TWO CONCEPTS, TWO SECTIONS, IN THE ORDER A REVIEWER NEEDS THEM.
