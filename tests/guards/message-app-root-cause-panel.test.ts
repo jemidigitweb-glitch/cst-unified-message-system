@@ -141,7 +141,7 @@ describe("the suggestion is a starting point, not a recording", () => {
     expect(selector).toMatch(/setSelected\(\[OTHER_LABEL\]\)/);
 
     // Every prefill branch leaves the tick dark.
-    const prefill = /} else if \(suggestion\.kind === "label"\) \{[\s\S]*?setSaving\(IDLE\);/.exec(
+    const prefill = /} else if \([^)]*suggestion\.kind === "label"\) \{[\s\S]*?setSaving\(IDLE\);/.exec(
       selector,
     )?.[0];
     expect(prefill).toBeDefined();
@@ -159,7 +159,41 @@ describe("the suggestion is a starting point, not a recording", () => {
    * suggestion branch is reachable only when nothing is recorded.
    */
   it("prefers what CST recorded over the suggestion", () => {
-    expect(selector).toMatch(/if \(current !== null\) \{[\s\S]*?\} else if \(suggestion\.kind/);
+    expect(selector).toMatch(/if \(current !== null\) \{[\s\S]*?\} else if \([^)]*suggestion\.kind/);
+  });
+
+  /**
+   * AND THE AGENT WINS A RACE WITH THE SUGGESTION. This is a fix for a real
+   * defect, pinned so it cannot come back.
+   *
+   * The request is in flight while the panel is already interactive, so an
+   * agent can press a capsule before it lands. The arriving suggestion used to
+   * overwrite that press — clicking OTHER and ending up with PARTS MISSING,
+   * observed in the running app. A machine silently undoing somebody's click
+   * is worse than a slow suggestion.
+   *
+   * EVERY path that pre-fills must therefore check `touched` first, and
+   * `edited()` must set it — which is what makes one flag cover the capsules,
+   * the typed cause, the courier, the issue type and the note alike.
+   */
+  it("never lets a late suggestion overwrite what the agent already chose", () => {
+    // The flag is a ref: readable by the in-flight callback without a stale copy.
+    expect(selector).toMatch(/const touched = useRef\(false\)/);
+    expect(selector).toMatch(/function edited\(\) \{\s*(\/\/[^\n]*\n\s*)*touched\.current = true;/);
+
+    // Every prefill is guarded by it — the fetch callback and the reopen path.
+    const guards = selector.match(/!touched\.current/g) ?? [];
+    expect(guards.length).toBeGreaterThanOrEqual(3);
+
+    // Every prefill ENTRY POINT is guarded: the fetch callback, and the two
+    // reopen branches. Checked by name rather than by scanning every branch
+    // that mentions a suggestion — an inner branch inside an already-guarded
+    // block is not an unguarded prefill, and flagging it taught nothing.
+    expect(selector).toMatch(
+      /if \(!touched\.current && payload\.cst == null && suggested\.kind !== "none"\)/,
+    );
+    expect(selector).toMatch(/} else if \(!touched\.current && suggestion\.kind === "label"\)/);
+    expect(selector).toMatch(/} else if \(!touched\.current && suggestion\.kind === "prose"\)/);
   });
 
   /**
@@ -460,6 +494,37 @@ describe("the two values stay two values", () => {
     expect(selector).toMatch(/\{opensCourierLevels && \(/);
     expect(selector).not.toMatch(/opensCustomRootCause \|\| opensCourierLevels/);
     expect(selector).not.toMatch(/opensCourierLevels \|\| opensCustomRootCause/);
+  });
+
+  /**
+   * BOTH COURIER GROUPS APPEAR TOGETHER, and neither waits for the other.
+   *
+   * The issue type was once gated on a courier having been chosen, mirroring
+   * the database rule that an issue type cannot stand without one. That kept
+   * the save honest and made the form misleading — an agent could not see what
+   * they would be asked for next.
+   *
+   * VISIBILITY AND VALIDITY ARE DIFFERENT QUESTIONS, and this pins the split:
+   * both groups render on the same condition, while the SAVE rule that a
+   * courier is required is asserted separately in the domain tests. Restoring
+   * the gate would fail here rather than quietly hiding the options again.
+   */
+  it("shows Courier Service and Courier Issue Type together", () => {
+    const selector = code("components", "root-cause-selector.tsx");
+
+    expect(selector).toContain('legend="Courier Service"');
+    expect(selector).toContain('legend="Courier Issue Type"');
+
+    // Neither group is gated on a courier having been picked.
+    expect(selector).not.toMatch(/\{courier !== null && \(/);
+
+    // Both sit inside the one courier-shaped-cause condition.
+    const block = /\{opensCourierLevels && \([\s\S]*?\n {10}\)\}/.exec(selector)?.[0] ?? "";
+    expect(block).toContain('legend="Courier Service"');
+    expect(block).toContain('legend="Courier Issue Type"');
+    expect(block.indexOf('legend="Courier Service"')).toBeLessThan(
+      block.indexOf('legend="Courier Issue Type"'),
+    );
   });
 
   /**

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   type ConversationRootCause,
@@ -255,6 +255,15 @@ export function RootCauseSelector({ conversationId }: Props) {
    */
   const [confirmed, setConfirmed] = useState(false);
 
+  /**
+   * Whether the agent has touched this form yet.
+   *
+   * A REF RATHER THAN STATE, because nothing renders from it and it must be
+   * readable by the in-flight fetch callback without that callback holding a
+   * stale copy from the render it was created in.
+   */
+  const touched = useRef(false);
+
   /*
     EVERYTHING RESETS WHEN THE CONVERSATION CHANGES, AND THE KEY DOES IT.
 
@@ -303,8 +312,17 @@ export function RootCauseSelector({ conversationId }: Props) {
           effect cascades a render, and React's own lint rejects it.
 
           THE TICK STAYS DARK. Nothing is recorded until Confirm is pressed.
+
+          AND THE AGENT ALWAYS WINS A RACE WITH IT.
+
+          This request is in flight while the panel is already interactive, so
+          an agent can press a capsule BEFORE it lands. Without `touched` the
+          arriving suggestion overwrote that press: clicking OTHER and ending
+          up with PARTS MISSING, because the suggestion replaced the selection
+          a moment later. A machine silently undoing somebody's click is worse
+          than a slow suggestion, so a touched form is left exactly as it is.
         */
-        if (payload.cst == null && suggested.kind !== "none") {
+        if (!touched.current && payload.cst == null && suggested.kind !== "none") {
           if (suggested.kind === "label") {
             setSelected([suggested.label]);
           } else {
@@ -360,6 +378,8 @@ export function RootCauseSelector({ conversationId }: Props) {
 
   /** Any change to the selection un-ticks the button. See `confirmed`. */
   function edited() {
+    // The agent has now made a choice; a late suggestion must not replace it.
+    touched.current = true;
     setSaving(IDLE);
     setConfirmed(false);
   }
@@ -471,7 +491,7 @@ export function RootCauseSelector({ conversationId }: Props) {
         setNote(current.issueNote ?? "");
         // What is on screen IS the recorded selection, so the tick is lit.
         setConfirmed(true);
-      } else if (suggestion.kind === "label") {
+      } else if (!touched.current && suggestion.kind === "label") {
         /*
           NOTHING RECORDED YET, SO START FROM THE SUGGESTION.
 
@@ -483,7 +503,7 @@ export function RootCauseSelector({ conversationId }: Props) {
         setSelected([suggestion.label]);
         setCustomRootCause("");
         setConfirmed(false);
-      } else if (suggestion.kind === "prose") {
+      } else if (!touched.current && suggestion.kind === "prose") {
         /*
           Their value is free text, or a label this application does not offer.
           OTHER carries it, which is exactly what OTHER is for — and the agent
@@ -609,10 +629,25 @@ export function RootCauseSelector({ conversationId }: Props) {
             </label>
           )}
 
+          {/*
+            BOTH GROUPS APPEAR TOGETHER, the moment a courier-shaped cause is
+            selected. Neither waits for the other.
+
+            The issue type used to be gated on a courier having been chosen,
+            mirroring the database rule that an issue type cannot stand without
+            one. That kept the SAVE honest but made the FORM misleading: an
+            agent could not see what they would be asked for next, and the
+            options appeared to materialise out of nowhere.
+
+            VISIBILITY AND VALIDITY ARE DIFFERENT QUESTIONS. Showing both lets
+            an agent read the whole decision at once; the save still refuses a
+            selection without a courier, and says so in the line beneath the
+            button. Nothing about what can be STORED has changed.
+          */}
           {opensCourierLevels && (
             <>
               <ChipGroup
-                legend="Courier"
+                legend="Courier Service"
                 options={COURIERS}
                 isSelected={(option) => option === courier}
                 disabled={busy}
@@ -621,23 +656,16 @@ export function RootCauseSelector({ conversationId }: Props) {
                   setCourier(next);
                 }}
               />
-              {/*
-                Issue type appears only once a courier is named, mirroring the
-                rule the database enforces: an issue type describes a courier's
-                conduct and cannot stand without one.
-              */}
-              {courier !== null && (
-                <ChipGroup
-                  legend="Issue type"
-                  options={COURIER_ISSUE_TYPES}
-                  isSelected={(option) => option === issueType}
-                  disabled={busy}
-                  onToggle={(next) => {
-                    edited();
-                    setIssueType(next);
-                  }}
-                />
-              )}
+              <ChipGroup
+                legend="Courier Issue Type"
+                options={COURIER_ISSUE_TYPES}
+                isSelected={(option) => option === issueType}
+                disabled={busy}
+                onToggle={(next) => {
+                  edited();
+                  setIssueType(next);
+                }}
+              />
             </>
           )}
 
