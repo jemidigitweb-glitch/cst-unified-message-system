@@ -368,6 +368,82 @@ costing a conversation the category its opening message earned — and what stop
 two unrelated sentences in two unrelated messages forming a phrase neither
 contains.
 
+### The one correction an ORDER makes to the category — 2026-09-30
+
+Everything above reads TEXT. One category makes a claim the text cannot settle:
+"Order change, **before shipping** queries" asserts something about the order.
+CST's rule, in their words: *the conversation's order had not shipped when the
+message was received; if it is shipped, it is not order before shipping.*
+
+Nothing was checking that, so a request made days after dispatch still arrived
+under a heading asserting the window was open. Two conversations found on screen:
+
+| Conversation | What the customer wrote | The order |
+| ------------ | ----------------------- | --------- |
+| eBay 50802 | Received the 1-light, proceeding with the cancellation of the 3-light | that order shipped **nine days earlier** |
+| eBay 40467 | "thinking 3 separate lights might be more suitable, how do we go about swapping them" | shipped **the day before** — and this is not a cancellation at all |
+
+```
+category === "Order change, before shipping queries" ?
+   │ no  → nothing happens. No other category claims anything about an order.
+   ▼ yes
+requestTargetOrder()   which order is the request about?
+   ├── one order number the customer TYPED            → resolved
+   ├── two typed, or several known and none typed     → ambiguous  → no change
+   └── no order known at all                          → unavailable → no change
+   ▼ resolved
+the dispatch state whose orderNumber IS the target's
+   ├── none supplied / a SIBLING's was supplied       → no change, and it says which
+   ├── not dispatched                                 → before shipping stands
+   ├── shipped unambiguously AFTER the message        → before shipping stands
+   └── shipped                                        → "Return and refunds"
+```
+
+**Three things to know before editing it** (`lib/domain/before-shipping-dispatch-rule.ts`):
+
+- **The classifier did not move.** `lib/knowledge/message-category.ts` is
+  untouched and still frozen. This is a separate pure rule applied to the
+  category it produced — the classifier reads the request, the source reads the
+  order, and the two axes stay apart.
+- **The dispatch state names its own order.** `VerifiedDispatch` is
+  `{orderNumber, dispatched, dispatchedAt}` and the rule compares that name
+  against the resolved target. Reducing it to a bare boolean would make "use the
+  displayed order's status by mistake" a one-line regression again, and
+  untestable. The negative half of
+  `tests/domain/before-shipping-dispatch-rule.test.ts` exists for exactly this.
+- **No new vocabulary.** The cancellation reading runs CST evidence row
+  `INT-OS01` **by id** — the row whose own condition already said "CANCELLATION —
+  not dispatched. Check dispatch status first". It is *reported*, never a
+  condition: 40467 is a swap, and the ORDER is what decides.
+
+**The ordering of the two timestamps is asserted only past 24 hours**
+(`DISPATCH_ORDERING_MARGIN_HOURS`). `shipped_time` is naive in the source and the
+message instant is `COALESCE(source_ts_utc, ingested_at)`; the margin is wider
+than any inhabited zone offset, and anything closer resolves to "the order has
+gone" — a parcel that left within a day of the message cannot be stopped now.
+
+**It runs on the ordinary inbox stream**, via `applyBeforeShippingDispatchRule`,
+not only on the urgent sweep — 50802's newest message is OURS, so it was never an
+urgent candidate. `beforeShipmentOutcome` still reads `already_dispatched`
+alongside the corrected chip, because the correction is applied *after* the
+urgent rule and never before.
+
+**Measured 2026-09-30:** 9 of ~900 conversations across three marketplaces still
+carry the category; all nine audited — 4 have no verified order, 5 are genuinely
+unshipped. Re-derive with `sql/2026-09-30-before-shipping-dispatch-audit.sql`.
+
+**Two things left open, both CST's to settle:**
+
+1. `cst-category-corpus.ts` row `2 A2` is called "Customer requests cancellation
+   — order ALREADY dispatched" and its `category` field says *Order change, before
+   shipping queries*, while its `condition` describes a return. The rule
+   implements the condition; the workbook still says the other thing.
+2. A post-dispatch **address change** now becomes Return and refunds.
+   `marketplaceAddressAdmin` already files it as Admin where the TEXT says the
+   order has gone. Nobody has counted how many exist.
+
+Full detail: `documentation/2026-09-30-before-shipping-dispatch-rule-overview.md`.
+
 ### Where the category is consumed
 
 | Consumer | Use |
@@ -376,6 +452,13 @@ contains.
 | Before-shipment urgency | `ORDER_CHANGE_CATEGORY` is imported, not retyped, so the flag and the notification feed match on the same string |
 | Draft prompt | `categoryBlock()` emits it as **INTERNAL GUIDANCE**, explicitly not a verified fact — *"where it disagrees with what the customer plainly wrote, the customer's own words win"*, and the model is told never to mention it |
 | Draft validation | `categoryCoverage()` re-reads it to check the reply addressed what was asked |
+
+**The draft path reads the UNCORRECTED category.** `draft-assembly.ts` and
+`draft-validation.ts` call `readConversation` directly, so a conversation the inbox
+now shows as "Return and refunds" is still graded against the intent owning "Order
+change, before shipping queries". Deliberately out of scope on 2026-09-30 and the
+next thing to reconcile — see
+`duplicate-risk-reports/2026-09-30-before-shipping-dispatch-duplicate-risk.md`.
 
 ### The URGENT badge stops when the customer signs off
 

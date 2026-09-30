@@ -1,4 +1,8 @@
-import type { SourceOrderDetail } from "./order";
+import {
+  type SourceOrderDetail,
+  normaliseOrderIdentifier,
+  orderIdentifierQuoted,
+} from "./order";
 
 /**
  * Why each of several matching orders matched — for a CST reviewer, and for
@@ -51,19 +55,15 @@ export const EVIDENCE_TRACKING = "Tracking number found in message";
 export const EVIDENCE_SKU = "Product/SKU match";
 export const EVIDENCE_CLOSEST_BEFORE = "Closest order before message date";
 
-/**
- * The shortest identifier worth searching for.
+/*
+ * THE IDENTIFIER RULE MOVED TO `order.ts`, AND DELIBERATELY.
  *
- * A three-character SKU or a two-digit fragment would hit inside unrelated
- * words and postcodes and report a match that is not one. Six is long enough
- * that a containment hit is the customer having typed the identifier.
+ * `MIN_IDENTIFIER_LENGTH` and `normaliseIdentifier` used to be private here.
+ * `cancellation-target-order.ts` now asks the same question — did the customer
+ * type this order number — to decide a category, and two copies of that rule
+ * would let an evidence line on screen disagree with the category beside it.
+ * See the header over `orderIdentifierQuoted`. The behaviour is unchanged.
  */
-const MIN_IDENTIFIER_LENGTH = 6;
-
-/** Letters and digits only, upper-cased — so "12-34567-89012" matches "12 34567 89012". */
-function normaliseIdentifier(value: string): string {
-  return value.replace(/[^a-z0-9]/gi, "").toUpperCase();
-}
 
 /**
  * Only the customer's own decoded words.
@@ -84,14 +84,6 @@ function customerText(messages: readonly EvidenceMessage[]): string {
     )
     .map((message) => message.bodyText)
     .join("\n");
-}
-
-/** Exact containment of a normalised identifier, or false for anything too short to trust. */
-function quotedInMessage(value: string | null, normalisedText: string): boolean {
-  if (value === null) return false;
-  const needle = normaliseIdentifier(value);
-  if (needle.length < MIN_IDENTIFIER_LENGTH) return false;
-  return normalisedText.includes(needle);
 }
 
 /** The first thing the customer said, which is what any order must predate. */
@@ -203,7 +195,7 @@ export function matchEvidenceFor(
   orders: readonly SourceOrderDetail[],
   messages: readonly EvidenceMessage[],
 ): OrderMatchEvidence[] {
-  const normalisedText = normaliseIdentifier(customerText(messages));
+  const normalisedText = normaliseOrderIdentifier(customerText(messages));
   const closest = closestBeforeMessage(orders, messages);
 
   const distinctSkus = new Set(
@@ -214,9 +206,13 @@ export function matchEvidenceFor(
   return orders.map((order) => {
     const reasons = [EVIDENCE_SAME_BUYER, EVIDENCE_SAME_LISTING];
 
-    if (quotedInMessage(order.orderNumber, normalisedText)) reasons.push(EVIDENCE_ORDER_NUMBER);
-    if (quotedInMessage(order.trackingNumber, normalisedText)) reasons.push(EVIDENCE_TRACKING);
-    if (skuIsDistinguishing && quotedInMessage(order.sku, normalisedText)) {
+    if (orderIdentifierQuoted(order.orderNumber, normalisedText)) {
+      reasons.push(EVIDENCE_ORDER_NUMBER);
+    }
+    if (orderIdentifierQuoted(order.trackingNumber, normalisedText)) {
+      reasons.push(EVIDENCE_TRACKING);
+    }
+    if (skuIsDistinguishing && orderIdentifierQuoted(order.sku, normalisedText)) {
       reasons.push(EVIDENCE_SKU);
     }
     if (closest !== null && order.orderNumber === closest) reasons.push(EVIDENCE_CLOSEST_BEFORE);

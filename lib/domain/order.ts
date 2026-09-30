@@ -37,6 +37,50 @@ export function logicalOrderKeyOf(key: LogicalOrderKey): string {
   return `${key.subSourceId}:${key.orderId}`;
 }
 
+/* ------------------------------------------------------------------------- *
+ * DID THE CUSTOMER TYPE THIS IDENTIFIER?
+ *
+ * ONE DEFINITION, TWO READERS, AND THAT IS THE POINT. `order-match-evidence.ts`
+ * asks it to tell a reviewer WHY an order matched; `cancellation-target-order.ts`
+ * asks it to decide WHICH order a cancellation is about. Those are different
+ * questions and a different consequence — one is a sentence on screen, the other
+ * moves a conversation between two case areas — but "the customer quoted this
+ * order number" must mean exactly one thing in both, or a reviewer would read an
+ * evidence line that the category rule disagreed with.
+ *
+ * It lives here rather than in either caller because an order identifier is an
+ * order concept. Neither module may keep a private copy.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The shortest identifier worth searching for.
+ *
+ * A three-character SKU or a two-digit fragment would hit inside unrelated
+ * words and postcodes and report a match that is not one. Six is long enough
+ * that a containment hit is the customer having typed the identifier.
+ */
+export const MIN_ORDER_IDENTIFIER_LENGTH = 6;
+
+/** Letters and digits only, upper-cased — so "12-34567-89012" matches "12 34567 89012". */
+export function normaliseOrderIdentifier(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+/**
+ * Exact containment of a normalised identifier, or false for anything too short
+ * to trust.
+ *
+ * `normalisedText` is expected to have been through `normaliseOrderIdentifier`
+ * already: callers normalise the whole message body once and test many
+ * identifiers against it.
+ */
+export function orderIdentifierQuoted(value: string | null, normalisedText: string): boolean {
+  if (value === null) return false;
+  const needle = normaliseOrderIdentifier(value);
+  if (needle.length < MIN_ORDER_IDENTIFIER_LENGTH) return false;
+  return normalisedText.includes(needle);
+}
+
 /**
  * Statuses that keep a physical row context-relevant.
  * `Refunded` is intentionally active: a refunded order is a completed order the

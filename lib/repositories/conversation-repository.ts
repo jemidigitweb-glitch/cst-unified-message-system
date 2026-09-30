@@ -37,6 +37,10 @@ import {
   beforeShipmentEligibility,
   isBeforeShipmentUrgent,
 } from "@/lib/domain/before-shipment-urgency";
+import {
+  type VerifiedDispatch,
+  categoryForBeforeShipping,
+} from "@/lib/domain/before-shipping-dispatch-rule";
 import { staffClosedTheOrder } from "@/lib/knowledge/staff-resolution";
 import {
   type OrderKey,
@@ -227,6 +231,47 @@ function orderRefExpression(marketplaceParam: string): string {
               THEN c.counterparty_ref END
        )`;
 }
+
+/**
+ * The order key for a handful of named conversations, and nothing else.
+ *
+ * ------------------------------------------------------------------------
+ * WHY IT IS A SECOND QUERY AND NOT A COLUMN ON `LIST_CONVERSATIONS`
+ * ------------------------------------------------------------------------
+ * The ordinary inbox projection deliberately does not join `context_snapshots`:
+ * `conversation-repository.test.ts` and the before-shipment guard both tell the
+ * page query apart from the urgent sweep by exactly that, and the page query's
+ * own header says every conversation is listed whatever its placement. Adding a
+ * join to it would put the two statements' shapes in one bucket and make an
+ * assertion about the inbox satisfiable by the sweep.
+ *
+ * ------------------------------------------------------------------------
+ * AND BECAUSE THE SET IS TINY
+ * ------------------------------------------------------------------------
+ * Only a conversation the classifier filed under the before-shipping case area
+ * can have its category corrected by a dispatch state, and that is a minority of
+ * any page. So this is asked for a few ids rather than carried on a hundred rows,
+ * and on a page with none it is not asked at all — see
+ * `applyBeforeShippingDispatchRule`.
+ *
+ * THE SAME EXPRESSION THE TWO FEEDS USE, including the same refusal to send the
+ * ingestion layer's `unresolved:` sentinel to the source as an order number. One
+ * definition of "what to look up", three readers.
+ */
+const ORDER_KEYS_FOR_CONVERSATIONS = `
+SELECT c.id::text                AS id,
+       CASE
+         WHEN c.counterparty_ref LIKE 'unresolved:%'
+           THEN CASE WHEN cs.resolution = 'single_order' THEN cs.order_number END
+         ELSE ${orderRefExpression("$2")}
+       END                       AS order_number,
+       -- WHEN THE MESSAGE ARRIVED, for the "had it shipped YET" half of the rule.
+       -- The same expression the response SLA starts from, so the two surfaces
+       -- cannot disagree about when the customer wrote.
+       ${LATEST_INBOUND_INSTANT} AS sla_starts_at
+FROM cst_app.conversations c
+LEFT JOIN cst_app.context_snapshots cs ON cs.conversation_id = c.id
+WHERE c.id = ANY($1::bigint[])`;
 
 /**
  * WHICH half of the COALESCE above actually answered.
@@ -1246,6 +1291,222 @@ const MS_PER_HOUR = 3_600_000;
  * A CANDIDATE THAT FAILS keeps everything it arrived with and rejoins the
  * ordinary stream in its date position, carrying the outcome that explains why.
  */
+/*
+ * NO SOURCE, NO FLAG. Where the source pool is unavailable the dispatch state
+ * is unknown, and an unknown dispatch state must not be read as "not
+ * dispatched" — that is the one error that would promise a window which has
+ * already closed. The inbox still loads; nothing is urgent.
+ */
+function orderNumberOf(row: ConversationRow): string | null {
+  const value = row.order_number;
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
+ * Every inbound message the row carries, as the category layer reads them.
+ *
+ * THE SAME ARRAY `categoryFor` CLASSIFIES, filtered the same way. The
+ * dispatched-cancellation rule has to read the messages the CATEGORY was read
+ * from — see `asksToCancelTheOrder` on why it is the thread and not the newest
+ * message — so the two cannot disagree about which messages count. A projection
+ * that does not select `inbound_texts` yields an empty list, and the rule then
+ * establishes no cancellation and corrects nothing.
+ */
+function customerMessagesOf(row: ConversationRow): string[] {
+  return (row.inbound_texts ?? [])
+    .filter((text): text is string => (text ?? "").trim() !== "");
+}
+
+/**
+ * The orders whose dispatch state can change what a category says.
+ *
+ * ONE FILTER, SHARED BY BOTH RULES, and the coupling is deliberate: the
+ * before-shipment veto and the dispatched-cancellation correction are both
+ * confined to the before-shipping case area, so both need exactly this set. A
+ * row filed under any other category returns before `shipment` is read at all —
+ * looking its order up is a round trip to a shared production database for an
+ * answer nobody reads.
+ *
+ * THE PAYOFF IS USUALLY ZERO CONNECTIONS. Before-shipping is a minority case
+ * area, so on most pages this returns an empty list, the caller skips the query
+ * entirely, and the inbox runs on the app pool alone.
+ *
+ * IT MIRRORS A HARD REQUIREMENT OF BOTH RULES. If either ever stops requiring
+ * the case area, this filter must be widened in the same edit or the dispatch
+ * read will silently stop firing for whatever the rule newly admits.
+ */
+function orderKeysForDispatchRules(
+  rows: readonly ConversationRow[],
+  items: readonly InboxItem[],
+): OrderKey[] {
+  const keys: OrderKey[] = [];
+  for (const [index, row] of rows.entries()) {
+    if (items[index]!.category !== BEFORE_SHIPPING_CATEGORY) continue;
+    const orderNumber = orderNumberOf(row);
+    if (orderNumber !== null) keys.push({ orderNumber });
+  }
+  return keys;
+}
+
+/**
+ * The dispatch state for one row's own order, NAMING THE ORDER IT BELONGS TO.
+ *
+ * THE SOURCE'S OWN `orderNumber`, NOT THE KEY WE ASKED WITH. `VerifiedDispatch`
+ * carries the order number so `categoryForCancellation` can refuse a state that
+ * is not the cancellation target's — and taking the name from the row the source
+ * returned rather than from the key means even a source that answered about a
+ * different order could not slip past that check. See the header of
+ * `lib/domain/cancellation-target-order.ts`.
+ *
+ * An empty list is "we did not establish it", which the rule reports as
+ * `target_dispatch_unknown` and never as an open window.
+ */
+function verifiedDispatchFor(
+  row: ConversationRow,
+  shipmentState: ReadonlyMap<string, OrderShipmentState>,
+): VerifiedDispatch[] {
+  const orderNumber = orderNumberOf(row);
+  if (orderNumber === null) return [];
+  const state = shipmentState.get(orderKeyOf({ orderNumber }));
+  if (state === undefined) return [];
+  return [
+    {
+      orderNumber: state.orderNumber,
+      dispatched: state.dispatched,
+      dispatchedAt: state.dispatchedAt,
+    },
+  ];
+}
+
+/**
+ * A cancellation filed by the state of the order it is ACTUALLY about.
+ *
+ * ------------------------------------------------------------------------
+ * WHY THIS IS A SECOND PASS AND NOT PART OF THE URGENT RULE
+ * ------------------------------------------------------------------------
+ * The before-shipment rule decides URGENCY — is the window still open — and it
+ * runs only over the urgent sweep's candidates: a reply inbox thread whose
+ * newest message is the customer's. eBay conversation 50802 is neither. Its
+ * newest message is OURS, so it was never a candidate, and its category came
+ * from the classifier alone: "Order change, before shipping queries" on an order
+ * dispatched nine days earlier.
+ *
+ * So the CATEGORY has to be corrected on the ordinary stream too, which is where
+ * every conversation appears. That is what this does, and it is the same rule
+ * either way — `categoryForCancellation`, in the domain, is the only place the
+ * decision lives.
+ *
+ * ONE BATCHED READ, AND USUALLY NONE. `orderKeysForDispatchRules` empties on any
+ * page with no before-shipping conversation on it, and the query is then skipped
+ * entirely.
+ *
+ * A ROW THE RULE DECLINES KEEPS THE CATEGORY IT ARRIVED WITH, untouched. Nothing
+ * else on the item is altered — not `urgent`, not `beforeShipmentOutcome`, not
+ * the priority — because none of those is this rule's business.
+ */
+async function applyBeforeShippingDispatchRule(
+  client: Queryable,
+  source: SourceQueryable | null,
+  rows: readonly ConversationRow[],
+  items: readonly InboxItem[],
+): Promise<InboxItem[]> {
+  if (source === null || rows.length === 0) return [...items];
+
+  /*
+   * WHICH ROWS COULD BE CORRECTED AT ALL. The before-shipping case area and
+   * nothing else — see `orderKeysForDispatchRules`. On a page with none of them
+   * this returns here, and neither the app nor the source is asked anything.
+   */
+  const candidates = rows.filter(
+    (_, index) => items[index]!.category === BEFORE_SHIPPING_CATEGORY,
+  );
+  if (candidates.length === 0) return [...items];
+
+  /*
+   * THE ORDER KEY, FROM THE ROW WHERE THE PROJECTION CARRIES IT AND OTHERWISE BY
+   * ASKING. The urgent sweep and the notification feed already select it; the
+   * ordinary inbox stream does not, and this is the one place that difference is
+   * reconciled. A conversation whose key is already known is never looked up
+   * again.
+   */
+  const needKeys = candidates.filter((row) => row.order_number === undefined);
+  type KeyRow = { id: string; order_number: string | null; sla_starts_at: string | Date | null };
+  const fetched = new Map<string, KeyRow>();
+  if (needKeys.length > 0) {
+    const { rows: keyRows } = await client.query({
+      text: ORDER_KEYS_FOR_CONVERSATIONS,
+      values: [
+        needKeys.map((row) => row.id),
+        // $2: the marketplace whose counterparty_ref is a buyer username rather
+        // than an order number, so the fallback is skipped there.
+        USERNAME_KEYED_MARKETPLACE,
+      ],
+    });
+    for (const keyRow of keyRows as KeyRow[]) fetched.set(keyRow.id, keyRow);
+  }
+
+  /*
+   * ONE ROW SHAPE FROM HERE ON. The fetched key and message instant are folded
+   * onto the row so the rule below reads both from one place whichever projection
+   * produced them — a conversation the lookup could not key reads null, which the
+   * domain rule reports as `target_dispatch_unknown` and never as an open window.
+   */
+  const keyed = rows.map((row) => {
+    const extra = row.order_number === undefined ? fetched.get(row.id) : undefined;
+    return extra === undefined
+      ? row
+      : {
+          ...row,
+          order_number: extra.order_number,
+          sla_starts_at: row.sla_starts_at ?? extra.sla_starts_at,
+        };
+  });
+
+  const keys = orderKeysForDispatchRules(keyed, items);
+  if (keys.length === 0) return [...items];
+
+  const shipmentState = await shipmentStateForOrders(source, keys);
+  return items.map((item, index) =>
+    withBeforeShippingCategory(keyed[index]!, item, shipmentState),
+  );
+}
+
+/**
+ * The rule applied to one already-built item.
+ *
+ * Separate from the batching above so the urgent path can reuse it with the
+ * shipment map it has ALREADY read — the two rules want the same orders, and a
+ * second query for the same answer is how two features start disagreeing about
+ * one order.
+ */
+function withBeforeShippingCategory(
+  row: ConversationRow,
+  item: InboxItem,
+  shipmentState: ReadonlyMap<string, OrderShipmentState>,
+): InboxItem {
+  const orderNumber = orderNumberOf(row);
+  const reading = categoryForBeforeShipping({
+    category: item.category,
+    customerMessages: customerMessagesOf(row),
+    // The orders this conversation is verified against. One today: the resolver's
+    // `single_order` snapshot, or the thread's own key where that IS the order
+    // number. Where a conversation ever carries several, the domain rule reports
+    // `ambiguous` and corrects nothing rather than picking the displayed one.
+    knownOrders: orderNumber === null ? [] : [{ orderNumber }],
+    dispatch: verifiedDispatchFor(row, shipmentState),
+    /*
+     * WHEN THE MESSAGE ARRIVED — the same instant the response SLA starts from,
+     * read from the same expression, so a parcel that left AFTER the customer
+     * wrote keeps the before-shipping reading. Absent on a projection that does
+     * not select it, and the rule then decides on the order's state alone.
+     */
+    messageAt: instantOf(row.sla_starts_at ?? null),
+  });
+  return reading.category === item.category ? item : { ...item, category: reading.category };
+}
+
 async function applyBeforeShipmentRule(
   source: SourceQueryable | null,
   rows: readonly ConversationRow[],
@@ -1253,19 +1514,6 @@ async function applyBeforeShipmentRule(
 ): Promise<InboxItem[]> {
   const items = rows.map(toInboxItem);
   if (rows.length === 0) return items;
-
-  /*
-   * NO SOURCE, NO FLAG. Where the source pool is unavailable the dispatch state
-   * is unknown, and an unknown dispatch state must not be read as "not
-   * dispatched" — that is the one error that would promise a window which has
-   * already closed. The inbox still loads; nothing is urgent.
-   */
-  const orderNumberOf = (row: ConversationRow): string | null => {
-    const value = row.order_number;
-    if (value === null || value === undefined) return null;
-    const trimmed = String(value).trim();
-    return trimmed === "" ? null : trimmed;
-  };
 
   /*
    * ------------------------------------------------------------------------
@@ -1291,13 +1539,12 @@ async function applyBeforeShipmentRule(
    * watch: if `beforeShipmentEligibility` ever stops requiring the case area,
    * this filter must be widened in the same edit or the veto will silently stop
    * firing for whatever the rule newly admits.
+   *
+   * THE FILTER ITSELF NOW LIVES IN `orderKeysForDispatchRules`, because the
+   * dispatched-cancellation correction wants precisely the same orders and two
+   * copies of this reasoning would drift.
    */
-  const keys: OrderKey[] = [];
-  for (const [index, row] of rows.entries()) {
-    if (items[index]!.category !== BEFORE_SHIPPING_CATEGORY) continue;
-    const orderNumber = orderNumberOf(row);
-    if (orderNumber !== null) keys.push({ orderNumber });
-  }
+  const keys = orderKeysForDispatchRules(rows, items);
   const shipmentState =
     source === null || keys.length === 0
       ? new Map<string, OrderShipmentState>()
@@ -1374,7 +1621,7 @@ async function applyBeforeShipmentRule(
      * is NOT an order change, so it keeps the category the phrase table read.
      */
     const retag = urgent && asksToChangeTheOrder(row.latest_inbound_text ?? null);
-    return {
+    const ranked: InboxItem = {
       ...item,
       urgent,
       beforeShipmentOutcome: outcome,
@@ -1382,6 +1629,18 @@ async function applyBeforeShipmentRule(
       // this declines keeps whatever the phrase table read, untouched.
       category: retag ? BEFORE_SHIPPING_CATEGORY : item.category,
     };
+    /*
+     * AND THE CANCELLATION THE ORDER HAS ALREADY OUTRUN, on the same shipment
+     * read. Applied AFTER the urgent rule, never before, so `beforeShipmentOutcome`
+     * still says `already_dispatched` — the explanation for why this is not urgent
+     * — while the category says what the case now IS. Correcting first would make
+     * the rule answer `not_an_order_change` and throw that explanation away.
+     *
+     * The two cannot contradict each other: the correction fires only when the
+     * TARGET order has dispatched, which is the one condition under which
+     * `beforeShipmentEligibility` refuses the flag and `retag` is false.
+     */
+    return withBeforeShippingCategory(row, ranked, shipmentState);
   });
 }
 
@@ -1497,7 +1756,19 @@ export async function listConversations(
     ],
   });
   const hasMore = rows.length > limit;
-  const pageItems = (rows as ConversationRow[]).slice(0, limit).map(toInboxItem);
+  const pageRows = (rows as ConversationRow[]).slice(0, limit);
+  /*
+   * THE CATEGORY IS CORRECTED ON THE ORDINARY STREAM, and it has to be here
+   * rather than only on the urgent sweep. A conversation whose newest message is
+   * OURS is not an urgent candidate at all — eBay 50802 is one — so this is the
+   * only path its row ever takes. See `applyBeforeShippingDispatchRule`.
+   */
+  const pageItems = await applyBeforeShippingDispatchRule(
+    client,
+    options.source ?? null,
+    pageRows,
+    pageRows.map(toInboxItem),
+  );
 
   /**
    * The urgent block is served ONCE, on the first page.
@@ -1864,7 +2135,24 @@ export async function listAwaitingResponseByCategory(
   const bases =
     gate === "before_shipment"
       ? await applyBeforeShipmentRule(source, withinWindow, options.now ?? new Date())
-      : withinWindow.map(toInboxItem);
+      : /*
+         * EVERY OTHER AREA STILL GETS THE CANCELLATION CORRECTION, and that is
+         * what puts a dispatched cancellation into the RETURNS feed rather than
+         * leaving it out of both. Without it the two surfaces would disagree: the
+         * inbox would show "Return and refunds" beside the row and this drawer
+         * would not list it under that area.
+         *
+         * It is not the before-shipment gate and does not become one — no
+         * urgency is computed, no age applied, and `dispatchStateRead` still
+         * describes that gate alone. On a page with no before-shipping
+         * conversation this costs no query at all.
+         */
+        await applyBeforeShippingDispatchRule(
+          client,
+          source,
+          withinWindow,
+          withinWindow.map(toInboxItem),
+        );
 
   const items = withinWindow
     .map((row, index) => toAwaitingResponseItem(row, bases[index]!))
