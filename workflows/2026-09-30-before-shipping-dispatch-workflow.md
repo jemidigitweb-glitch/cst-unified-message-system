@@ -72,3 +72,24 @@ still stays URGENT until somebody replies.
 
 It cannot cancel an order, stop a dispatch, issue a refund, or send your reply. It
 reads, files and drafts. Every action happens in the systems that can act.
+
+---
+
+## Addendum — what the DEL-13.1 subject test changed on your screen
+
+A customer apologising for missing our reply — "sorry, I don't get notifications
+come through" — used to put the whole conversation under **Delivery queries**. It
+no longer does, so a thread like that now shows whatever it is actually about. The
+one that was reported was a 2-core / 3-core cable question and now reads **Pre sales
+queries**.
+
+**What did NOT change, and you should still see it as a delivery query:** a customer
+chasing a missing DISPATCH notification. "No dispatch email received", "no shipping
+confirmation at all", "no notification to collect", "no notification about where it
+was left" — all still Delivery queries, because all of those are about the parcel.
+
+**If a row looks wrong, the chip and the ribbon are worth comparing.** This defect
+was visible because the chip said Delivery queries while the priority ribbon said
+`pre_sales_enquiry`, LOW. They read the same text through different rules and are
+allowed to differ — but when they disagree flatly about what a conversation IS,
+that is worth reporting.

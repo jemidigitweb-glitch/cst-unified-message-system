@@ -50,3 +50,22 @@ the requirement ever becomes "explain in prose why this conversation moved
 category", the explanation is already computable without a model: the
 `BeforeShippingOutcome` and the `RequestTarget` together say exactly which condition
 decided and which order it was decided about.
+
+---
+
+## Addendum — the DEL-13.1 subject test has no prompt either
+
+The second category fix of 2026-09-30 is a regular expression. No model runs, no
+corpus is retrieved, nothing is drafted.
+
+**And it is the case for keeping it that way.** The defect was a pattern matching
+`dont` ... `come` across " get notifications " — a mistake a reviewer can see in
+one line of a regex and argue with. The fix was then CORRECTED by a test
+(`cst-category-corpus.test.ts` naming row `5.2`) because CST's own workbook owns
+"No dispatch email received". Neither the diagnosis nor the correction would have
+been available in a model's weights; both came from reading an approved spreadsheet
+and running an assertion over it.
+
+The category still reaches the draft prompt only as INTERNAL GUIDANCE, with the
+model told that where it disagrees with the customer's own words the customer wins.
+Unchanged.

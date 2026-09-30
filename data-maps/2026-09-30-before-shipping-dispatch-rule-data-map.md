@@ -52,3 +52,14 @@ issued at all.
 - `ledsone` · `order_management` — **SELECT only**, on the source pool, which pins
   `default_transaction_read_only = on`. One existing statement, unchanged.
 - MariaDB staff directory (`DB_ORDER_*`) — **not touched**.
+
+---
+
+## Addendum — the DEL-13.1 subject test reads no new column
+
+The second category fix of 2026-09-30
+(`documentation/2026-09-30-non-receipt-subject-test-overview.md`) changes one
+trigger pattern in `lib/knowledge/cst-category-evidence.ts`. It reads the same
+`conversation_messages.body_text` the classifier already read, through
+`INBOUND_TEXTS`, and nothing else. **No column, table, schema or database is
+added, and no value moves between them** — which is why it has no map of its own.

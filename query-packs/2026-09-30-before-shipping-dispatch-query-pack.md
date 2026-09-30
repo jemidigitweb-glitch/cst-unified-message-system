@@ -126,3 +126,23 @@ lib/knowledge/cst-category-corpus.ts, row id "2 A2"
 
 The condition describes a return; the `category` field says order change. The rule
 implements the condition. Nothing in this pack resolves which the workbook should say.
+
+---
+
+## Addendum — the DEL-13.1 subject test runs no query
+
+The second category fix of 2026-09-30 is a pattern in
+`lib/knowledge/cst-category-evidence.ts`. It issues no statement against either
+database and adds no projection.
+
+**The query a report WILL need, and why it is not SQL.** "Which conversations
+changed category" cannot be answered from storage: the category is computed on the
+read path and never written. It needs one pass that classifies each conversation's
+`inbound_texts` **twice** — once with the subject test and once without — and
+reports the pairs that differ. Step 1 of query 2.1 above supplies exactly the rows;
+the two classifications happen in application code, in one pass, so nothing is
+measured at two different moments.
+
+**The direction is known even without the count.** The change can only ever REMOVE a
+`DEL-13.1` match, so every difference is a conversation that read Delivery queries
+and now reads something else. None can move the other way.

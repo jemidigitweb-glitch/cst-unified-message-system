@@ -110,3 +110,45 @@ SELECT o.order_id,
 -- two-step recipe is in
 -- query-packs/2026-09-30-before-shipping-dispatch-query-pack.md.
 -- ---------------------------------------------------------------------------
+
+-- ===========================================================================
+-- BLOCK D — varmen_db. The rows a category-drift report needs.
+--
+-- ADDED 2026-09-30 for the SECOND category fix of the day, the DEL-13.1 subject
+-- test -- see documentation/2026-09-30-non-receipt-subject-test-overview.md.
+--
+-- THERE IS NO SQL ANSWER TO "WHICH CONVERSATIONS CHANGED CATEGORY". The category
+-- is computed on the read path by classifyConversationCategory and is never
+-- written, so nothing can be compared in the database. This supplies the TEXT;
+-- the two classifications have to happen in application code, in ONE pass, or a
+-- before/after figure is two measurements taken at two moments rather than one.
+--
+-- The direction is known without the count: the subject test can only ever REMOVE
+-- a DEL-13.1 match, so every difference is a conversation that read Delivery
+-- queries and now reads something else. None can move the other way.
+--
+-- bandq and temu are excluded because the category is suppressed for them --
+-- CATEGORY_SUPPRESSED_MARKETPLACES -- so no row of theirs can differ.
+-- ===========================================================================
+SELECT c.id::text                        AS conversation_id,
+       c.marketplace,
+       c.inbox_visibility,
+       (SELECT array_agg(cm.body_text ORDER BY cm.source_ts, cm.source_pk::bigint)
+          FROM cst_app.conversation_messages cm
+         WHERE cm.conversation_id = c.id
+           AND cm.direction = 'inbound'
+           AND cm.body_text IS NOT NULL) AS inbound_texts
+  FROM cst_app.conversations c
+ WHERE c.marketplace NOT IN ('bandq', 'temu')
+   AND c.inbox_visibility <> 'filtered'
+   -- Only threads whose text can reach the pattern at all: a negator somewhere
+   -- near a receipt verb. A coarse prefilter, deliberately wider than the regex,
+   -- so the classification step decides and this only avoids reading every row.
+   AND EXISTS (
+     SELECT 1
+       FROM cst_app.conversation_messages cm
+      WHERE cm.conversation_id = c.id
+        AND cm.direction = 'inbound'
+        AND cm.body_text ~* '\m(not|never|no|none|nothing|n.?t)\M'
+        AND cm.body_text ~* '\m(receiv|recieved|arriv|deliver|dispatch|come|came|got|get)'
+   );

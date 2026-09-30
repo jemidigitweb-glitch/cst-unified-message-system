@@ -368,6 +368,51 @@ costing a conversation the category its opening message earned — and what stop
 two unrelated sentences in two unrelated messages forming a phrase neither
 contains.
 
+### A negated receipt needs a SUBJECT — 2026-09-30
+
+eBay 33222 was tagged **Delivery queries**. It is a 2-core / 3-core cable enquiry.
+The customer answered our question a month late and apologised:
+
+> "Hi i need a 3 core. So sorry, i dont get notifications come through."
+
+`DEL-13.1`, the sheet 13 non-receipt catch-all, matched `dont` ... `come` straight
+across " get notifications ". It asked whether a receipt had been NEGATED and never
+asked WHAT had failed to arrive. Delivery is a case category and Pre sales is not,
+so one fabricated parcel report took the thread — while `INT-PS19` matched "3 core"
+in the very same sentence.
+
+**The chip and the ribbon disagreed, and that is how it was found.**
+`explainMessagePriority` read `pre_sales_enquiry`, LOW. The two are allowed to
+differ, but a flat disagreement about what a conversation IS is worth reporting.
+
+The fix is a subject test on that one pattern, in
+`lib/knowledge/cst-category-evidence.ts`. Two lookaheads, because the subject lands
+on either side of the verb — "dont get NOTIFICATIONS come" before, "did not receive
+any NOTIFICATION" after. Both windows stop at a sentence boundary, so a customer
+who says both still reports a non-delivery.
+
+**THE CORPUS CUT THE FIX DOWN, and this is the part to read before widening it.**
+The first attempt excluded everything that arrives by wire — notification, email,
+update, confirmation, alert, text, sms. `cst-category-corpus.test.ts` failed and
+named row `5.2`: **sheet 5 – Not Dispatched owns "No dispatch email received", "No
+shipping confirmation at all" and "No update at all since I ordered".** A customer
+chasing a missing dispatch email is reporting a parcel that never left, which IS a
+delivery query.
+
+So the list is only the conversation's own words — notification, message, reply —
+with a parcel exception, because three more corpus phrases had to survive: "No
+notification about where it was left" (sheet 2), "No notification to collect" and
+"Parcel was taken to a collection point but customer was not notified" (sheet 11).
+`PARCEL_QUALIFIER_BEFORE` / `_AFTER` are what keep them. **That reachability test is
+the guard on this change — do not widen the list without it passing.**
+
+`message-category.ts` is NOT edited; this is one trigger pattern in the evidence map
+it consults, and the frozen baseline is otherwise untouched (1,292 category tests
+pass). Controls for every phrase sheet 13 quotes are pinned in
+`tests/knowledge/category-regression.test.ts`.
+
+Full detail: `documentation/2026-09-30-non-receipt-subject-test-overview.md`.
+
 ### The one correction an ORDER makes to the category — 2026-09-30
 
 Everything above reads TEXT. One category makes a claim the text cannot settle:

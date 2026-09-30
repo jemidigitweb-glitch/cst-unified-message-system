@@ -417,6 +417,102 @@ export const NOT_A_PRODUCT_WORD = new Set([
   "online", "again", "already", "recently", "back",
 ]);
 
+/* ------------------------------------------------------------------------- *
+ * A NEGATED RECEIPT NEEDS A SUBJECT, AND THE SUBJECT MUST BE A PARCEL
+ *
+ * eBay 33222, reported 2026-09-30. A customer asked whether a cable is 2-core or
+ * 3-core, we asked which they wanted, and a month later they answered with an
+ * apology for missing the reply:
+ *
+ *   "Hi i need a 3 core. So sorry, i dont get notifications come through."
+ *
+ * `DEL-13.1`, the non-receipt catch-all, matched `dont` ... `come` straight
+ * across " get notifications ". It asked whether a receipt had been NEGATED and
+ * never asked WHAT had failed to arrive. Delivery queries is a case category and
+ * Pre sales is not, so one fabricated parcel report outranked the wiring enquiry
+ * the entire thread is about — `INT-PS19` matched "3 core" in the same sentence.
+ * The priority engine had it right all along (`pre_sales_enquiry`), which is how
+ * the disagreement was visible at all.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A wire-thing that names THIS CORRESPONDENCE rather than the parcel.
+ *
+ * DELIBERATELY SHORT, AND THE OMISSIONS ARE THE POINT. The first attempt at this
+ * list also held `email`, `update`, `confirmation`, `alert`, `text` and `sms`,
+ * and the corpus rejected it: **sheet 5 – Not Dispatched owns "No dispatch email
+ * received", "No shipping confirmation at all" and "No update at all since I
+ * ordered"**. A customer chasing a missing dispatch email is reporting a parcel
+ * that never left, which is precisely a delivery query. Row `5.2` was stranded by
+ * the wider list and `cst-category-corpus.test.ts` caught it.
+ *
+ * What is left is only the vocabulary of the conversation itself — a
+ * notification, a message, a reply. Nothing physical is here, so every phrase
+ * sheet 13 quotes is untouched: "I have not received my order", "Nothing has
+ * been delivered", "Order never arrived", "I didn't get the package".
+ */
+const CONVERSATION_CHANNEL_NOUN =
+  "notification|notifications|notified|notify|message|messages|msg|reply|replies";
+
+/**
+ * ...UNLESS THE NOTIFICATION WAS ABOUT THE PARCEL, which is a delivery query and
+ * one CST's workbooks own outright:
+ *
+ *   sheet 2  "No notification about where it was left"
+ *   sheet 11 "No notification to collect"
+ *            "Parcel was taken to a collection point but customer was not notified"
+ *
+ * So a channel noun sitting next to parcel vocabulary is NOT excluded. Two
+ * windows because the qualifier lands on either side — "dispatch notification"
+ * before, "notification to collect" after.
+ */
+const PARCEL_QUALIFIER_BEFORE =
+  "dispatch|dispatched|despatch|despatched|shipping|shipment|delivery|delivered|collection|tracking|parcel|package|order";
+const PARCEL_QUALIFIER_AFTER =
+  "collect|collection|left|deliver\\w*|dispatch\\w*|despatch\\w*|parcel|package|card|driver|courier|depot|where";
+
+/** The channel noun, only where nothing about the parcel qualifies it. */
+const NOT_A_CONSIGNMENT =
+  `(?<!\\b(?:${PARCEL_QUALIFIER_BEFORE})\\s)` +
+  `\\b(?:${CONVERSATION_CHANNEL_NOUN})\\b` +
+  `(?![^.!?]{0,12}?\\b(?:${PARCEL_QUALIFIER_AFTER})\\b)`;
+
+/** The negator, first and close to the verb — see DEL-13.1 on why direction matters. */
+const RECEIPT_NEGATOR =
+  "(?:\\b(?:not|never|no|none|nothing)\\b|\\b(?:do|does|did|has|have|had|is|are|was|were|will|wo|ca|could|should|would)\\s?n[o']?t\\b)";
+
+/** The receipt itself. Unchanged from the original pattern, verb for verb. */
+const RECEIPT_VERB_PHRASE =
+  "\\b(?:receiv\\w*|recieved|arriv\\w*|deliver\\w*|dispatch\\w*|turned\\s+up|got\\s+(?:it|them|my|the)|get\\s+(?:it|them|my|the)|come|came)\\b";
+
+/**
+ * A negated receipt whose subject is a consignment.
+ *
+ * Built rather than written as one literal because the subject test is needed on
+ * BOTH sides of the verb, and the two directions are two different sentences:
+ *
+ *   before  "i dont get NOTIFICATIONS come through"   subject before the verb
+ *   after   "I did not receive any NOTIFICATION"      object after the verb
+ *
+ * The first walks the window one character at a time and refuses to cross a
+ * channel noun; the second refuses one within a short reach of the verb. Both
+ * stop at a sentence boundary, so a customer who mentions both — "I never got a
+ * notification from you. My parcel has not arrived either." — is still reporting
+ * a non-delivery.
+ *
+ * THE VERB LIST IS UNCHANGED, and deliberately. Dropping the bare `come|came`
+ * alternative was the other candidate fix and would have cost sheet 13 its
+ * commonest British phrasing: "my order still hasn't come" is exactly what the
+ * sheet is for. What was missing was a subject test, and this is it.
+ */
+const NON_RECEIPT_OF_A_CONSIGNMENT = new RegExp(
+  RECEIPT_NEGATOR +
+    `(?:(?!${NOT_A_CONSIGNMENT})[^.!?]){0,22}?` +
+    RECEIPT_VERB_PHRASE +
+    `(?![^.!?]{0,14}?${NOT_A_CONSIGNMENT})`,
+  "i",
+);
+
 /**
  * The reviewed evidence map.
  *
@@ -576,8 +672,11 @@ export const CST_EVIDENCE: readonly CategoryEvidence[] = [
     // quoted verbatim on this sheet. The auxiliaries are listed rather than
     // matched with `\w+n't`, so the pattern stays readable and cannot fire on
     // an arbitrary word ending in those letters.
-    pattern:
-      /(?:\b(?:not|never|no|none|nothing)\b|\b(?:do|does|did|has|have|had|is|are|was|were|will|wo|ca|could|should|would)\s?n[o']?t\b)[^.!?]{0,22}?\b(?:receiv\w*|recieved|arriv\w*|deliver\w*|dispatch\w*|turned\s+up|got\s+(?:it|them|my|the)|get\s+(?:it|them|my|the)|come|came)\b/i,
+    //
+    // A MESSAGE IS NOT A CONSIGNMENT — see `NOT_A_CONSIGNMENT` above for the
+    // conversation that made that necessary and for what the two lookaheads
+    // deliberately do not exclude.
+    pattern: NON_RECEIPT_OF_A_CONSIGNMENT,
   },
   {
     id: "DEL-13.2",

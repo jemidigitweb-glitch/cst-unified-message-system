@@ -756,6 +756,104 @@ describe("reported: the customer's own selection is not our error", () => {
   });
 });
 
+/**
+ * 33222 — was Delivery queries, reported 2026-09-30.
+ *
+ * A WIRING ENQUIRY LOST TO A SENTENCE ABOUT EMAIL. The customer asked whether a
+ * cable is 2-core or 3-core, we asked which they wanted, and a month later they
+ * came back with the answer and an apology for missing the reply:
+ *
+ *   "So sorry, i dont get notifications come through."
+ *
+ * `DEL-13.1` — the non-receipt catch-all — matched `dont` ... `come` across
+ * " get notifications ", because the pattern asked whether a receipt had been
+ * negated and never asked WHAT had failed to arrive. Delivery queries is a CASE
+ * category and Pre sales is not, so one fabricated parcel report outranked the
+ * enquiry the whole thread is about. The priority engine had it right all along
+ * — it read `pre_sales_enquiry` — which is how the disagreement was visible.
+ *
+ * The fix is a subject test on `DEL-13.1`'s window: `NOT_A_CONSIGNMENT` names
+ * only things that arrive by wire, so the sheet's own quoted phrases are
+ * untouched. The three below are those phrases, and they are the controls that
+ * keep the fix from being a hole in sheet 13.
+ */
+describe("reported: a notification that did not arrive is not a parcel that did not", () => {
+  it("33222 — reads the thread as the wiring enquiry it is", () => {
+    expect(
+      readConversation([
+        {
+          direction: "inbound",
+          text: "Hi i was wondering if its 2 or 3 core? The wire without the end ",
+        },
+        {
+          direction: "outbound",
+          text: "Could you please let us know which type of wire you are looking for - 2-core or 3-core?",
+        },
+        {
+          direction: "inbound",
+          text: "Hi i need a 3 core. So sorry, i dont get notifications come through. The bottom half of my lamp is metal. Also i was wondering if it still come with the bulb fitting? However am wondering if the new wire can be used with the old buld fitting? Or if has new will it attach properly.",
+        },
+        { direction: "inbound", text: "I have ordered one now. " },
+      ]).category,
+    ).toBe("Pre sales queries");
+  });
+
+  /** The sentence on its own, so the failure is attributable to one message. */
+  it("does not read a missed notification as non-receipt", () => {
+    expect(
+      classifyMessageCategoryWithFallback("So sorry, i dont get notifications come through."),
+    ).not.toBe("Delivery queries");
+  });
+
+  /** The same shape in the words the other channels use. */
+  it("does not read a missed email, text or reply as non-receipt", () => {
+    for (const text of [
+      "Sorry, I never got your email so I have only just seen this",
+      "I did not receive any notification from eBay about your message",
+      "I have not had a reply come through, sorry for the delay",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).not.toBe("Delivery queries");
+    }
+  });
+
+  /* ---- CONTROLS: sheet 13 still owns every phrase it quotes ---- */
+
+  it("still reads a plainly stated non-receipt as a delivery query", () => {
+    for (const text of [
+      "I have not received my order",
+      "Nothing has been delivered",
+      "Order never arrived",
+      "I didn't get the package",
+      "Did not receive the item",
+    ]) {
+      expect(classifyMessageCategoryWithFallback(text), text).toBe("Delivery queries");
+    }
+  });
+
+  /**
+   * AND THE BARE `come` ALTERNATIVE SURVIVES. Dropping it was the other
+   * candidate fix and would have cost sheet 13 its commonest British phrasing.
+   */
+  it("still reads an order that has not come as a delivery query", () => {
+    expect(classifyMessageCategoryWithFallback("My order still hasn't come")).toBe(
+      "Delivery queries",
+    );
+  });
+
+  /**
+   * A NOTIFICATION IN ONE CLAUSE DOES NOT EXCUSE A PARCEL IN THE NEXT. The
+   * window stops at a sentence boundary, so a customer who says both is still
+   * reporting a non-delivery.
+   */
+  it("still reads the parcel where the customer mentions both", () => {
+    expect(
+      classifyMessageCategoryWithFallback(
+        "I never got a notification from you. My parcel has not arrived either.",
+      ),
+    ).toBe("Delivery queries");
+  });
+});
+
 /* ========================================================================= *
  * 3. THE TWO AXES
  *

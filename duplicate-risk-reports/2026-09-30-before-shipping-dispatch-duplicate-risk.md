@@ -67,3 +67,29 @@ graded against the intent owning "Order change, before shipping queries". That i
 not double counting, it is a disagreement: two surfaces reading the same
 conversation differently. Deliberately out of scope (the brief said not to change the
 draft workflow) and recorded here as the next thing to reconcile.
+
+---
+
+## Addendum — the DEL-13.1 subject test, and the one duplicate it AVOIDED
+
+The second category fix of 2026-09-30 narrowed one trigger pattern
+(`documentation/2026-09-30-non-receipt-subject-test-overview.md`).
+
+**No second non-receipt reader was created.** The subject test lives inside
+`DEL-13.1`'s own pattern, built from module constants in the same file. The
+alternative considered was a new `EvidenceCondition` (`requires: ["not_a_notification"]`)
+which would have been a second, whole-message opinion about the same sentence — and
+wrong in a way that matters: a message saying both "I got no notification" and "my
+parcel has not arrived" would have been vetoed entirely. The window test keeps the
+judgement local to the sentence that made it.
+
+**`RECEIPT_NEGATOR` and `RECEIPT_VERB_PHRASE` are now named constants, not a
+shared vocabulary.** They are extracted from the one pattern that uses them, so the
+pattern can be assembled from readable parts. Nothing else consults them, and
+nothing should: `HAS_NOT_ARRIVED` in `message-category.ts` answers a different
+question (has a delivery happened) and is deliberately untouched.
+
+**Counting the conversations this moves is not possible from storage.** The category
+is computed per request, so a before/after figure taken at two moments is two
+classifications rather than one measurement. If a report ever wants it, it must
+classify both ways in one pass.
