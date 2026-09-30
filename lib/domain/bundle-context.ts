@@ -45,9 +45,31 @@ export type BundleComponent = {
  * colour was meant. Anything the variants disagree on is absent by construction.
  */
 export type BundleContext = {
-  /** The listing this describes. Carried so a reviewer can tie it back. */
-  readonly listingItemRef: string;
-  /** How many variants of the listing decomposed consistently. */
+  /**
+   * The listing this describes, or null when it was not resolved from one.
+   *
+   * NULL IS NOT "UNKNOWN". It means this bundle was resolved from the SKU the
+   * customer actually bought rather than from the listing the message is
+   * attached to — see `orderedSku`, which is set in exactly that case. Exactly
+   * one of the two is populated, and which one it is is the provenance of every
+   * attribute below.
+   */
+  readonly listingItemRef: string | null;
+  /**
+   * The ordered SKU this was resolved from, when it was.
+   *
+   * Carried so a reviewer reading a draft's grounding can see that the package
+   * contents describe the item in this customer's hands, not the listing's
+   * options. Absent on the listing-keyed path, where nothing knows which
+   * variant was bought.
+   */
+  readonly orderedSku?: string | null;
+  /**
+   * How many variants decomposed consistently.
+   *
+   * Always 1 on the ordered-SKU path: an order names one product, so there are
+   * no variants to reconcile and nothing to intersect away.
+   */
   readonly variantCount: number;
   /** Components present in every variant, ordered by SKU for determinism. */
   readonly common: readonly BundleComponent[];

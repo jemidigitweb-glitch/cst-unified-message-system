@@ -16,7 +16,10 @@ import {
   resolveManuallySelectedOrderContext,
   resolveSelectedOrderContext,
 } from "@/lib/context/resolve-selected-order-context";
-import { resolveBundleProductContext } from "@/lib/context/resolve-bundle-product-context";
+import {
+  resolveBundleProductContext,
+  resolveBundleProductContextForSku,
+} from "@/lib/context/resolve-bundle-product-context";
 import { resolveListingContext } from "@/lib/context/resolve-listing-context";
 import {
   resolveSotProductContext,
@@ -272,13 +275,33 @@ async function verifiedFactsFor(
    * order-resolved conversations their package contents, 33 of them in "parts
    * missing", which is the one category where what is in the box IS the question.
    *
+   * AND IT IS KEYED ON THE ORDERED SKU WHERE THERE IS ONE. This is the second
+   * half of the same argument the catalogue lookup above makes. Entering the
+   * decomposition through the LISTING answers about every option it sells; the
+   * order names the one option this customer has, and `order_combo` records
+   * what was picked for it. Measured on a traced conversation: the ordered SKU
+   * decomposed stably into four fully-described components, while the listing's
+   * three variants included one with no product record — so `complete` came out
+   * false and the package contents were suppressed for a customer asking what
+   * was in their box, over a gap in a variant they had not bought.
+   *
+   * THE TWO PATHS DO NOT FALL THROUGH TO EACH OTHER. Where a SKU is known and
+   * its own decomposition yields nothing, the answer is nothing: the listing's
+   * other variants describe a different product, and a confident description of
+   * the wrong item is the failure this whole design exists to prevent. Where no
+   * SKU is known, the listing path runs exactly as it did before, so every
+   * pre-sale conversation is byte-identical.
+   *
    * Guarded separately, like the three above, so a bundle lookup failure cannot
    * discard facts that already resolved.
    */
   let bundle: BundleContext | null = null;
   if (productFacts.length === 0) {
     try {
-      bundle = await resolveBundleProductContext(sourcePool, conversation);
+      bundle =
+        purchasedSku === null
+          ? await resolveBundleProductContext(sourcePool, conversation)
+          : await resolveBundleProductContextForSku(sourcePool, purchasedSku);
     } catch (cause) {
       console.error("[draft] bundle context resolution failed", cause);
     }

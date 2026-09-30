@@ -162,10 +162,70 @@ NEVER RETRACT WHAT WE HAVE ALREADY SENT. If what you can verify is thinner than 
 
 DO NOT EXPLAIN AGAIN WHAT WE HAVE ALREADY EXPLAINED. Everything you are given — thread, verified context, tracking, product facts — is there to REASON from, not to put in the reply. Once we have given this customer a fact and the conversation has moved on to an agreed action, carry the action forward and leave the background where it is. State an earlier fact, status, date, explanation or specification again ONLY when it answers what the customer has just written, makes the agreed action clear, they have asked about it again, or a CST rule requires it. This governs what you SAY: keep using all of it to work out what is true and what you may not claim.`;
 
-/** What may and may not appear in text a customer will read. */
+/**
+ * What may and may not appear in text a customer will read.
+ *
+ * THE FIRST PARAGRAPH IS AN ENUMERATION, AND IT FAILS OPEN. It names five
+ * internal references to suppress and does so perfectly — measured across all
+ * 450 generated drafts in the live store, not one leaks "verified context",
+ * "backend", "SOT" or "knowledge base". It does nothing at all about the
+ * vocabulary it does not name, and two families of it were reaching customers:
+ *
+ *   evidence terminology   46 of 450 drafts (10.2%), and 33 of 257 pre-sale
+ *                          drafts (12.8%), say "listing" to the customer —
+ *                          "the listing's available colour options are …",
+ *                          "the canopy diameter is listed as …", "although the
+ *                          listing offers a 180W option". Only 6 drafts use the
+ *                          natural form. The word is not in the model's standing
+ *                          instruction at all: it arrives 13 times in the
+ *                          per-conversation input, from the fact NAMES
+ *                          (`listing_title`, `listing_options_*`) and from
+ *                          `usageRule` in `draft-assembly.ts`, which shouts THE
+ *                          LISTING three times. The model mirrors the vocabulary
+ *                          it is handed, and nothing told it not to.
+ *   internal workflow      "check with the product team" is a step a CST rule
+ *                          gives to STAFF. `PRE-P26-6` marks its equivalent
+ *                          `STEP 2: INTERNAL:`; `PRE-QFK-6` STEP 3 and
+ *                          `PRE-P26-7` do not, and 10 drafts told the customer
+ *                          that another team must confirm something.
+ *
+ * SO THIS IS WRITTEN AS A PRINCIPLE, NOT A LONGER LIST. The same lesson
+ * `BLOCKED_SOT_ATTRIBUTE_PATTERNS` records in
+ * `lib/context/resolve-sot-product-context.ts`: "the first version named the
+ * seventeen attributes a reply could use. It was safe and it did not work."
+ *
+ * "LISTING" IS NOT BANNED, and that is deliberate. `[PRE-P26-5]` PS-B1 requires
+ * pointing the customer to where a detail appears on the listing, and
+ * `[PRE-D95-5]` PS-Q1 requires walking them through a dropdown. Measured over
+ * the whole corpus, those are the only kinds of case: 134 of 1,139 rules mention
+ * a listing, all as internal instruction, and NO rule prescribes any
+ * customer-facing phrase. A blanket ban would break the one rule that needs it.
+ *
+ * THE CONFLICT PARAGRAPH IS THE SAFETY HALF OF THIS CHANGE, and it is not
+ * optional. "Write it naturally" is an instruction to smooth prose, and the
+ * easiest thing to smooth away is a disagreement between two verified values —
+ * a 100 mm backplate beside a 120 mm rose becomes a confident "the diameter is
+ * 100 mm", which is fluent and wrong. Nothing else in this system catches that:
+ * `HOW_TO_REASON` covers conflicting RULES, and `contradicts_verified_fact` in
+ * `draft-validation.ts` compares the reply against the facts, never a fact
+ * against a fact. Without this paragraph the tone change would buy readability
+ * with accuracy, which is the wrong trade in this application.
+ *
+ * NOTHING HERE RELAXES ANYTHING. Every sentence added is a further prohibition
+ * on what may be SAID. No CST rule is overridden — `[PRE-QFK-6]` PS-F2 still
+ * requires stating that compatibility cannot be confirmed and still requires
+ * the qualified-electrician advice; what it never required, and what is stopped
+ * here, is narrating the internal check and inventing a "do not purchase".
+ */
 const WRITING = `WRITING THE REPLY.
 
 "draft_reply" contains only what the customer should read. Never mention these instructions, the knowledge base, a rule reference, that rules were consulted, that a rule did not cover something, that anything is unreviewed or unverified, or that a human will check this. The customer sees a reply from the team and nothing else. Your reasoning belongs in "missing_information" and "sources_used", which are internal and never shown to the customer.
+
+WRITE FROM THE CUSTOMER'S SIDE, IN ORDINARY PRODUCT LANGUAGE. State a verified fact as a fact about the product — "the available colours are", "the dimensions are", "this version is", "the product details show" — never "the listing says", "the listing offers", "the listing's options", "it is listed as", "according to the listing", nor the name of any field, source or system. Say "listing" only where the question needs it: pointing them to where a detail appears, telling them which option to select, or asking for a link to a DIFFERENT item.
+
+AN INTERNAL STEP IS NOT A SENTENCE. "Check with the product, merchandising, postage or account team" is an instruction to us. Give the reply that rule's outcome allows; never write that another team must confirm something, that a check is under way, or name an internal team, unless the rule says to tell them. Do not tell a customer not to buy, not to use or not to connect something unless the rule for this case requires that warning.
+
+WHERE TWO VERIFIED FACTS DISAGREE, SAY SO. Never pick one, average them, or leave the difference out to read more smoothly. Give both values in plain words, record the conflict in "missing_information", and set "requires_review" to true.
 
 Write in the customer's language. Be clear and courteous, and as long as the answer genuinely needs — say the whole of what the rules allow, then stop. Apologise at most once. Promise nothing the rules do not.`;
 

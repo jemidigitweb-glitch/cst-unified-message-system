@@ -960,7 +960,40 @@ export function validateDraft(
     throw new DraftGenerationUnavailable("The draft service returned an unexpected shape.");
   }
 
-  const factNames = new Set(request.facts.map((fact) => fact.name));
+  /**
+   * Every verified fact name this request actually PUT IN FRONT OF THE MODEL.
+   *
+   * WHY THE BUNDLE HAD TO BE ADDED. A bundle's attributes do not travel in
+   * `facts` — they are structured per component, because the names collide (see
+   * `BundleContext`) — so this set used to contain only `request.facts`. A model
+   * that correctly cited `parts_list` or `bulb_base_type` from the BUNDLE
+   * COMPONENTS block therefore had that citation dropped by the filter below,
+   * silently, as though it had invented the name. Measured across all 441
+   * generated revisions in the store: 440 recorded a CST document and not one
+   * recorded a single product-sheet attribute, on a system whose product answers
+   * come from the product sheet. The provenance was being thrown away at exactly
+   * the point it was supposed to be captured.
+   *
+   * IT IS STILL A CLOSED SET, AND THAT IS THE WHOLE VALUE OF IT. This admits the
+   * attribute names that were SUPPLIED — nothing else. A name the model made up,
+   * and a name belonging to an attribute the bundle rules SUPPRESSED (a
+   * `parts_list` withheld because a component has no record never reaches
+   * `bundle.common`), are both still rejected. The filter is widened to the
+   * truth of what was sent; it is not loosened.
+   *
+   * IT GROUNDS NOTHING. `settleReviewRequirement` below still reads
+   * `request.facts` alone, so a bundle attribute cannot license a refund,
+   * tracking or delivery claim. This decides only what may be RECORDED as a
+   * source, which is a question about the audit trail, not about what the reply
+   * is allowed to say.
+   */
+  const factNames = new Set([
+    ...request.facts.map((fact) => fact.name),
+    ...(request.bundle?.common ?? []).flatMap((component) =>
+      component.attributes.map((attribute) => attribute.key),
+    ),
+    ...(request.bundle?.varyingAgreement ?? []).map((attribute) => attribute.key),
+  ]);
 
   /**
    * Citations are canonicalised before anything else touches them.

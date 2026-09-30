@@ -81,6 +81,40 @@ const INCLUSION_ATTRIBUTES: ReadonlySet<string> = new Set([
 const bySku = (a: { sku: string }, b: { sku: string }): number => (a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0);
 
 /**
+ * Component SKU -> attribute key -> the value this may state.
+ *
+ * ONE PLACE APPLIES THE POLICY, and both entry points below go through it. The
+ * listing-keyed resolver and the ordered-SKU resolver must agree about what a
+ * component's record says — if they could drift, a post-sale draft and a
+ * pre-sale draft could describe the same physical part differently, and only
+ * one of them would be right.
+ *
+ * The database already excluded the blocked patterns; re-applying them here is
+ * deliberate, so this gives the same answer whether or not the query filtered
+ * first. Same reasoning as `resolveSotProductContext`.
+ */
+async function statableComponentAttributes(
+  sourceClient: SourceQueryable,
+  componentSkus: readonly string[],
+): Promise<Map<string, Map<string, string>>> {
+  const rows = await findComponentAttributes(sourceClient, {
+    componentSkus,
+    blockedKeyPatterns: BLOCKED_SOT_ATTRIBUTE_PATTERNS,
+  });
+
+  const attributes = new Map<string, Map<string, string>>();
+  for (const row of rows) {
+    if (!sotAttributeIsStatable(row.key)) continue;
+    const value = statableValue(row.value);
+    if (value === null) continue;
+    const forSku = attributes.get(row.sku) ?? new Map<string, string>();
+    forSku.set(row.key, value);
+    attributes.set(row.sku, forSku);
+  }
+  return attributes;
+}
+
+/**
  * The one decomposition this SKU always had, or null when its history disagrees.
  *
  * 2,438 of 19,868 decomposable eBay listing SKUs (12.3%) decompose differently
@@ -155,26 +189,10 @@ export async function resolveBundleProductContext(
 
   const allComponents = [...new Set(variantSets.flat())].sort();
 
-  const [attributeRows, titles] = await Promise.all([
-    findComponentAttributes(sourceClient, {
-      componentSkus: allComponents,
-      blockedKeyPatterns: BLOCKED_SOT_ATTRIBUTE_PATTERNS,
-    }),
+  const [attributes, titles] = await Promise.all([
+    statableComponentAttributes(sourceClient, allComponents),
     findComponentTitles(sourceClient, allComponents),
   ]);
-
-  /** component SKU -> attribute key -> statable value. */
-  const attributes = new Map<string, Map<string, string>>();
-  for (const row of attributeRows) {
-    // The database applied the same patterns; re-applying is deliberate, so this
-    // function gives the same answer whether or not the query filtered first.
-    if (!sotAttributeIsStatable(row.key)) continue;
-    const value = statableValue(row.value);
-    if (value === null) continue;
-    const forSku = attributes.get(row.sku) ?? new Map<string, string>();
-    forSku.set(row.key, value);
-    attributes.set(row.sku, forSku);
-  }
 
   const componentsWithoutRecord = allComponents.filter((sku) => !attributes.has(sku));
   const complete = componentsWithoutRecord.length === 0;
@@ -240,9 +258,126 @@ export async function resolveBundleProductContext(
 
   return {
     listingItemRef: itemRef,
+    // Resolved from the listing, so nothing here knows which variant was bought.
+    orderedSku: null,
     variantCount: stable.size,
     common,
     varyingAgreement,
+    complete,
+    componentsWithoutRecord,
+  };
+}
+
+/**
+ * The components of the SKU the customer ACTUALLY BOUGHT.
+ *
+ * WHY THIS EXISTS SEPARATELY, AND WHAT IT FIXES. `resolveBundleProductContext`
+ * above enters the decomposition through the LISTING, because on a pre-sale
+ * enquiry that is all there is. Where an order resolved, that is the wrong door
+ * and it was measured costing real answers:
+ *
+ *   * `resolveSotProductContextForSku` matches the ordered SKU against the
+ *     product sheet EXACTLY, and a sellable SKU usually has no sheet row of its
+ *     own. Measured over the live conversations: 252 distinct ordered SKUs, 29
+ *     with a sheet row — but 117 whose `order_combo` components have one. The
+ *     catalogue held the answer for 88 more products than anything reached.
+ *   * The listing-keyed fallback then answers about the listing's OTHER
+ *     options. On one traced conversation the ordered SKU decomposed — stably,
+ *     over 20 order lines — into four components with 74, 43, 58 and 63
+ *     statable attributes each, every one of them recorded. The listing's three
+ *     variants included a component with no record, so `complete` came out
+ *     false and `parts_list` was suppressed — on a customer asking what was in
+ *     their box. The gap was in a variant they had not bought.
+ *
+ * SO THE ORDER'S OWN SKU IS THE KEY. There is exactly one product, the order
+ * named it, `order_combo` says what is in it, and completeness is computed over
+ * THOSE components and no others.
+ *
+ * NOTHING IS SPLIT, AND THAT IS THE WHOLE POINT OF GOING THROUGH THIS TABLE.
+ * The SKU travels to `findDecompositions` whole, as one element of a one-element
+ * array, and is matched with `=`. `PSHYOS4BRBM+SPUPBM+SLDO210BM` is one opaque
+ * identifier here as everywhere else — see `lib/domain/sku.ts`. Its components
+ * come from what the order system recorded when it picked the line, never from
+ * reading the string.
+ *
+ * ONE "VARIANT", SO NOTHING IS INTERSECTED AWAY. Every component is common,
+ * because there is only one option in play; `varyingAgreement` is therefore
+ * empty by construction rather than by filtering. The colour rule the listing
+ * path needs does not arise: the order settled which colour this is.
+ *
+ * REFUSES RATHER THAN GUESSES, on the same rules as the listing path: no
+ * recorded decomposition, a decomposition that disagrees with itself across
+ * order lines (12.3% of decomposable SKUs), or no component with a product
+ * record all return null. The caller then has no bundle, exactly as before.
+ *
+ * READ-ONLY. Two SELECTs, no snapshot, no cache, no write anywhere.
+ */
+export async function resolveBundleProductContextForSku(
+  sourceClient: SourceQueryable,
+  sku: string,
+): Promise<BundleContext | null> {
+  if (sku.trim() === "") return null;
+
+  const rows = await findDecompositions(sourceClient, [sku]);
+  if (rows.length === 0) return null;
+
+  /**
+   * Only this SKU's own lines, and the filter is not redundant.
+   *
+   * `FIND_DECOMPOSITIONS` is keyed `oii.item_sku = ANY($1)` and this passes one
+   * element, so today every row already belongs to this SKU. The filter states
+   * the invariant the rest of the function depends on: a component reaches a
+   * customer's draft only because THEIR order line recorded it. If that query
+   * is ever widened for another caller, this refuses the extra rows instead of
+   * quietly describing somebody else's product.
+   */
+  const lines = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (row.variantSku !== sku) continue;
+    const components = lines.get(row.lineId) ?? new Set<string>();
+    components.add(row.componentSku);
+    lines.set(row.lineId, components);
+  }
+  if (lines.size === 0) return null;
+
+  // The same rule the listing path applies per variant: a SKU whose order
+  // history decomposes two different ways is not one this can answer from.
+  const components = stableComponents(lines);
+  if (components === null) return null;
+
+  const [attributes, titles] = await Promise.all([
+    statableComponentAttributes(sourceClient, components),
+    findComponentTitles(sourceClient, components),
+  ]);
+
+  const componentsWithoutRecord = components.filter((componentSku) => !attributes.has(componentSku));
+  const complete = componentsWithoutRecord.length === 0;
+
+  const common: BundleComponent[] = components
+    .map((componentSku) => ({
+      sku: componentSku,
+      title: titles.get(componentSku) ?? null,
+      attributes: [...(attributes.get(componentSku) ?? new Map<string, string>())]
+        // Package contents stay suppressed unless EVERY component of THIS
+        // product is described. The rule is unchanged; only the set it is
+        // computed over is now the right one.
+        .filter(([key]) => complete || !INCLUSION_ATTRIBUTES.has(key))
+        .map(([key, value]) => ({ key, value })),
+    }))
+    .sort(bySku);
+
+  // A bundle nobody can say anything about is not context; it is a heading.
+  if (common.every((component) => component.attributes.length === 0)) return null;
+
+  return {
+    // Resolved from the order, not the listing. The message's listing is still
+    // on the request as `listingItemRef`; it is not the provenance of these.
+    listingItemRef: null,
+    orderedSku: sku,
+    variantCount: 1,
+    common,
+    // Nothing varies: one order line, one set of components.
+    varyingAgreement: [],
     complete,
     componentsWithoutRecord,
   };
