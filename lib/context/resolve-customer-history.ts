@@ -188,7 +188,14 @@ export async function resolveCustomerHistory(
     previousRefundedOrders: refundedOrders,
     previousFormalCases: known(cases.formalCases),
     previousPaymentDisputes: known(cases.paymentDisputes),
-    previousEscalations: known(cases.escalations),
+    /*
+     * The escalation count carries the verified issue types of exactly the
+     * cases it counted, so the interface can say "a previous
+     * item-not-received inquiry was escalated" rather than only that
+     * something was. Wording detail only — see `evaluateRepeatCustomerWarning`,
+     * which reads the count and never these.
+     */
+    previousEscalations: known(cases.escalations, cases.escalatedEventTypes),
   };
 
   return {

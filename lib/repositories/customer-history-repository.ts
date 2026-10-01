@@ -144,6 +144,17 @@ export type CaseHistoryCounts = {
   readonly formalCases: number;
   readonly paymentDisputes: number;
   readonly escalations: number;
+  /**
+   * The verified issue types of the escalated cases counted above — the stored
+   * `event_type` values, nothing derived. Empty when there are no escalated
+   * cases in range, which is the same thing as "nothing to describe".
+   *
+   * READ SO THE WARNING CAN SAY WHAT THE EARLIER CASE WAS ABOUT, instead of
+   * only that one existed. It changes no count: it is aggregated from exactly
+   * the rows the `escalations` filter already matched, so a wording change can
+   * never move who qualifies.
+   */
+  readonly escalatedEventTypes: readonly string[];
   /** When this history was last confirmed against the source, for staleness. */
   readonly historyAsOf: string | null;
 };
@@ -193,6 +204,15 @@ SELECT
     AS payment_disputes,
   count(DISTINCT source_case_id) FILTER (WHERE escalation = 'escalated')::int
     AS escalations,
+  -- The stored issue types of exactly those escalated cases. Aggregated from
+  -- the same filtered rows as the count above, so the two can never disagree
+  -- about which cases are being described. event_type is NOT NULL and
+  -- CHECK-constrained to three values by 0021, so nothing here can be a
+  -- free-text string or a vocabulary nobody has checked.
+  -- (No backticks in this comment: it lives inside a template literal, and a
+  -- backtick here ends the string. That exact mistake broke the parse once.)
+  array_agg(DISTINCT event_type) FILTER (WHERE escalation = 'escalated')
+    AS escalated_event_types,
   max(imported_at)::text AS history_as_of
 FROM cst_app.customer_case_history
 WHERE marketplace = $1
@@ -214,12 +234,17 @@ export async function countPreviousCases(
     formal_cases: number;
     payment_disputes: number;
     escalations: number;
+    escalated_event_types: string[] | null;
     history_as_of: string | null;
   }>)[0];
   return {
     formalCases: Number(row?.formal_cases ?? 0),
     paymentDisputes: Number(row?.payment_disputes ?? 0),
     escalations: Number(row?.escalations ?? 0),
+    // `array_agg ... FILTER` yields SQL NULL rather than an empty array when
+    // no row matched, so the null is mapped to empty here rather than left for
+    // every caller to remember.
+    escalatedEventTypes: row?.escalated_event_types ?? [],
     historyAsOf: row?.history_as_of ?? null,
   };
 }

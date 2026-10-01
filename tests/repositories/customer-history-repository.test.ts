@@ -130,13 +130,18 @@ describe("previous cases", () => {
 
   it("returns the three counts and the import stamp", async () => {
     const { client, sent } = stub([
-      { formal_cases: 2, payment_disputes: 1, escalations: 4, history_as_of: "2026-10-01 10:11:39" },
+      {
+        formal_cases: 2, payment_disputes: 1, escalations: 4,
+        escalated_event_types: ["ITEM_NOT_RECEIVED"],
+        history_as_of: "2026-10-01 10:11:39",
+      },
     ]);
     const counts = await countPreviousCases(client, SCOPE);
     expect(counts).toEqual({
       formalCases: 2,
       paymentDisputes: 1,
       escalations: 4,
+      escalatedEventTypes: ["ITEM_NOT_RECEIVED"],
       historyAsOf: "2026-10-01 10:11:39",
     });
     expect(sent[0]!.values).toEqual(["ebay", 22, "buyer-a", "2026-05-01 09:00:00"]);
@@ -144,14 +149,61 @@ describe("previous cases", () => {
 
   it("reports zeros and a null stamp when this customer has no cases in range", async () => {
     const { client } = stub([
-      { formal_cases: 0, payment_disputes: 0, escalations: 0, history_as_of: null },
+      {
+        formal_cases: 0, payment_disputes: 0, escalations: 0,
+        escalated_event_types: null, history_as_of: null,
+      },
     ]);
     expect(await countPreviousCases(client, SCOPE)).toEqual({
       formalCases: 0,
       paymentDisputes: 0,
       escalations: 0,
+      escalatedEventTypes: [],
       historyAsOf: null,
     });
+  });
+
+  /**
+   * `array_agg ... FILTER` yields SQL NULL, not an empty array, when no row
+   * matched. Mapped to `[]` in one place so no caller has to remember, and
+   * asserted because a leaked null would reach the wording as "unknown issue"
+   * and silently disable the specific sentences.
+   */
+  it("maps a null type aggregate to an empty list", async () => {
+    const { client } = stub([
+      {
+        formal_cases: 0, payment_disputes: 0, escalations: 0,
+        history_as_of: null,
+      },
+    ]);
+    expect((await countPreviousCases(client, SCOPE)).escalatedEventTypes).toEqual([]);
+  });
+
+  /**
+   * THE ISSUE TYPES ARE AGGREGATED FROM THE SAME FILTERED ROWS AS THE COUNT.
+   * If the two filters ever diverged, the card could describe a case the count
+   * did not include — so the predicate is asserted to be identical.
+   */
+  it("aggregates issue types from exactly the rows the escalation count matched", () => {
+    const sql = COUNT_PREVIOUS_CASES_SQL;
+    expect(sql).toMatch(
+      /array_agg\(DISTINCT event_type\) FILTER \(WHERE escalation = 'escalated'\)/,
+    );
+    const countFilters = sql.match(/FILTER \(WHERE escalation = 'escalated'\)/g);
+    expect(countFilters).toHaveLength(2); // the count and the type aggregate
+  });
+
+  /** Wording detail must never widen what is read. Still four bound values. */
+  it("reads no extra column and binds no extra value for the wording", async () => {
+    const { client, sent } = stub([
+      { formal_cases: 0, payment_disputes: 0, escalations: 0, escalated_event_types: null, history_as_of: null },
+    ]);
+    await countPreviousCases(client, SCOPE);
+    expect(sent[0]!.values).toHaveLength(4);
+    const sql = COUNT_PREVIOUS_CASES_SQL.toLowerCase();
+    for (const column of ["comments", "buyer_req", "reason", "event_status"]) {
+      expect(sql).not.toContain(column);
+    }
   });
 
   /** Three different kinds of record. A total would be a quantity the data lacks. */

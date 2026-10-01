@@ -12,6 +12,7 @@ import {
 import { capabilityOf } from "@/lib/domain/marketplace-capabilities";
 import { unresolvedReferenceFor } from "@/lib/domain/conversation-reference";
 import {
+  explainReason,
   repeatCustomerWarningLines,
 } from "@/components/repeat-customer-warning";
 
@@ -291,8 +292,16 @@ describe("the card's render decision", () => {
       historyAsOf: null,
     });
     expect(lines).toEqual([
-      { label: "Previous conversations", count: 3 },
-      { label: "Previous payment disputes", count: 1 },
+      {
+        key: "previous_contacts",
+        heading: "Earlier contact from this customer",
+        sentence: "This customer has contacted CST in 3 earlier conversations.",
+      },
+      {
+        key: "previous_payment_dispute",
+        heading: "Previous payment dispute",
+        sentence: "A previous payment dispute was recorded for this customer.",
+      },
     ]);
   });
 
@@ -346,6 +355,164 @@ describe("the card's render decision", () => {
       unavailableSignals: [],
       historyAsOf: null,
     });
-    expect(lines).toEqual([{ label: "Previously escalated cases", count: 1 }]);
+    expect(lines).toHaveLength(1);
+    expect(lines![0]!.key).toBe("previous_escalation");
+  });
+});
+
+describe("the explanations say what happened, and nothing about why", () => {
+  /**
+   * THE WHOLE POINT OF THE WORDING CHANGE. `Previously escalated cases: 1` is
+   * true and tells an agent almost nothing. Each sentence below is built from
+   * stored fields only — the count from `count(DISTINCT source_case_id)`, the
+   * issue phrase from the CHECK-constrained `event_type`.
+   */
+  it("describes an escalated item-not-received inquiry by its verified type", () => {
+    expect(
+      explainReason({ type: "previous_escalation", count: 1, eventTypes: ["ITEM_NOT_RECEIVED"] }),
+    ).toEqual({
+      key: "previous_escalation",
+      heading: "Previous escalation recorded",
+      sentence: "A previous item-not-received inquiry was escalated before this conversation began.",
+    });
+  });
+
+  it("describes an escalated return inquiry by its verified type", () => {
+    expect(
+      explainReason({ type: "previous_escalation", count: 1, eventTypes: ["RETURN"] })?.sentence,
+    ).toBe("A previous return inquiry was escalated before this conversation began.");
+  });
+
+  it("pluralises an issue-typed escalation correctly", () => {
+    expect(
+      explainReason({ type: "previous_escalation", count: 3, eventTypes: ["RETURN"] })?.sentence,
+    ).toBe("3 previous return inquiries were escalated before this conversation began.");
+  });
+
+  /**
+   * NO TYPE MEANS NO CLAIM ABOUT THE ISSUE. The general sentence is true
+   * whatever the earlier inquiry concerned; filling in the most likely type
+   * would be exactly the invention this feature must not make.
+   */
+  it("falls back to the general sentence when the source records no issue type", () => {
+    for (const eventTypes of [undefined, [] as string[]]) {
+      expect(
+        explainReason({ type: "previous_escalation", count: 1, eventTypes })?.sentence,
+      ).toBe(
+        "This customer previously had a marketplace inquiry escalated before this conversation began.",
+      );
+    }
+  });
+
+  it("falls back when the issue type is one this build has no wording for", () => {
+    expect(
+      explainReason({ type: "previous_escalation", count: 1, eventTypes: ["SOMETHING_NEW"] })
+        ?.sentence,
+    ).toBe(
+      "This customer previously had a marketplace inquiry escalated before this conversation began.",
+    );
+  });
+
+  /**
+   * Two escalations of different kinds cannot honestly be called one kind, and
+   * picking either would be a guess — so the general sentence is used, which is
+   * true of both.
+   */
+  it("falls back when the escalated records disagree about the issue", () => {
+    expect(
+      explainReason({
+        type: "previous_escalation",
+        count: 2,
+        eventTypes: ["ITEM_NOT_RECEIVED", "RETURN"],
+      })?.sentence,
+    ).toBe(
+      "This customer previously had 2 marketplace inquiries escalated before this conversation began.",
+    );
+  });
+
+  it("explains previous contacts", () => {
+    expect(explainReason({ type: "previous_contacts", count: 2 })?.sentence).toBe(
+      "This customer has contacted CST in 2 earlier conversations.",
+    );
+    expect(explainReason({ type: "previous_contacts", count: 1 })?.sentence).toBe(
+      "This customer has contacted CST in 1 earlier conversation.",
+    );
+  });
+
+  it("explains repeated refunds without saying why they happened", () => {
+    expect(explainReason({ type: "previous_refunded_orders", count: 2 })?.sentence).toBe(
+      "2 earlier orders were recorded as refunded.",
+    );
+    expect(explainReason({ type: "previous_refunded_orders", count: 1 })?.sentence).toBe(
+      "1 earlier order was recorded as refunded.",
+    );
+  });
+
+  it("explains payment disputes, singular and plural", () => {
+    expect(explainReason({ type: "previous_payment_dispute", count: 1 })?.sentence).toBe(
+      "A previous payment dispute was recorded for this customer.",
+    );
+    expect(explainReason({ type: "previous_payment_dispute", count: 2 })?.sentence).toBe(
+      "2 previous payment disputes were recorded for this customer.",
+    );
+  });
+
+  it("explains a formal marketplace case", () => {
+    expect(explainReason({ type: "previous_formal_case", count: 1 })?.sentence).toBe(
+      "A previous formal marketplace case was recorded for this customer.",
+    );
+  });
+
+  it("shows nothing for a reason type it has no wording for", () => {
+    expect(explainReason({ type: "some_future_signal", count: 9 })).toBeNull();
+  });
+
+  /**
+   * NO INVENTED CASE INFORMATION. Asserted as an absence over every sentence
+   * the component can produce, because this is the constraint that matters
+   * most and a single careless edit to one branch would break it.
+   */
+  it("never states a cause, an outcome, a fault or an intention", () => {
+    const everySentence = [
+      explainReason({ type: "previous_contacts", count: 2 }),
+      explainReason({ type: "previous_refunded_orders", count: 2 }),
+      explainReason({ type: "previous_payment_dispute", count: 1 }),
+      explainReason({ type: "previous_payment_dispute", count: 3 }),
+      explainReason({ type: "previous_formal_case", count: 1 }),
+      explainReason({ type: "previous_formal_case", count: 2 }),
+      explainReason({ type: "previous_escalation", count: 1 }),
+      explainReason({ type: "previous_escalation", count: 2 }),
+      explainReason({ type: "previous_escalation", count: 1, eventTypes: ["ITEM_NOT_RECEIVED"] }),
+      explainReason({ type: "previous_escalation", count: 1, eventTypes: ["RETURN"] }),
+    ]
+      .filter((l) => l !== null)
+      .flatMap((l) => [l!.heading, l!.sentence])
+      .join(" ")
+      .toLowerCase();
+
+    for (const forbidden of [
+      // cause and fault
+      "because", "due to", "caused", "fault", "blame", "wrongly", "unjustified",
+      // outcome and intention
+      "resolved in", "found against", "upheld", "rejected", "intend", "attempt",
+      // character
+      "risk", "fraud", "abus", "problem customer", "serial",
+      // delivery and refund speculation
+      "lost in", "never arrived", "failed delivery", "refund was wrong",
+    ]) {
+      expect(everySentence).not.toContain(forbidden);
+    }
+  });
+
+  /** Counts are quoted verbatim; nothing is rounded, banded or re-described. */
+  it("quotes the verified count rather than a band", () => {
+    for (const n of [1, 2, 3, 17]) {
+      expect(explainReason({ type: "previous_contacts", count: n })?.sentence).toContain(String(n));
+    }
+    for (const word of ["several", "many", "multiple", "frequent", "repeatedly"]) {
+      expect(
+        explainReason({ type: "previous_contacts", count: 9 })?.sentence.toLowerCase(),
+      ).not.toContain(word);
+    }
   });
 });

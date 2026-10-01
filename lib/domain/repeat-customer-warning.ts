@@ -148,12 +148,25 @@ export type WarningReasonType = (typeof WARNING_REASON_TYPES)[number];
  * could accidentally read as zero.
  */
 export type FactCount =
-  | { readonly state: "known"; readonly count: number }
+  | {
+      readonly state: "known";
+      readonly count: number;
+      /**
+       * Verified `event_type` values of the records behind this count, when the
+       * source stores them. Used ONLY to describe what the earlier records
+       * were about — it never affects whether the count qualifies.
+       *
+       * Empty means "the source records no issue type for these", which is a
+       * real state and the reason the wording has a general fallback. It is
+       * never a licence to guess what the earlier case concerned.
+       */
+      readonly eventTypes?: readonly string[];
+    }
   | { readonly state: "unavailable" };
 
 export const unavailable: FactCount = { state: "unavailable" };
-export function known(count: number): FactCount {
-  return { state: "known", count };
+export function known(count: number, eventTypes?: readonly string[]): FactCount {
+  return eventTypes === undefined ? { state: "known", count } : { state: "known", count, eventTypes };
 }
 
 /** The verified history behind one conversation, each signal independently readable. */
@@ -173,6 +186,16 @@ export type CustomerHistoryFacts = {
 export type WarningReason = {
   readonly type: WarningReasonType;
   readonly count: number;
+  /**
+   * The verified issue types behind this reason, carried through from the
+   * source records so the interface can say what the earlier case was about.
+   *
+   * Absent or empty means the source recorded none, and the wording falls back
+   * to the general factual sentence. Only ever the stored `event_type` —
+   * 0021's CHECK limits it to three reviewed values, so this cannot become a
+   * free-text description of a customer's behaviour.
+   */
+  readonly eventTypes?: readonly string[];
 };
 
 export type RepeatCustomerWarning = {
@@ -301,7 +324,16 @@ export function evaluateRepeatCustomerWarning(
       continue;
     }
     if (fact.count >= thresholds[signal.threshold]) {
-      reasons.push({ type: signal.type, count: fact.count });
+      /*
+       * The issue types ride along for wording only. The threshold comparison
+       * above is the whole of the qualifying decision and does not read them,
+       * so richer wording can never change who is warned about.
+       */
+      reasons.push(
+        fact.eventTypes === undefined || fact.eventTypes.length === 0
+          ? { type: signal.type, count: fact.count }
+          : { type: signal.type, count: fact.count, eventTypes: fact.eventTypes },
+      );
     }
   }
 

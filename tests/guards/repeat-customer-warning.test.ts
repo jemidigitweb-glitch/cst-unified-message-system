@@ -106,20 +106,56 @@ describe("the interface cites records, never characterises a person", () => {
   });
 
   /**
-   * The agent-facing strings are record nouns. If a label ever becomes an
-   * adjective about a customer, this is what catches it.
+   * The agent-facing strings describe RECORDS. If a heading or sentence ever
+   * becomes an adjective about a customer, this is what catches it.
+   *
+   * Updated when the wording moved from bare labels (`Previous conversations:
+   * 1`) to service-language sentences. The headings are asserted here; the
+   * sentences, their pluralisation and the issue-type branches are asserted
+   * behaviourally in `tests/domain/repeat-customer-warning.test.ts` against
+   * the exported `explainReason`, because a regex over markup cannot tell a
+   * correct sentence from a grammatical one.
    */
-  it("labels every reason as a count of records", () => {
+  it("heads every explanation with a record, not a character judgement", () => {
     const card = raw.card;
-    for (const label of [
-      "Previous conversations",
-      "Previous refunded orders",
-      "Previous formal cases",
-      "Previous payment disputes",
-      "Previously escalated cases",
+    for (const heading of [
+      "Earlier contact from this customer",
+      "Earlier refunds recorded",
+      "Previous payment dispute",
+      "Previous formal case",
+      "Previous escalation recorded",
     ]) {
-      expect(card).toContain(label);
+      expect(card).toContain(heading);
     }
+  });
+
+  /**
+   * THE ISSUE PHRASE IS A FIXED MAP OF STORED VALUES, never a formatter over
+   * arbitrary text. 0021 CHECK-constrains `event_type` to three values, and
+   * only these two can be escalated (measured: ITEM_NOT_RECEIVED 422, RETURN
+   * 129) — so a type arriving without wording must fall through to the general
+   * sentence rather than being printed raw at an agent.
+   */
+  it("derives the issue phrase from a fixed map of stored event types", () => {
+    const card = executable.card;
+    expect(card).toMatch(/ISSUE_PHRASE[\s\S]{0,200}ITEM_NOT_RECEIVED:\s*"item-not-received"/);
+    expect(card).toMatch(/RETURN:\s*"return"/);
+    // No template-built description of the issue from an unmapped value.
+    expect(card).not.toMatch(/\$\{\s*(?:reason\.)?eventTypes/);
+  });
+
+  /**
+   * The wording must not be able to change WHO is warned about. The evaluator
+   * decides on counts; the issue types ride along for description only.
+   */
+  it("keeps the issue types out of the qualifying decision", () => {
+    const domain = executable.domain;
+    // The threshold comparison reads the count, never the types.
+    expect(domain).toMatch(/fact\.count >= thresholds\[signal\.threshold\]/);
+    const comparison = /if \(fact\.count >= thresholds\[signal\.threshold\]\) \{/.exec(domain);
+    expect(comparison).not.toBeNull();
+    // And no threshold is keyed on an event type anywhere.
+    expect(domain).not.toMatch(/thresholds\[[^\]]*eventType/i);
   });
 
   /** Context, not an interruption. An alert demands action; this informs. */
@@ -257,13 +293,25 @@ describe("history is isolated from the AI and the workflow", () => {
     }
   });
 
+  /**
+   * MATCHED AS WORDS, NOT SUBSTRINGS, and the first version of this got it
+   * wrong. A substring check for "reviewed" failed on the SQL comment
+   * `-- ... an unreviewed vocabulary` in the repository: `code()` strips
+   * JavaScript comments but not SQL `--` comments inside a template literal,
+   * and "unreviewed" contains "reviewed".
+   *
+   * That is the same trap `lib/db/order-source.ts` records for its privilege
+   * check — "a table called `order_update` must not read as an UPDATE
+   * privilege". Word boundaries keep the guard aimed at the workflow state
+   * rather than at any word containing it.
+   */
   it("changes no workflow state and triggers no escalation", () => {
     const lower = ALL.toLowerCase();
-    for (const term of [
-      "workflow_state", "workflowstate", "pending_review", "reviewed",
-      "escalate(", "autoescalate", "priority",
+    for (const pattern of [
+      /\bworkflow_state\b/, /\bworkflowstate\b/, /\bpending_review\b/, /\breviewed\b/,
+      /\bescalate\(/, /\bautoescalate\b/, /\bpriority\b/,
     ]) {
-      expect(lower).not.toContain(term);
+      expect(lower).not.toMatch(pattern);
     }
   });
 

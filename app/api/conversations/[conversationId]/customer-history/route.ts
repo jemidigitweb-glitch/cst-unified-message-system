@@ -72,7 +72,17 @@ export const dynamic = "force-dynamic";
 export type CustomerHistoryResponse = {
   readonly available: boolean;
   readonly warning: boolean;
-  readonly reasons: readonly { readonly type: string; readonly count: number }[];
+  /**
+   * `eventTypes` carries the verified issue types behind a reason — the stored
+   * `event_type`, which 0021 CHECK-constrains to three reviewed values. It
+   * exists so the card can describe what the earlier case was about; it is not
+   * an identifier and names no record, order or person.
+   */
+  readonly reasons: readonly {
+    readonly type: string;
+    readonly count: number;
+    readonly eventTypes?: readonly string[];
+  }[];
   /** Signals that could not be read. Never counted as zero by any client. */
   readonly unavailableSignals: readonly string[];
   readonly unavailableReason: string | null;
