@@ -456,3 +456,197 @@ export async function fetchMailAccounts(
     subSource: row.sub_source === null ? null : Number(row.sub_source),
   }));
 }
+
+/**
+ * ===========================================================================
+ * CUSTOMER CASE HISTORY: inquiries, cases, payment_disputes
+ * ===========================================================================
+ * Three readers for the one-time historical import that fills
+ * `cst_app.customer_case_history` (migration 0021). Each reads ONE table
+ * WHOLE, in a single statement.
+ *
+ * ---------------------------------------------------------------------------
+ * ONE QUERY PER TABLE, AND PAGING WOULD BE THE EXPENSIVE MISTAKE
+ * ---------------------------------------------------------------------------
+ * Same reasoning as `fetchResponseSlaConfigs`, and it is the opposite of the
+ * usual instinct. Measured 2026-10-01: inquiries 8,052 rows, cases 1,038,
+ * payment_disputes 37 — and NO DATE COLUMN ON ANY OF THE THREE IS INDEXED
+ * (confirmed from information_schema.STATISTICS; the only indexes are the
+ * primary key, the case id, and res_his_order). A date-bounded WHERE therefore
+ * costs the same full scan as reading the table, so bounding it buys nothing
+ * and paging it would spend an account capped at 100 queries per hour to
+ * re-read a table smaller than one page.
+ *
+ * `LIMIT ?` is still bound and still enforced, as a RUNAWAY GUARD rather than
+ * pagination: if a table grows past it the reader THROWS instead of silently
+ * importing a truncated history, which is the failure that would otherwise look
+ * like a successful import with cases missing.
+ *
+ * ---------------------------------------------------------------------------
+ * THE OMISSIONS ARE THE POINT
+ * ---------------------------------------------------------------------------
+ * Between them these tables hold `comments` (1,000 chars of case
+ * correspondence), `buyer_req`, `buyer_note`, `esc_reason`, `evi_seller_note`
+ * and `return_address` — a customer's postal location, in a longtext. NONE is
+ * selected. Nor are `tracking_no`, `tracking_url`, `tracking_status`,
+ * `carrier`, `claim_amount`, `claim_cur`, `item_id`, `transaction_id`,
+ * `due_date` or `refund_payload`. Data that is never read cannot be stored by
+ * accident — the rule `fetchStaffPage` applies to the credential columns.
+ *
+ * `res_his_order` IS selected, and is not a payload: it is the event sequence
+ * within a case, and `lib/domain/customer-case-history.ts` cannot collapse
+ * 8,052 rows into 1,062 cases without it.
+ *
+ * ---------------------------------------------------------------------------
+ * READ-ONLY, LIKE EVERY STATEMENT IN THIS FILE
+ * ---------------------------------------------------------------------------
+ * Three SELECT constants. No INSERT, UPDATE, DELETE or DDL verb appears below
+ * and no code path can build one; the caller proves the credential cannot
+ * write before the first of them runs (`assertOrderSourceReadOnly`).
+ */
+
+/** One normalised source event row, before the domain collapses it. */
+export type SourceCaseEventQueryRow = {
+  case_id: string | null;
+  event_seq: number | null;
+  row_id: number | string;
+  buyer: string | null;
+  sub_source: number | null;
+  case_type: string | null;
+  status: string | null;
+  is_case: number | null;
+  esc_date: string | null;
+  order_id: string | null;
+  req_date: string | null;
+};
+
+/**
+ * Runaway guards, each roomy enough that ordinary growth is invisible and tight
+ * enough to catch a table that has changed character. Current row counts are
+ * 8,052 / 1,038 / 37.
+ */
+export const MAX_CASE_HISTORY_ROWS = {
+  inquiries: 40_000,
+  cases: 20_000,
+  payment_disputes: 20_000,
+} as const;
+
+/**
+ * `inquiries`. ELEVEN columns of twenty-eight.
+ *
+ * `is_case` and `esc_date` are the escalation signal — the only one of the
+ * three tables that records one. `esc_reason` is its free-text sibling and is
+ * deliberately absent.
+ */
+const SELECT_INQUIRY_EVENTS = `
+  SELECT inquiry_id    AS case_id,
+         res_his_order AS event_seq,
+         id            AS row_id,
+         buyer         AS buyer,
+         sub_source    AS sub_source,
+         type          AS case_type,
+         status        AS status,
+         is_case       AS is_case,
+         esc_date      AS esc_date,
+         NULL          AS order_id,
+         req_date      AS req_date
+  FROM inquiries
+  ORDER BY inquiry_id ASC, res_his_order ASC, id ASC
+  LIMIT ?`;
+
+/**
+ * `cases`. NINE columns of twenty-six.
+ *
+ * No escalation columns are read: `esc_reason` is free text AND is NULL on all
+ * 1,038 rows, so there is nothing to carry even if it were wanted. `state` is
+ * likewise NULL on every row and is not selected.
+ */
+const SELECT_CASE_EVENTS = `
+  SELECT case_id       AS case_id,
+         res_his_order AS event_seq,
+         id            AS row_id,
+         buyer         AS buyer,
+         sub_source    AS sub_source,
+         case_type     AS case_type,
+         status        AS status,
+         NULL          AS is_case,
+         NULL          AS esc_date,
+         NULL          AS order_id,
+         req_date      AS req_date
+  FROM cases
+  ORDER BY case_id ASC, res_his_order ASC, id ASC
+  LIMIT ?`;
+
+/**
+ * `payment_disputes`. EIGHT columns of twenty-two.
+ *
+ * `revision` is the event sequence here — there is no `res_his_order` — and
+ * max(revision) is 7 with 37 rows across 36 cases, so this table collapses
+ * too. `order_id` is read because this is the ONLY one of the three tables that
+ * records an order. `buyer_note`, `return_address`, `evi_seller_note` and
+ * `reason` are all free text and all absent.
+ *
+ * No `case_type` column exists; the kind is the table's own identity and the
+ * domain supplies the constant.
+ */
+const SELECT_PAYMENT_DISPUTE_EVENTS = `
+  SELECT case_id  AS case_id,
+         revision AS event_seq,
+         id       AS row_id,
+         buyer    AS buyer,
+         sub_source AS sub_source,
+         NULL     AS case_type,
+         status   AS status,
+         NULL     AS is_case,
+         NULL     AS esc_date,
+         order_id AS order_id,
+         req_date AS req_date
+  FROM payment_disputes
+  ORDER BY case_id ASC, revision ASC, id ASC
+  LIMIT ?`;
+
+/** Exposed so a test can assert what each does and does not select. */
+export const SELECT_INQUIRY_EVENTS_SQL = SELECT_INQUIRY_EVENTS;
+export const SELECT_CASE_EVENTS_SQL = SELECT_CASE_EVENTS;
+export const SELECT_PAYMENT_DISPUTE_EVENTS_SQL = SELECT_PAYMENT_DISPUTE_EVENTS;
+
+const CASE_HISTORY_STATEMENTS = {
+  inquiries: SELECT_INQUIRY_EVENTS,
+  cases: SELECT_CASE_EVENTS,
+  payment_disputes: SELECT_PAYMENT_DISPUTE_EVENTS,
+} as const;
+
+/**
+ * Every event row of one case table, in one query.
+ *
+ * `table` selects a COMPILE-TIME CONSTANT statement from the map above — the
+ * table name is never interpolated into SQL. That is the rule
+ * `documentation/ai-coding-context.md` states: a table name cannot be a bound
+ * parameter, so a stored or passed value may only ever *look up* a prepared
+ * statement.
+ *
+ * Throws at the runaway guard rather than returning a truncated table, because
+ * a short read here would import a partial customer history that reports as
+ * complete.
+ */
+export async function fetchCaseHistoryEvents(
+  connection: MySqlQueryable,
+  table: keyof typeof CASE_HISTORY_STATEMENTS,
+  options: { readonly budget?: QueryBudget } = {},
+): Promise<readonly SourceCaseEventQueryRow[]> {
+  const text = CASE_HISTORY_STATEMENTS[table];
+  const limit = MAX_CASE_HISTORY_ROWS[table];
+
+  const [rows] = await connection.query(text, [limit]);
+  if (options.budget) options.budget.spent += 1;
+
+  const result = rows as SourceCaseEventQueryRow[];
+  if (result.length >= limit) {
+    throw new Error(
+      `${table} returned ${result.length} rows, at or past the ${limit} guard — ` +
+        "refusing to import a possibly truncated case history",
+    );
+  }
+  return result;
+}
+

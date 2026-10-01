@@ -187,3 +187,36 @@ export async function findCandidateEbayOrders(
   });
   return (rows as CandidateOrderRow[]).map(toCandidateOrder);
 }
+
+/**
+ * Every sub-account that is an eBay storefront, by the platform check this
+ * module documents above — `sub_source.source_id = 2`, not a region guess and
+ * not a hardcoded account list.
+ *
+ * WHY A SEPARATE READER EXISTS. The customer-case-history import reads three
+ * MySQL tables that carry a `sub_source` and no platform column. Writing
+ * `marketplace = 'ebay'` on the strength of "these tables look like eBay
+ * tables" is precisely the guess this codebase rejects, and 0021 makes
+ * `marketplace` NOT NULL so there is no honest NULL to fall back on. So the
+ * importer resolves the real allowlist once, from the source of truth, and
+ * rejects any storefront outside it.
+ *
+ * ONE QUERY, returning roughly 30 small rows. Read whole rather than probed per
+ * sub_source: the alternative is one query per distinct storefront, and the
+ * marketplace identity of an account does not vary by caller.
+ */
+const FIND_EBAY_SUB_SOURCE_IDS = `
+SELECT ss.id::int AS sub_source_id
+FROM order_management.sub_source ss
+WHERE ss.source_id = $1::int
+ORDER BY ss.id`;
+
+export const FIND_EBAY_SUB_SOURCE_IDS_SQL = FIND_EBAY_SUB_SOURCE_IDS;
+
+export async function findEbaySubSourceIds(client: Queryable): Promise<number[]> {
+  const { rows } = await client.query({
+    text: FIND_EBAY_SUB_SOURCE_IDS,
+    values: [EBAY_SOURCE_ID],
+  });
+  return (rows as Array<{ sub_source_id: number }>).map((row) => Number(row.sub_source_id));
+}

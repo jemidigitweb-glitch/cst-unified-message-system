@@ -17,6 +17,8 @@ import { DraftPanel } from "./draft-panel";
 import { FollowUpButton } from "./follow-up-button";
 import { PanelIcon } from "./icons";
 import { PinnedInternalNotes } from "./pinned-internal-note";
+import { RepeatCustomerWarning } from "./repeat-customer-warning";
+import { useCustomerHistory } from "./use-customer-history";
 import type { InternalNotesState } from "./use-internal-notes";
 
 /** Floor on the draft panel's height: short enough to never be pointless, tall enough that a drag can't hide the action buttons under it. */
@@ -124,6 +126,24 @@ export function ConversationView({
   // Held locally so the draft panel's transitions show immediately; re-seeded
   // whenever a different conversation is opened.
   const [workflowState, setWorkflowState] = useState<WorkflowState>("received");
+
+  /**
+   * This customer's verified prior history, for the warning below the header.
+   *
+   * CALLED HERE, ABOVE THE EARLY RETURNS, because hooks must run on every
+   * render — the `error` / `loading` / `null` branches further down would
+   * otherwise skip it and change the hook order between renders.
+   *
+   * Keyed on the conversation id, so it re-reads when the agent opens a
+   * different thread and never on an ordinary re-render. Passing `null` while
+   * no conversation is loaded leaves it in its loading state, which renders
+   * nothing.
+   *
+   * INFORMATIONAL ONLY. Nothing in this view's draft, workflow or category
+   * behaviour reads it — the value reaches exactly one component, which either
+   * renders a card or renders null.
+   */
+  const customerHistory = useCustomerHistory(detail?.conversation.id ?? null);
 
   /**
    * How tall the draft panel is, in pixels. Purely a display preference —
@@ -339,6 +359,33 @@ export function ConversationView({
        * It now lives in the details panel beside Internal Notes. See
        * `ConversationFollowUps` and `ContextPanel`.
        */}
+      {/*
+       * THE REPEAT-CUSTOMER WARNING — IMMEDIATELY BELOW THE HEADER, AND A
+       * SIBLING OF THE SCROLLER RATHER THAN A CHILD OF IT.
+       *
+       * Same position and same reasoning as the pinned internal note: inside
+       * the scroller it would be the first item in the message list and would
+       * scroll away as soon as an agent moved down the thread, which is exactly
+       * when "this customer has opened two cases before" is worth having on
+       * screen. `shrink-0` outside the scroller means it cannot move.
+       *
+       * ONCE PER CONVERSATION, NOT PER MESSAGE. It renders here and nowhere
+       * else — no message bubble below carries a badge, and there is no
+       * separate customer-history screen. One card, at the top of the thread
+       * it describes.
+       *
+       * ABOVE THE PINNED NOTE, deliberately. A pinned internal note is
+       * guidance a colleague wrote about this thread; the warning is a fact
+       * about the customer that frames the whole thread, including the note.
+       * It is also a single short row, so it does not crowd the note the way a
+       * second full card would.
+       *
+       * SILENT BY DEFAULT. Renders null while loading, when history is
+       * unavailable, and when there is genuinely nothing to report — see the
+       * component.
+       */}
+      <RepeatCustomerWarning history={customerHistory} />
+
       {internalNotes !== undefined && (
         <PinnedInternalNotes
           notes={internalNotes.notes}
