@@ -2028,8 +2028,39 @@ export type MessageIntent =
 const ALREADY_IN_USE =
   /(?<!\bto\s)(?<!\bbe\s)(?<!\bbeing\s)(?<!\bget\s)(?<!\bgets\s)\b(?:connected|wired|fitted|installed|mounted|assembled|hooked\s+up|plugged\s+in|angeschlossen|montiert|installiert)\b/i;
 
+/**
+ * THE PARCEL IS OPEN, AND IT IS OURS.
+ *
+ * `opened` above was written for "opened the box" and reaches no other
+ * container, so the commonest way a customer opens a delivery in this corpus
+ * matched nothing at all:
+ *
+ *   "I&apos;ve just opened my parcel and sadly you&apos;ve sent one with an
+ *    on/off switch, rather than the dimmer switch I ordered.. Can you give a
+ *    solution please."
+ *
+ * (eBay 107517, `grahabottomle_0`, reported 2026-10-01 — the live text, entity
+ * and all.) The customer states in one breath that the parcel is open, that we
+ * sent the wrong switch and that they want it put right, and NOTHING read it: no
+ * phrase in `SIGNALS` matched ("sent one with" is not "sent the wrong"), the
+ * intent layer's `pre_sale_question` matched because "dimmer" is a
+ * `PRODUCT_ATTRIBUTE_STEM` and the message asks a question, and its own arrival
+ * guard `HAS_THE_GOODS` declined because the container is a PARCEL. A post-sale
+ * report of the wrong thing supplied was filed as a question from a buyer who
+ * had not bought yet, and `requestedAction` read `technical_specification` —
+ * which is what the reported "presale quary" label was.
+ *
+ * WHAT THIS IS NOT. A container noun on its own is not an arrival: "do not open
+ * the box until I confirm" asks us not to, and is still correctly an Admin
+ * matter. What says the customer has the goods is the verb in the past tense —
+ * THEY opened it — which is exactly the reading `opened` was given and the
+ * reason it is stated here as a shape rather than as another bare noun.
+ */
+const OPENED_A_CONTAINER =
+  /\b(?:just\s+|only\s+just\s+|finally\s+)?(?:opened|unpacked|unboxed)\s+(?:my|the|our|this|these|the\s+\w+'s)\s+(?:box|boxes|parcel|parcels|package|packages|packaging|bag|bags|envelope|carton|karton|paket|verpackung)\b/i;
+
 const HAS_THE_GOODS = new RegExp(
-  `\\b(?:received|receive|arrived|delivered|came|sent|got|turned\\s+up|opened|unpacked|erhalten|bekommen|geliefert|angekommen|ausgepackt)\\b|${ALREADY_IN_USE.source}`,
+  `\\b(?:received|receive|arrived|delivered|came|sent|got|turned\\s+up|opened|unpacked|erhalten|bekommen|geliefert|angekommen|ausgepackt)\\b|${OPENED_A_CONTAINER.source}|${ALREADY_IN_USE.source}`,
   "i",
 );
 
