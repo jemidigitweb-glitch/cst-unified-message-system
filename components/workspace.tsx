@@ -48,6 +48,7 @@ import { PriorityFilterControl } from "./priority-filter";
 import { MarketplaceTabs } from "./marketplace-tabs";
 import { NoRuleList } from "./no-rule-list";
 import { UnresolvedMessageList } from "./unresolved-message-list";
+import { useConversationCases } from "./use-conversation-cases";
 import { useConversationFollowUps } from "./use-conversation-follow-ups";
 import { useInternalNotes } from "./use-internal-notes";
 import { UnresolvedMessageView } from "./unresolved-message-view";
@@ -426,6 +427,22 @@ export function Workspace() {
    * what the drawer happened to have fetched.
    */
   const conversationFollowUps = useConversationFollowUps(
+    selectedKind === "conversation" ? selectedId : null,
+  );
+  /**
+   * The marketplace cases already on record for the open conversation.
+   *
+   * HELD HERE BECAUSE TWO COLUMNS RENDER IT, which is the same reason
+   * `internalNotes` lives at this level. The thread shows a one-line strip for
+   * the cases that are still live; the details column shows the full list. Two
+   * copies of this state would be two requests per conversation and two lists
+   * that drift apart the moment one refetches.
+   *
+   * Keyed on the same selection as the notes and reminders above, so it clears
+   * and re-reads with every change of thread — a case list naming order
+   * references must never hang over a conversation it does not belong to.
+   */
+  const conversationCases = useConversationCases(
     selectedKind === "conversation" ? selectedId : null,
   );
   /**
@@ -1604,7 +1621,21 @@ export function Workspace() {
       )}
       <div
         className={`grid min-h-0 flex-1 grid-rows-1 overflow-y-auto grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] xl:grid-rows-none xl:overflow-visible ${
-          detailsVisible ? "sm:grid-cols-[minmax(0,1fr)_280px] xl:grid-cols-[320px_minmax(0,1fr)_300px]" : ""
+          /*
+           * THE DETAILS COLUMN IS 380px AT DESKTOP, WIDENED FROM 300px.
+           *
+           * It was sized when it held a status block and an order block. It now
+           * carries internal notes, follow-ups, the root-cause chip grid, the
+           * listing, the order, the marketplace cases and the customer's
+           * reported details — measured at 2,174px of scroll on an ordinary
+           * conversation. The extra 80px is what stops a case row's label and
+           * value colliding, since every row in there is a label-left /
+           * value-right pair that truncates rather than wraps.
+           *
+           * The middle column is `minmax(0,1fr)`, so this comes out of slack
+           * rather than out of the thread's minimum.
+           */
+          detailsVisible ? "sm:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_380px]" : ""
         }`}
       >
         <aside
@@ -1726,6 +1757,9 @@ export function Workspace() {
               error={detailError}
               loading={loadingDetail}
               capability={capability}
+              /* The live cases, for the flag above the thread. Same state the
+                 details column renders in full. */
+              cases={conversationCases}
               onDraftGenerated={() => setDraftGeneration((n) => n + 1)}
               onWorkflowStateChange={(conversationId, state) =>
                 setInbox((current) =>
@@ -1814,6 +1848,10 @@ export function Workspace() {
                 /* This conversation's scheduled reminders, shown above the
                    notes so the promise and its note travel together. */
                 followUps={conversationFollowUps}
+                /* The same lookup the flag above the thread renders. One read,
+                   two renderings — the strip carries the headline and this
+                   column carries the detail. */
+                cases={conversationCases}
               />
               {/* After the context, because both answer "can I trust this
                   draft?" -- one from the conversation's side, one from the

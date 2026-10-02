@@ -101,6 +101,28 @@ export function ClockIcon() {
  * Same 1.5 stroke and outline treatment as the rest of this file, so it still
  * belongs to the set.
  */
+/**
+ * A flag, for the open-case strip above a thread.
+ *
+ * Deliberately not the pin: a pin already means "somebody fixed this to the top
+ * of this conversation" — a note, a warning — and a case is not something CST
+ * put there. A flag reads as "this was raised elsewhere and is still standing",
+ * which is exactly what an open marketplace case is.
+ */
+export function FlagIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M3.75 14.25V2.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path
+        d="M3.75 2.75h7.5l-1.5 2.5 1.5 2.5h-7.5v-5Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function PinIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>

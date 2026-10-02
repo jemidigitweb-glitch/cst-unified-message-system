@@ -16,6 +16,7 @@
     "import:message-media": "node --import ./scripts/register-hooks.mjs scripts/import-message-media.mjs",
     "import:sla-policy": "node --import ./scripts/register-hooks.mjs scripts/import-sla-policy.mjs",
     "import:case-history": "node --import ./scripts/register-hooks.mjs scripts/import-customer-case-history.mjs",
+    "import:marketplace-cases": "node --import ./scripts/register-hooks.mjs scripts/import-marketplace-cases.mjs",
     "sync:mysql": "node --import ./scripts/register-hooks.mjs scripts/sync-mysql-datasets.mjs",
     "knowledge:sync": "node scripts/sync-knowledge-vector-store.mjs",
     "backfill:attachments": "node scripts/backfill-attachments.mjs",

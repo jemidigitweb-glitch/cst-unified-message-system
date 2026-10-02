@@ -17,7 +17,9 @@ import { DraftPanel } from "./draft-panel";
 import { FollowUpButton } from "./follow-up-button";
 import { PanelIcon } from "./icons";
 import { PinnedInternalNotes } from "./pinned-internal-note";
+import { ConversationCaseFlag } from "./conversation-cases-panel";
 import { RepeatCustomerWarning } from "./repeat-customer-warning";
+import type { ConversationCasesState } from "./use-conversation-cases";
 import { useCustomerHistory } from "./use-customer-history";
 import type { InternalNotesState } from "./use-internal-notes";
 
@@ -57,6 +59,7 @@ export function ConversationView({
   note,
   onFollowUpCreated,
   internalNotes,
+  cases,
 }: {
   detail: ConversationDetail | null;
   error: string | null;
@@ -120,6 +123,14 @@ export function ConversationView({
    * `messages` below never meets them.
    */
   internalNotes?: InternalNotesState;
+  /**
+   * The marketplace cases already on record, held by the workspace.
+   *
+   * Passed rather than fetched here for the same reason `internalNotes` is:
+   * the details column renders the same lookup in full, and two copies would
+   * be two requests per conversation. This view renders only the flag.
+   */
+  cases: ConversationCasesState;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -385,6 +396,26 @@ export function ConversationView({
        * component.
        */}
       <RepeatCustomerWarning history={customerHistory} />
+
+      {/*
+       * AND WHAT IS OPEN AT THE MARKETPLACE RIGHT NOW, directly beneath it.
+       *
+       * BELOW the Repeat-Customer Warning, and the order is argued. The warning
+       * is about the person and frames the whole thread; this is about the
+       * order being discussed and frames the reply. A reviewer reads who they
+       * are dealing with, then what is already in flight.
+       *
+       * IT IS THE HEADLINE, NOT THE RECORD. The full case list lives in the
+       * details column under its own heading — measured at 1,305px down that
+       * column's scroller, which is why a reviewer answering a message was
+       * never seeing it. The strip carries case type, status, which order, the
+       * date, and the two flags that change a reply; everything else is one
+       * scroll away in the section that owns it.
+       *
+       * SILENT BY DEFAULT. Renders null while loading, when the lookup was
+       * unavailable, and whenever every case on record is closed.
+       */}
+      <ConversationCaseFlag cases={cases} />
 
       {internalNotes !== undefined && (
         <PinnedInternalNotes

@@ -1,8 +1,9 @@
 # CST  Handover
 
-**Date:** 2026-09-29
+**Date:** 2026-10-02
 **Branch:** `sync-reconcile-late-arrivals`
-**Baseline commit at audit:** `9a541b2`
+**Baseline commit at audit:** `9a541b2` (§1–12 audited 2026-09-29; §14 added
+2026-10-02 and measured on that date)
 
 Everything below was verified against the working tree on the date above. Where
 a number appears, it was measured — by running the command shown, or by a query
@@ -164,6 +165,7 @@ fix a leak in pool *count*. See the header of `lib/db/pools.ts`.
 | Category tagging | `lib/knowledge/message-category.ts` | Eleven case areas, deterministic, not persisted — **see §7** |
 | Response SLA | migration 0019 | Per-scope policy |
 | Message App root cause display | `lib/domain/message-app-root-cause.ts` | Read-only; shows the other system's value, refuses to pick when a thread's values disagree |
+| **Case Detection Indicator** | migration 0022 — **APPLIED**, 21,022 cases published | Existing marketplace cases on the conversation. Read-only, PostgreSQL-only — **see §14** |
 | CST root cause capture | migration 0020 — **NOT APPLIED** | Append-only; 18 measured labels + courier/issue-type/note — **see §13** |
 | Performance dashboard | `app/performance/` | **Unauthenticated — see §11** |
 | Conversation search, customer notes, unresolved feed, agent activity | various | Customer notes carry a search box — order reference or name, across marketplaces |
@@ -743,13 +745,18 @@ read-only, optional), `DB_ORDER_*` (MariaDB 10.4, read-only by GRANT —
 MariaDB has no `transaction_read_only`, so `assertOrderSourceReadOnly` verifies
 the privilege set at runtime rather than trusting a comment).
 
-**Schema management: by hand.** 20 migrations, no runner, no ledger table. Which
+**Schema management: by hand.** 22 migrations, no runner, no ledger table. Which
 migrations are live in which environment **cannot be determined from this
 repository** — run `SELECT table_name FROM information_schema.tables WHERE
 table_schema='cst_app'` against each environment.
 
 **0020 is written and NOT APPLIED anywhere.** It is the only migration in this
 state. The application degrades honestly without it — see §13.
+
+**0021 and 0022 ARE applied** to `varmen_db.cst_app` — the Repeat-Customer
+Warning's `customer_case_history` (1,098 rows) and the Case Detection
+Indicator's `marketplace_cases` + `case_import_runs` (21,022 cases published
+2026-10-02). `cst_app` holds **35** base tables as of that date. See §14.
 
 Three schema decisions that must not be "simplified":
 
@@ -951,3 +958,118 @@ the rollback: the table holds hand-recorded decisions with **no upstream copy**
 
 Full detail: `documentation/2026-09-29-root-cause-capture-overview.md` and
 `handover/2026-09-29-root-cause-capture-handover.md`.
+
+---
+
+## 14. Case Detection Indicator — cases already on record
+
+**The business question.** A CST agent answering a return question could not tell
+whether a return was already open without leaving this application for the
+message application.
+
+**Why it is a snapshot and not a live read.** The message application's MySQL
+account allows **100 queries and 50 connections per hour**, shared with every
+consumer including the message sync. A per-page-load read would exhaust that in
+minutes and lock everyone else out. So the cases are imported by hand into
+`cst_app` and CST reads only PostgreSQL.
+
+```
+message_app (MySQL, read-only) ──manual, 1 connection, 12 queries──▶
+cst_app.marketplace_cases + case_import_runs ──published runs only──▶
+repository → resolver → GET /:id/cases → flag above the thread + sidebar section
+STOP.  Nothing is sent. Nothing is written back.
+```
+
+### State as of 2026-10-02
+
+| | |
+| --- | --- |
+| Migration `0022_marketplace_cases` | **APPLIED**. `cst_app` 33 → 35 tables |
+| Published run | id 3, `2026-10-02 09:07:49+02` |
+| Cases stored | **21,022** (21,150 read, 128 rejected, 0 duplicates) |
+| Source stores covered | all 9 |
+| MySQL spend | 1 connection, 12 queries |
+| Runs 1 and 2 | `failed`, owning **zero** rows — the evidence that publication is atomic |
+
+Lifecycle: 99 active · 6,487 closed · **14,436 unknown**. Order matching: 19,805
+verified · 1,055 derived · 155 unverified · 7 unmatched.
+
+### Four things to know before editing it
+
+- **The publication gate is owned by the repository, not the schema.** A case is
+  visible only when its `import_run_id` names a `published` run. 0022 says at
+  length why no schema can enforce that. Every statement joins the ledger, and
+  `tests/guards/case-detection-read-path.test.ts` sweeps `lib/` and `app/` for a
+  reader that does not.
+- **Freshness is per source store, and the panel reports the OLDEST.** A run may
+  cover a subset; one global timestamp would let a refresh of the inquiry log
+  make the return stores look current. A store absent from the freshness result
+  has **never been imported**, which is a different sentence from "no cases".
+- **Five states, and no two may collapse.** `unavailable`, `never_imported`,
+  `no_search_key`, `none_found`, `found`. Four of them show no cases and only
+  `none_found` is evidence that the customer has none.
+- **It resolves no order.** The order comes from
+  `context_snapshots.order_number` — the existing resolver's stored answer. No
+  product name, SKU, customer name, date proximity or model output is ever used
+  to associate a case with an order, and there is no AI anywhere in this feature.
+
+### Five things it refuses to say, each measured
+
+| Claim | Why it is false |
+| --- | --- |
+| A Shopify refund is an open return | 2,019 rows hold a date, order, amount and currency and nothing else |
+| A warehouse disposition is a case status | Amazon puts both in one column, split by fulfilment channel; 0022 splits them |
+| An unknown lifecycle is closed | 12,397 Amazon returns read `Approved` — approved, with no closure recorded |
+| An available action is a dispatched replacement | the eBay action table is a snapshot, not history; 15 confirmed replacements exist, all Amazon |
+| An unverified order reference is an exact match | `order_match_method` has four values; three carry a qualifying sentence |
+
+### Where it is on screen
+
+A **sky-tinted flag above the thread** for cases that are not closed — it cannot
+scroll away — and a **sky-framed section in the details column**, beneath *Order
+for this message*, with every case and its provenance. Closed cases fold behind a
+disclosure; both lists are bounded and scroll inside themselves.
+
+The flag exists because of a measurement: before it, the section sat **1,305px
+down a 2,174px sidebar**, and a reviewer answering a message never reached it.
+The details column was widened 300px → 380px at the same time, and
+`tests/guards/notification-bell.test.ts` had its pinned layout tracks updated
+with the reason recorded.
+
+### It does not double-count with the Repeat-Customer Warning
+
+**1,098 cases exist in both tables** — measured, and it is every row of 0021's
+table. They cannot surface as a duplicate because the warning renders COUNTS and
+names no case, while the indicator renders CASES and totals nothing. No screen
+sums the two. Guarded in `case-detection-read-path.test.ts`.
+
+### Refreshing it
+
+```bash
+npm run import:marketplace-cases            # rehearsal — writes NO row anywhere
+npm run import:marketplace-cases -- --apply # three transactions, atomic publication
+```
+
+Nothing schedules this and nothing should. A guard fails the build if `cron`,
+`setInterval`, `watermark` or `feed_key` appears in the importer. A failed run is
+repeated from the beginning, not resumed — resumability was traded for
+atomicity, and the previous snapshot keeps serving CST throughout.
+
+Then run `sql/2026-10-02-case-detection-verification.sql`.
+
+### Open, each a decision rather than work
+
+1. **A second apply run has never been performed** — the update path is unproven
+   live.
+2. **Amazon `Approved` stays `unknown`** (12,398 cases). Changing that is a
+   vocabulary change plus a re-import, not a display change.
+3. **FBA warehouse outcomes are under-reported**; nobody has counted by how much.
+4. **A manually selected order does not reach the case lookup** — the choice
+   lives in the browser and is never stored.
+5. **Whether a cross-table case report should exist**, and which table it prefers
+   for the overlapping 1,098.
+
+Full detail: `documentation/2026-10-02-case-detection-overview.md`,
+`evidence/2026-10-02-case-detection-evidence.md` (which states what was **not**
+measured), `validation/2026-10-02-case-detection-validation.md` (which lists the
+acceptance tests not yet run).

@@ -438,10 +438,24 @@ describe("the drawer is an overlay, not a fourth column", () => {
     expect(drawer).toContain("fixed inset-0 z-40");
   });
 
+  /**
+   * THE DRAWER CHANGES NO LAYOUT TRACK, which is what this pins — not the
+   * widths themselves.
+   *
+   * The details column was widened from 300px to 380px (and 280px to 320px
+   * below `xl`) when the Case Detection Indicator was added: that column now
+   * carries notes, follow-ups, the root-cause chips, the listing, the order,
+   * the marketplace cases and the reported details, and every row in it is a
+   * label-left / value-right pair that truncates rather than wraps. That was a
+   * deliberate decision about the DETAILS COLUMN and had nothing to do with the
+   * notification drawer, so the values are updated here rather than the
+   * assertion relaxed — a drawer that silently reflowed the workspace is still
+   * a failure, and this still catches it.
+   */
   it("changes none of the existing layout tracks", () => {
     expect(workspaceSource).toContain("320px_minmax(0,1fr)");
     expect(workspaceSource).toContain(
-      "sm:grid-cols-[minmax(0,1fr)_280px] xl:grid-cols-[320px_minmax(0,1fr)_300px]",
+      "sm:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_380px]",
     );
   });
 });

@@ -23,6 +23,105 @@ NNNN_<description>.down.sql   reverses it
 | `0018_agent_directory` | Minimal agent-id → display-name lookup | Applied 2026-09-23 |
 | `0019_response_sla_policy` | The message application's response-time target, per marketplace and seller account | **Written, NOT executed — awaiting review** |
 
+## Why `0022` exists
+
+**Applied 2026-10-02** to the application database only — `varmen_db`, schema
+`cst_app`. The `cst_app` base-table count went **33 → 35**, creating two tables,
+six indexes (two unique and four lookup, plus the two primary keys), 28 CHECK
+constraints, one foreign key and twenty COMMENTs. **No existing table gained,
+lost or changed a row** — verified by an exact row census of all 33 pre-existing
+tables taken before and after. `customer_case_history` was 1,098 rows before and
+1,098 after, with its 24 constraints and 3 indexes intact. No object was created
+outside `cst_app`. Both tables were deployed **empty**: the migration imports
+nothing.
+
+**It was rehearsed first, and the obvious method is not a rehearsal.** The file
+carries its own `BEGIN`/`COMMIT`, so handing it to a client that has already
+issued `BEGIN` does **not** give a rollback-safe trial — the file's own `COMMIT`
+makes every object permanent and a later `ROLLBACK` has nothing to undo. The
+rehearsal therefore stripped those two lines and ran the remaining body inside a
+transaction that was then rolled back, proving every statement parses and every
+constraint and index predicate is accepted by the server, and leaving the
+database at 33 tables with zero row drift.
+
+Data arrives separately, by `npm run import:marketplace-cases -- --apply`, which
+is manual and which nothing schedules.
+
+It creates `cst_app.marketplace_cases` — one row per marketplace customer case,
+for the Case Detection Indicator — and `cst_app.case_import_runs`, the ledger
+that says when that snapshot was last *published* and which source stores it
+covered.
+
+**`0021`'s table could not be extended, and the obstruction is physical rather
+than stylistic.** `customer_case_history.counterparty_ref` is `NOT NULL`, and
+four of the nine source case stores carry **no buyer column at all** — the eBay
+return store, the Amazon return store, the eBay cancellation store and the
+Shopify refund store each record an order and a storefront and no customer.
+That is roughly 19,700 of the ~21,000 cases. Making 0021's column nullable
+would break the one read it exists to serve, which matches on
+`lower(counterparty_ref)` in all three of its statements.
+
+**0021 is not touched, and the overlap is declared.** Once the importer runs,
+about 1,225 cases will exist in *both* tables — the item-not-received and
+formal cases from the two inquiry logs, and the payment disputes. That is why
+the provenance key is the same shape as 0021's:
+`(source_database, source_table, source_case_id)`. An identical key lets a
+report deduplicate across the two deterministically rather than by matching
+names, and it is recorded in `duplicate-risk-reports/`. The Repeat-Customer
+Warning keeps its table, its three statements and its numbers unchanged.
+
+**A dry run writes nothing, and the schema is where that is enforced.** There
+is deliberately no `mode` column and no dry-run state. An earlier draft recorded
+`mode = 'dry_run'` so a rehearsal was visible; that was wrong twice over — it
+made a read-only rehearsal perform a write, and it put a row in the one table
+whose purpose is to say when real data was last published. The ledger records
+published and attempted apply runs only, so there is nothing for a rehearsal to
+write.
+
+**A partially failed import is never readable.** An earlier draft wrote the
+cases in bounded batches, each its own transaction, so a failure part-way left
+committed rows that the indicator would have read while the run was recorded as
+failed — a partial case set presented as the answer. The three states
+`in_progress · published · failed` exist to prevent that, and the importer must
+follow one protocol: a first transaction records the attempt, a **second
+transaction carries every case upsert *and* the single statement that publishes
+the run**, and a third records a failure. Either all the cases land and the run
+is published with them, or neither happens. Resumability is traded for
+atomicity deliberately — a failed run is repeated from the beginning, which is
+affordable because the whole extraction costs one source connection and twelve
+queries against an hourly allowance of a hundred.
+
+**Freshness is per source store, not one global timestamp.** `source_tables`
+records what a run actually covered, because a run may be asked for a subset and
+must not then read as a whole-snapshot refresh. The question is answered from
+published runs only, per store, and a store with no published run is reported as
+*never imported* rather than as *no cases found* — the two lead a reviewer to
+opposite conclusions, which is the distinction the ledger exists to make
+possible.
+
+**`lifecycle` and `source_status` are separate columns because the source
+disagrees with itself.** All 150 eBay returns whose status is `ESCALATED` carry
+`current_state = 'CLOSED'`, and 6 carry `READY_FOR_SHIPPING` against
+`ITEM_DELIVERED`. Collapsing them would force a choice between two values the
+source never reconciled. `lifecycle` has three values, and `unknown` is the
+honest answer for a measured population of about 15,300 rows: 13,315 Amazon
+returns read `Approved`, which means the request was approved and not that the
+case closed, and the store records no closure date.
+
+Two further measured decisions carried in the file's header: the Amazon
+**warehouse disposition** gets its own column, because that column holds a
+stockroom outcome for Amazon-fulfilled returns and a case status for
+merchant-fulfilled ones; and `replacement_confirmed` is constrained to the one
+store that can confirm a replacement, because the source's 36-value
+return-action table is an **available-actions snapshot** rather than history —
+the action "external claim opened" is attached to 4,076 of 4,082 returns there
+and appears as an actual activity on none of them.
+
+It adds no column, trigger, function, schedule or `sync_state` feed, and no
+send, transport or recipient structure. Its rollback drops the two tables it
+created with `RESTRICT`, **child first** because of the one foreign key, and is
+the first rollback here where drop order matters.
+
 ## Why `0019` exists
 
 **NOT EXECUTED.** The table exists in no database and holds no row. Its importer

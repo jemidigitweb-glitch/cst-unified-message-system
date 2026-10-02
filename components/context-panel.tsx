@@ -57,12 +57,17 @@ import {
 } from "@/lib/domain/shipment-tracking-display";
 import type { TrackingResult } from "@/lib/tracking/provider";
 
+import { ConversationCasesPanel } from "./conversation-cases-panel";
 import { ConversationFollowUps } from "./conversation-follow-ups";
 import { InternalNotesSection } from "./internal-notes-panel";
 import { RootCauseSelector } from "./root-cause-selector";
+import { SECTION_HEADING_CLASS, SectionHeading } from "./sidebar-section";
 import { StatusBadge } from "./status-badge";
+import type { ConversationCasesState } from "./use-conversation-cases";
 import type { ConversationFollowUpsState } from "./use-conversation-follow-ups";
 import type { InternalNotesState } from "./use-internal-notes";
+
+export { SECTION_HEADING_CLASS };
 
 /**
  * Context summary.
@@ -1112,6 +1117,7 @@ function CustomerEvidenceImages({
 export function ContextPanel({
   conversation,
   capability,
+  cases,
   messages,
   selectedOrderNumber,
   onSelectOrder,
@@ -1120,6 +1126,16 @@ export function ContextPanel({
 }: {
   conversation: InboxItem | null;
   capability: MarketplaceCapability;
+  /**
+   * The marketplace cases already on record for this conversation.
+   *
+   * Held by the workspace rather than fetched here, for the reason
+   * `internalNotes` is: the thread column renders a flag for the live ones
+   * while this column renders the full list, and two copies of the state would
+   * be two requests per conversation and two lists that drift apart on the
+   * first refetch.
+   */
+  cases: ConversationCasesState;
   /**
    * The reminders scheduled on this conversation, held by the workspace for the
    * same reason `internalNotes` is: one read, one source of truth, and the
@@ -1313,6 +1329,21 @@ export function ContextPanel({
         />
       </section>
 
+      {/*
+        THE CASES ALREADY ON RECORD, DIRECTLY BENEATH THE ORDER THEY BELONG TO.
+
+        The position is argued rather than chosen. A case is a fact ABOUT the
+        order above it — a return already open on it, a cancellation already
+        requested — so it reads as a continuation of that section and would read
+        as a non-sequitur anywhere above it. It also has to come after, because
+        the order section is where a reviewer learns WHICH order this message is
+        about, and a case list means something different before that is known.
+
+        Imported records, not a live read: nothing here reaches the system that
+        owns the case, and the section says when the snapshot was taken.
+      */}
+      <ConversationCasesPanel cases={cases} />
+
 
       {/*
         Its own section, a sibling of Context rather than nested inside it.
@@ -1333,29 +1364,14 @@ export function ContextPanel({
   );
 }
 
-/**
- * A sidebar section heading.
- *
- * ONE COLOUR FOR EVERY SECTION. Per-section tints were tried and read as
- * meaning — a reviewer looks for why Context is one colour and Order context
- * another, and there is no answer. A single muted green says "this is a
- * heading" and nothing more, which is all a heading should say.
- *
- * TEXT COLOUR ONLY — no background, no pill, no radius. The sidebar already
- * carries status pills and category chips; boxed headings would compete with
- * the badges that are the thing actually worth noticing.
+/*
+ * The section heading and its colour now live in `./sidebar-section`, and are
+ * re-exported here because the workspace and the evidence pane have imported
+ * the constant from this module since before that file existed. The move was
+ * forced by the cases section below: it renders a heading and is mounted by
+ * this panel, so importing the constant back out of here would be a module
+ * cycle.
  */
-export const SECTION_HEADING_CLASS = "text-teal-800 dark:text-teal-300";
-
-function SectionHeading({ children }: { children: string }) {
-  return (
-    <h2
-      className={`text-[11px] font-medium tracking-wide uppercase ${SECTION_HEADING_CLASS}`}
-    >
-      {children}
-    </h2>
-  );
-}
 
 function Row({
   label,
